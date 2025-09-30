@@ -1,4 +1,4 @@
-from data import use_ffmpeg, video_downloader, use_fast_whisper, use_video_analyse
+from data import use_ffmpeg, video_downloader, use_fast_whisper
 from util import time_util, file_util
 from fastapi import APIRouter, UploadFile, File
 from db.Do import BaseReq, we_library, VideoSource
@@ -7,6 +7,8 @@ import time
 import config
 import logging as logger
 import os
+from data.use_qwen_vl import video_summary
+
 router = APIRouter()
 
 
@@ -64,10 +66,9 @@ async def upload_source_videos_stream(file_stream: UploadFile = File(...)):
 
 @router.get("/get_description")
 def get_description(id:int):
-    video_source = we_library.fetch_one(f"SELECT * FROM video_source WHERE id=?;", (req.id,))
+    video_source = we_library.fetch_one(f"SELECT * FROM video_source WHERE id=?;", (id,))
     # 解析视频描述
-    video_analyse_result = use_video_analyse.video_analyze(video_source['local_path'])
-    description = video_analyse_result[0].get("description")
+    description = video_summary(video_source['local_path'],None)
     video_source = VideoSource(
         table_name="video_source",
         id=id,

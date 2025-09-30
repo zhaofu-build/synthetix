@@ -6,8 +6,6 @@ from util import time_util
 import config
 import requests
 from urllib.parse import urlencode
-from data import use_video_analyse
-from mutagen.mp4 import MP4
 from db.Do import BaseReq, we_library, VideoSource
 
 
@@ -86,7 +84,7 @@ def search_videos_pexels(
     """
     video_orientation = "landscape"
     video_width, video_height = 1920, 1080
-    api_key = (config.video_api_keys)
+    api_key = config.video_api_keys
     headers = {
         "Authorization": api_key,
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",

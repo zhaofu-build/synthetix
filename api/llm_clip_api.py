@@ -62,6 +62,19 @@ def videos_transitions(req: BaseReq):
     }
 
 
+@router.get("/llm_conversation")
+def llm_conversation(keywords_prompt,prompt_type):
+    """
+    keywords_prompt:提示词
+    type：类型 1：文生图 ，2：图生图 3：图生视频
+    """
+    logger.info("=================================调用大模型================================")
+    messages = [{"role": "system", "content": f"现在用户正在进行{prompt_type},请你优化提示词，使生成结果更丰富，效果更好"},{"role": "user", "content": keywords_prompt}]
+    keywords_resp = use_llm._generate_response(messages)
+    keywords_resp = string_util.remove_think_tags(keywords_resp)
+    return keywords_resp
+
+
 if __name__ == '__main__':
     # parse_srt(prompt_config.demo_prompt)
     # creative = use_llm._generate_response(f"""

@@ -1,4 +1,5 @@
 import os, uvicorn
+
 os.environ['HF_ENDPOINT'] = "https://hf-mirror.com"
 os.environ['HF_HOME'] = 'D:/hf-model'
 from fastapi import FastAPI
@@ -11,11 +12,10 @@ from api.tool_api import router as api_tool
 from api.video_api import router as video_api
 from api.llm_clip_api import router as llm_clip_api
 from api.video_generation_api import router as video_generation_api
+
 from util import file_util
 
 app = FastAPI()
-
-
 app.include_router(api_interface)
 app.include_router(api_tool)
 app.include_router(video_api)
