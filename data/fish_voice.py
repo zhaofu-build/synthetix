@@ -6,6 +6,8 @@ import numpy as np
 import soundfile as sf
 import torch
 from loguru import logger
+from modelscope import snapshot_download
+from pathlib import Path
 from data.fish_speech.fish_speech.inference_engine import TTSInferenceEngine
 from data.fish_speech.fish_speech.models.dac.inference import load_model as load_decoder_model
 from data.fish_speech.fish_speech.models.text2semantic.inference import launch_thread_safe_queue
@@ -240,8 +242,13 @@ _TTS_CACHE_LOCK = threading.Lock()
 
 
 def fish_voice(text, output_format, references,seed,speed_factor,top_p,temperature,repetition_penalty):
-    llama_model_path = "D:/develop/project/fish-speech/tools/checkpoints/openaudio-s1-mini"
-    decoder_model_path = "D:/develop/project/fish-speech/tools/checkpoints/openaudio-s1-mini/codec.pth"
+    # 下载模型（使用缓存避免重复下载）
+    logger.info("📥 检查并下载模型...")
+    model_dir = snapshot_download('fishaudio/openaudio-s1-mini', cache_dir='D:/hf-model')
+    logger.info(f"✅ 模型路径: {model_dir}")
+    
+    llama_model_path = model_dir
+    decoder_model_path = str(Path(model_dir) / "codec.pth")
     # 使用缓存键
     cache_key = (llama_model_path, decoder_model_path)
 
@@ -304,12 +311,12 @@ if __name__ == '__main__':
     text = "欢迎使用高质量语音合成服务，本服务提供自然流畅的语音输出"
     output_file = "output.wav"
 
-    # references  = []
-    references = [{
-        "audio": file_util.audio_to_base64("E:/aupi/sound/hutao/39.胡桃的爱好…_天清海阔，皓月凌空，此情此景，正适合作诗一首。.mp3"),
-        # 实际使用base64编码的音频字符串
-        "text": "天清海阔，皓月凌空，此情此景，正适合作诗一首。"
-    }]
+    references  = []
+    # references = [{
+    #     "audio": file_util.audio_to_base64("E:/aupi/sound/hutao/39.胡桃的爱好…_天清海阔，皓月凌空，此情此景，正适合作诗一首。.mp3"),
+    #     # 实际使用base64编码的音频字符串
+    #     "text": "天清海阔，皓月凌空，此情此景，正适合作诗一首。"
+    # }]
     seed = 876888
     speed_factor = 1.0
     top_p = 0.8
@@ -324,3 +331,5 @@ if __name__ == '__main__':
     # 保存结果
     with open(file_path, "wb") as f:
         f.write(audio_data)
+    
+    logger.info(f"✅ 音频已保存到: {file_path}")

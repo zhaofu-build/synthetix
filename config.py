@@ -22,10 +22,10 @@ api_host = 9527
 web_host = 9528
 listenport = 9529
 
-UPLOAD_DIR = "static/uploads/"
-source_videos_dir = "static/source_videos/"
-source_bgm_dir = "static/source_bgm/"
-source_audios_dir = "static/source_timbre/"
+UPLOAD_DIR = ROOT_DIR_WIN / "static" / "uploads"
+source_videos_dir = ROOT_DIR_WIN / "static" / "source_videos"
+source_bgm_dir = ROOT_DIR_WIN / "static" / "source_bgm"
+source_audios_dir = ROOT_DIR_WIN / "static" / "source_timbre"
 
 llm_model = 'deepseek'
 model_name = 'deepseek-chat'
