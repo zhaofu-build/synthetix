@@ -1,4 +1,4 @@
-import os
+# import os
 
 # 设置huggingface-hub代理
 

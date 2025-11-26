@@ -1,4 +1,4 @@
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
 from modelscope import snapshot_download
 import threading
@@ -20,11 +20,11 @@ def _initialize_model():
             # 双重检查锁定
             if _model is None or _processor is None:
                 # 下载模型（使用缓存避免重复下载）
-                model_dir = snapshot_download('Qwen/Qwen2.5-VL-3B-Instruct', cache_dir='D:/hf-model')
+                model_dir = snapshot_download('Qwen/Qwen3-VL-2B-Instruct', cache_dir='D:/hf-model')
                 # model_dir = snapshot_download('Qwen/Qwen2.5-VL-7B-Instruct', cache_dir='D:/hf-model')
 
                 # 初始化模型（自动检测设备）
-                _model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                _model = Qwen3VLForConditionalGeneration.from_pretrained(
                     model_dir,
                     torch_dtype="auto",
                     device_map="auto"
@@ -116,7 +116,7 @@ def video_summary(tmp_path, prompt):
 
 
 if __name__ == '__main__':
-    tmp_path = "E:\\aupi\\2\\6a21c94c5ef9b962283289d7646dc49b.jpg"
+    tmp_path = "D:\\aupi\\8.png"
     result = image_summary(tmp_path, None)
 
     # tmp_path = "E:\\aupi\\2\\dfgdg.mp4"
