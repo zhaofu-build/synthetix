@@ -1,5 +1,7 @@
 uvicorn
 fastapi==0.115.4
+sqlalchemy==2.0.23
+alembic==1.13.1
 numpy==1.23.5
 huggingface_hub==0.30.2
 modelscope
@@ -12,6 +14,9 @@ onnxruntime_gpu==1.16.3
 openai_whisper==20231117
 openai==1.77.0
 matplotlib
+
+alembic
+SQLAlchemy
 
 python-multipart==0.0.20
 x_transformers
