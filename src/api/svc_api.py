@@ -3,9 +3,12 @@ import soundfile as sf
 from src.service import dh_live
 from src.util import string_util, file_util
 import config
-from src.model.base import BaseReq, get_audio_source_crud
+from src.model.base import BaseReq
+from src.model.entity.audio_source import AudioSource
+from src.model.entity.video_source import VideoSource
 from src.db.session import get_db
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 import os
 import uuid
 
@@ -15,24 +18,35 @@ router = APIRouter()
 @router.post("/get_source_audio")
 def get_source_audio(db: Session = Depends(get_db)):
     # 获取音色列表
-    audio_source_crud = get_audio_source_crud()
-    all_objs = audio_source_crud.get_all(db, limit=1000)
-    all_files = audio_source_crud.to_dict_list(all_objs)
-    for file in all_files:
-        file["web_path"] = os.path.join(config.source_audios_dir, file.get("web_path"))
+    all_objs = db.query(AudioSource).limit(1000).all()
+    all_files = []
+    for obj in all_objs:
+        file_dict = {
+            "id": obj.id,
+            "audio_name": obj.audio_name,
+            "prompt_text": obj.prompt_text,
+            "web_path": obj.web_path,
+            "seed": obj.seed,
+            "speed": obj.speed,
+            "top_p": obj.top_p,
+            "temperature": obj.temperature,
+            "repetition_penalty": obj.repetition_penalty,
+            "create_time": obj.create_time,
+        }
+        file_dict["web_path"] = os.path.join(config.source_audios_dir, file_dict.get("web_path"))
+        all_files.append(file_dict)
     return all_files
 
 
 @router.post("/del_source_audio")
 def del_source_audio(req: BaseReq, db: Session = Depends(get_db)):
     # 删除音色
-    audio_source_crud = get_audio_source_crud()
-    audio_obj = audio_source_crud.get_by_id(db, req.id)
+    audio_obj = db.query(AudioSource).filter(AudioSource.id == req.id).first()
     if audio_obj:
-        audio_dict = audio_source_crud.to_dict(audio_obj)
-        web_path = os.path.join(config.ROOT_DIR_WIN, config.source_audios_dir, audio_dict.get("web_path"))
+        web_path = os.path.join(config.ROOT_DIR_WIN, config.source_audios_dir, audio_obj.web_path)
         file_util.del_file(web_path)
-        audio_source_crud.delete(db, req.id)
+        db.delete(audio_obj)
+        db.commit()
         return True
     return False
 
@@ -58,18 +72,19 @@ async def save_timbre(file: UploadFile = File(...),
             buffer.write(content)
 
     # 插入数据库记录
-    audio_data = {
-        "audio_name": audio_name,
-        "prompt_text": prompt_text,
-        "web_path": filename,
-        "seed": seed,
-        "speed": speed,
-        "top_p": top_p,
-        "temperature": temperature,
-        "repetition_penalty": repetition_penalty,
-    }
-    audio_source_crud = get_audio_source_crud()
-    audio_source_crud.create(db, audio_data)
+    audio_obj = AudioSource(
+        audio_name=audio_name,
+        prompt_text=prompt_text,
+        web_path=filename,
+        seed=seed,
+        speed=speed,
+        top_p=top_p,
+        temperature=temperature,
+        repetition_penalty=repetition_penalty,
+    )
+    db.add(audio_obj)
+    db.commit()
+    db.refresh(audio_obj)
     return True
 
 
@@ -165,18 +180,18 @@ async def fish_voice_tts_endpoint(req: BaseReq, db: Session = Depends(get_db)):
         audio_data = fish_voice.fish_voice(req.text, output_format, references, req.seed, req.speed_factor, req.top_p,
                                            req.temperature, req.repetition_penalty)
     else:
-        audio_source_crud = get_audio_source_crud()
-        audio_obj = audio_source_crud.get_by_id(db, req.audio_source_id)
-        audio_source = audio_source_crud.to_dict(audio_obj)
-        web_path = os.path.join(config.ROOT_DIR_WIN, config.source_audios_dir, audio_source.get("web_path"))
+        audio_obj = db.query(AudioSource).filter(AudioSource.id == req.audio_source_id).first()
+        if not audio_obj:
+            raise ValueError("Audio source not found")
+        web_path = os.path.join(config.ROOT_DIR_WIN, config.source_audios_dir, audio_obj.web_path)
 
         references = [{
             # 实际使用base64编码的音频字符串
             "audio": file_util.audio_to_base64(web_path),
-            "text": audio_source["prompt_text"]
+            "text": audio_obj.prompt_text
         }]
-        audio_data = fish_voice.fish_voice(req.text, output_format, references, audio_source["seed"], audio_source["speed"], audio_source["top_p"],
-                                           audio_source["temperature"], audio_source["repetition_penalty"])
+        audio_data = fish_voice.fish_voice(req.text, output_format, references, audio_obj.seed, audio_obj.speed, audio_obj.top_p,
+                                           audio_obj.temperature, audio_obj.repetition_penalty)
 
     filename = f"{uuid.uuid4().hex}.{output_format}"
     file_path = os.path.join(config.UPLOAD_DIR, filename)
@@ -184,3 +199,26 @@ async def fish_voice_tts_endpoint(req: BaseReq, db: Session = Depends(get_db)):
     with open(file_path, "wb") as f:
         f.write(audio_data)
     return {"webPath": config.UPLOAD_DIR + filename}
+
+
+# 获取随机音色
+@router.get("/get_random_audio")
+def get_random_audio(db: Session = Depends(get_db)):
+    audio_obj = db.query(AudioSource).filter(
+        AudioSource.del_flag == False
+    ).order_by(func.random()).limit(1).first()
+    if audio_obj:
+        audio_dict = {
+            "id": audio_obj.id,
+            "audio_name": audio_obj.audio_name,
+            "prompt_text": audio_obj.prompt_text,
+            "web_path": audio_obj.web_path,
+            "seed": audio_obj.seed,
+            "speed": audio_obj.speed,
+            "top_p": audio_obj.top_p,
+            "temperature": audio_obj.temperature,
+            "repetition_penalty": audio_obj.repetition_penalty,
+            "create_time": audio_obj.create_time,
+        }
+        return audio_dict
+    return None

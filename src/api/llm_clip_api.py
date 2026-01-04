@@ -3,7 +3,8 @@ from src.service import use_llm, use_ffmpeg
 from src.util import string_util
 import config
 from fastapi import APIRouter, Depends
-from src.model.base import BaseReq, get_video_source_crud
+from src.model.base import BaseReq
+from src.model.entity.video_source import VideoSource
 from src.db.session import get_db
 from sqlalchemy.orm import Session
 import logging as logger
@@ -31,8 +32,7 @@ def videos_transitions(req: BaseReq, db: Session = Depends(get_db)):
     # save_dir = config.ROOT_DIR_WIN / config.source_videos_dir
     # folder_file_names = file_util.get_folder_file_name(save_dir)
     # source_infos = []
-    video_source_crud = get_video_source_crud()
-    video_objs = video_source_crud.filter_by(db, video_type=1)
+    video_objs = db.query(VideoSource).filter(VideoSource.video_type == 1).all()
     source_infos = [{"id": obj.id, "duration": obj.duration, "description": obj.description} 
                     for obj in video_objs]
     # for video_source in video_source_use:

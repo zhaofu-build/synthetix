@@ -1,10 +1,11 @@
-from src.service import video_downloader
 from src.service import use_fast_whisper, use_ffmpeg
 from src.util import time_util, file_util
 from fastapi import APIRouter, UploadFile, File, Depends
-from src.model.base import BaseReq, VideoSource, get_video_source_crud
+from src.model.base import BaseReq
+from src.model.entity.video_source import VideoSource as VideoSourceEntity
 from src.db.session import get_db
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from pathlib import Path
 import time
 import config
@@ -19,27 +20,91 @@ router = APIRouter()
 @router.post("/get_source_videos")
 def get_source_videos(req: BaseReq, db: Session = Depends(get_db)):
     # 获取素材库素材
-    video_source_crud = get_video_source_crud()
-    video_objs = video_source_crud.filter_by(db, video_type=req.video_type)
-    return video_source_crud.to_dict_list(video_objs)
+    query = db.query(VideoSourceEntity)
+    if req.video_type is not None:
+        query = query.filter(VideoSourceEntity.video_type == req.video_type)
+    video_objs = query.all()
+    
+    result = []
+    for obj in video_objs:
+        video_dict = {
+            "id": obj.id,
+            "video_name": obj.video_name,
+            "web_path": obj.web_path,
+            "local_path": obj.local_path,
+            "duration": obj.duration,
+            "duration_hms": obj.duration_hms,
+            "description": obj.description,
+            "video_type": obj.video_type,
+            "create_time": obj.create_time,
+            "del_flag": obj.del_flag,
+        }
+        result.append(video_dict)
+    return result
 
 
 @router.post("/update_video_source")
-def update_video_description(req: VideoSource, db: Session = Depends(get_db)):
+def update_video_description(req: BaseReq, db: Session = Depends(get_db)):
     # 修改
-    video_source_crud = get_video_source_crud()
-    return video_source_crud.add_or_update(db, req.dict())
+    # 从请求体中获取参数
+    video_id = req.id
+    video_name = getattr(req, 'video_name', None)
+    web_path = getattr(req, 'web_path', None)
+    local_path = getattr(req, 'local_path', None)
+    duration = getattr(req, 'duration', None)
+    duration_hms = getattr(req, 'duration_hms', None)
+    description = getattr(req, 'description', None)
+    video_type = getattr(req, 'video_type', None)
+    del_flag = getattr(req, 'del_flag', None)
+    
+    video_obj = db.query(VideoSourceEntity).filter(VideoSourceEntity.id == video_id).first()
+    if video_obj:
+        # 更新现有记录
+        if video_name is not None:
+            video_obj.video_name = video_name
+        if web_path is not None:
+            video_obj.web_path = web_path
+        if local_path is not None:
+            video_obj.local_path = local_path
+        if duration is not None:
+            video_obj.duration = duration
+        if duration_hms is not None:
+            video_obj.duration_hms = duration_hms
+        if description is not None:
+            video_obj.description = description
+        if video_type is not None:
+            video_obj.video_type = video_type
+        if del_flag is not None:
+            video_obj.del_flag = del_flag
+        db.commit()
+        db.refresh(video_obj)
+        return video_obj
+    else:
+        # 创建新记录
+        video_obj = VideoSourceEntity(
+            video_name=video_name,
+            web_path=web_path,
+            local_path=local_path,
+            duration=duration,
+            duration_hms=duration_hms,
+            description=description,
+            video_type=video_type,
+            del_flag=del_flag
+        )
+        db.add(video_obj)
+        db.commit()
+        db.refresh(video_obj)
+        return video_obj
 
 
 @router.post("/del_source_videos")
 def del_source_videos(req: BaseReq, db: Session = Depends(get_db)):
     # 删除本地素材
-    video_source_crud = get_video_source_crud()
-    video_obj = video_source_crud.get_by_id(db, req.id)
+    video_obj = db.query(VideoSourceEntity).filter(VideoSourceEntity.id == req.id).first()
     if video_obj:
-        video_dict = video_source_crud.to_dict(video_obj)
-        file_util.del_file(video_dict['local_path'])
-        video_source_crud.delete(db, req.id)
+        file_util.del_file(video_obj.local_path)
+        db.delete(video_obj)
+        db.commit()
         return True
     return False
 
@@ -64,29 +129,29 @@ async def upload_source_videos_stream(file_stream: UploadFile = File(...), db: S
     access_url_path = config.ROOT_DIR_WIN / config.source_videos_dir / filename
     video_info = use_ffmpeg.get_video_info(access_url_path)
     # 创建数据库记录
-    video_data = {
-        "video_name": filename,
-        "web_path": config.source_videos_dir + filename,
-        "local_path": str(access_url_path),
-        "duration": video_info["duration"],
-        "duration_hms": video_info["duration_hms"],
-    }
-    video_source_crud = get_video_source_crud()
-    video_source_crud.create(db, video_data)
+    video_obj = VideoSourceEntity(
+        video_name=filename,
+        web_path=config.source_videos_dir + filename,
+        local_path=str(access_url_path),
+        duration=video_info["duration"],
+        duration_hms=video_info["duration_hms"],
+    )
+    db.add(video_obj)
+    db.commit()
+    db.refresh(video_obj)
     return True
 
 @router.get("/get_description")
 def get_description(id: int, db: Session = Depends(get_db)):
-    video_source_crud = get_video_source_crud()
-    video_obj = video_source_crud.get_by_id(db, id)
+    video_obj = db.query(VideoSourceEntity).filter(VideoSourceEntity.id == id).first()
     if not video_obj:
         return None
-    video_dict = video_source_crud.to_dict(video_obj)
     # 解析视频描述
-    description = video_summary(video_dict['local_path'], None)
+    description = video_summary(video_obj.local_path, None)
     # 更新描述
-    video_source_crud = get_video_source_crud()
-    video_source_crud.update(db, id, {"description": description})
+    video_obj.description = description
+    db.commit()
+    db.refresh(video_obj)
     return description
 
 # 下载视频
@@ -164,6 +229,7 @@ async def extract_frame(req: BaseReq):
 #     return FileResponse(output_path, filename="with_cover.mp4")
 #
 
+
 # 提取音频
 @router.post("/get_audio")
 async def get_audio(req: BaseReq):
@@ -226,3 +292,26 @@ def start_compression(req: BaseReq):
         max_bitrate=req.max_bitrate
     )
     return True
+
+
+# 获取随机视频
+@router.get("/get_random_video")
+def get_random_video(db: Session = Depends(get_db)):
+    video_obj = db.query(VideoSourceEntity).filter(
+        VideoSourceEntity.del_flag == False
+    ).order_by(func.random()).limit(1).first()
+    if video_obj:
+        video_dict = {
+            "id": video_obj.id,
+            "video_name": video_obj.video_name,
+            "web_path": video_obj.web_path,
+            "local_path": video_obj.local_path,
+            "duration": video_obj.duration,
+            "duration_hms": video_obj.duration_hms,
+            "description": video_obj.description,
+            "video_type": video_obj.video_type,
+            "create_time": video_obj.create_time,
+            "del_flag": video_obj.del_flag,
+        }
+        return video_dict
+    return None

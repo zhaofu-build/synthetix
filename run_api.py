@@ -16,7 +16,6 @@ from src.api.svc_api import router as api_interface
 from src.api.tool_api import router as api_tool
 from src.api.video_api import router as video_api
 from src.api.llm_clip_api import router as llm_clip_api
-from src.api.video_generation_api import router as video_generation_api
 
 from src.util import file_util
 

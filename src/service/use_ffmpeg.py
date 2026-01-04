@@ -6,7 +6,7 @@ import logging as logger
 import config
 import time
 from src.db.session import get_db_context
-from src.model.base import get_video_source_crud
+from src.model.entity.video_source import VideoSource
 
 
 def get_video_info(input_path):
@@ -466,9 +466,22 @@ def concatenate_videos_with_transitions(clip_infos, output_path):
 
         # 使用SQLAlchemy查询视频信息
         with get_db_context() as db:
-            video_source_crud = get_video_source_crud()
-            video_obj = video_source_crud.get_by_id(db, clip['id'])
-            video_source = video_source_crud.to_dict(video_obj)
+            video_obj = db.query(VideoSource).filter(VideoSource.id == clip['id']).first()
+            if video_obj:
+                video_source = {
+                    "id": video_obj.id,
+                    "video_name": video_obj.video_name,
+                    "web_path": video_obj.web_path,
+                    "local_path": video_obj.local_path,
+                    "duration": video_obj.duration,
+                    "duration_hms": video_obj.duration_hms,
+                    "description": video_obj.description,
+                    "video_type": video_obj.video_type,
+                    "create_time": video_obj.create_time,
+                    "del_flag": video_obj.del_flag,
+                }
+            else:
+                raise ValueError(f"Video with id {clip['id']} not found")
         output_file = cut_video_silence(
             video_source["local_path"],
             str(start),

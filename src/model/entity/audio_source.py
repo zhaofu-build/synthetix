@@ -1,7 +1,7 @@
 """音频素材表实体模型"""
 from sqlalchemy import Column, Integer, Text, TIMESTAMP, SmallInteger, Float, func
 
-from src.db.crud import Base
+from src.model.base import Base
 
 class AudioSource(Base):
     """音频素材表"""

@@ -7,7 +7,7 @@ import config
 import requests
 from urllib.parse import urlencode
 from src.db.session import get_db_context
-from src.model.base import get_video_source_crud
+from src.model.entity.video_source import VideoSource
 
 
 def dlp_download_video(info, output_dir, resolution='1080p'):
@@ -207,8 +207,16 @@ def download_video(video_info):
         "duration_hms": video_info["duration_hms"],
     }
     with get_db_context() as db:
-        video_source_crud = get_video_source_crud()
-        video_source_crud.create(db, video_data)
+        video_obj = VideoSource(
+            video_name=video_data["video_name"],
+            web_path=video_data["web_path"],
+            local_path=video_data["local_path"],
+            duration=video_data["duration"],
+            duration_hms=video_data["duration_hms"],
+        )
+        db.add(video_obj)
+        db.commit()
+        db.refresh(video_obj)
     print(f"已下载：{filename}")
     return True
 

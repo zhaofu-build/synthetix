@@ -1,7 +1,7 @@
 """视频素材表实体模型"""
 from sqlalchemy import Column, Integer, String, Text, TIMESTAMP, SmallInteger, func
-from src.db.crud import Base
 
+from src.model.base import Base
 
 class VideoSource(Base):
     """视频素材表"""

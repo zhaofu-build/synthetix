@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # 导入 Base 和所有模型
-from src.db.crud import Base
+from src.model.base import Base
 from src.model.entity.audio_source import AudioSource
 from src.model.entity.video_source import VideoSource
 
