@@ -1,3 +1,7 @@
+import os
+# 设置translators库的区域环境变量，避免SSL证书验证问题
+os.environ["translators_default_region"] = "EN"
+
 import translators as ts
 
 import config
@@ -118,7 +122,12 @@ def ollama_translate(text, lang="zh"):
     <source>[TEXT]</source>
 
     Translation:"""
-    return use_ollama.ollama_generate(config.ollama_translate_model, prompt_zh)
+    from src.service import use_llm
+    return use_llm._generate_response(
+        messages=[{"role": "user", "content": prompt_zh}],
+        provider="ollama",
+        model_name=config.ollama_translate_model
+    )
 
 
 def translator_build(messages, to_language='zh', translator_server='bing'):

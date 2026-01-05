@@ -62,7 +62,7 @@ app.include_router(api_interface, tags=["语音克隆"])
 app.include_router(api_tool, tags=["工具"])
 app.include_router(video_api, tags=["视频处理"])
 app.include_router(llm_clip_api, tags=["AI对话与剪辑"])
-app.include_router(video_generation_api, tags=["视频生成"])
+# app.include_router(video_generation_api, tags=["视频生成"])
 
 # ⚠️ 重要：CORS 中间件必须在其他中间件之前添加
 # 警告：生产环境必须限制 allow_origins 为具体域名

@@ -1,5 +1,8 @@
-from faster_whisper import WhisperModel
 import os
+# 设置translators库的区域环境变量，避免SSL证书验证问题
+os.environ["translators_default_region"] = "EN"
+
+from faster_whisper import WhisperModel
 import config
 import torch
 

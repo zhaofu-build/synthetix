@@ -5,7 +5,6 @@ from src.util import string_util, file_util
 import config
 from src.model.base import BaseReq
 from src.model.entity.audio_source import AudioSource
-from src.model.entity.video_source import VideoSource
 from src.db.session import get_db
 from sqlalchemy.orm import Session
 from sqlalchemy import func
