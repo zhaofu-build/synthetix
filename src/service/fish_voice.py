@@ -8,11 +8,11 @@ import torch
 from loguru import logger
 from modelscope import snapshot_download
 from pathlib import Path
-from src.service.fish_speech.fish_speech.inference_engine import TTSInferenceEngine
-from src.service.fish_speech.fish_speech.models.dac.inference import load_model as load_decoder_model
-from src.service.fish_speech.fish_speech.models.text2semantic.inference import launch_thread_safe_queue
-from src.service.fish_speech.fish_speech.utils.schema import ServeTTSRequest, ServeReferenceAudio
-from src.service.fish_speech.tools.server.inference import inference_wrapper as inference
+from fish_speech.inference_engine import TTSInferenceEngine
+from fish_speech.models.dac.inference import load_model as load_decoder_model
+from fish_speech.models.text2semantic.inference import launch_thread_safe_queue
+from fish_speech.utils.schema import ServeTTSRequest, ServeReferenceAudio
+from tools.server.inference import inference_wrapper as inference
 
 
 class TTSGenerator:

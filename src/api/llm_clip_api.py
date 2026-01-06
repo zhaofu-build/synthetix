@@ -1,5 +1,5 @@
 from src.service import prompt_config, video_downloader
-from src.service import use_llm, use_ffmpeg
+from src.service import use_langchain_llm, use_ffmpeg
 from src.util import string_util
 import config
 from fastapi import APIRouter, Depends
@@ -17,7 +17,7 @@ def llm_get_source(req: BaseReq):
     logger.info("=================================llm获取搜索关键词=================================")
     keywords_prompt = prompt_config.keywords_prompt(req.creative)
     messages = [{"role": "user", "content": keywords_prompt}]
-    keywords_resp = use_llm._generate_response(messages)
+    keywords_resp = use_langchain_llm.generate_response(messages)
     keywords_resp = string_util.remove_think_tags(keywords_resp)
     keywords = keywords_resp.split(",")
     logger.info(keywords)
@@ -50,7 +50,7 @@ def videos_transitions(req: BaseReq, db: Session = Depends(get_db)):
     clip_prompt = prompt_config.clip_prompt(req.creative, source_infos, duration)
     logger.info(clip_prompt)
     messages = [{"role": "user", "content": clip_prompt}]
-    clip_resp = use_llm._generate_response(messages)
+    clip_resp = use_langchain_llm.generate_response(messages)
     keywords_resp = string_util.remove_think_tags(clip_resp)
     logger.info("=================================根据llm返回视频信息进行剪辑=================================")
     logger.info(keywords_resp)
@@ -75,19 +75,6 @@ def llm_conversation(keywords_prompt,prompt_type):
     """
     logger.info("=================================调用大模型================================")
     messages = [{"role": "system", "content": f"现在用户正在进行{prompt_type},请你优化提示词，使生成结果更丰富，效果更好"},{"role": "user", "content": keywords_prompt}]
-    keywords_resp = use_llm._generate_response(messages)
+    keywords_resp = use_langchain_llm.generate_response(messages)
     keywords_resp = string_util.remove_think_tags(keywords_resp)
     return keywords_resp
-
-
-if __name__ == '__main__':
-    # parse_srt(prompt_config.demo_prompt)
-    # creative = use_llm._generate_response(f"""
-    # 要求：总结字幕内容生成文案
-    # 风格：深度解读，结合人生感悟
-    # 时长：1分钟
-    # 注意：不要返回任何与文案无关的内容
-    # 字幕内容：{prompt_config.demo_prompt}
-    # """)
-    print("=========================================================")
-    # print(creative)

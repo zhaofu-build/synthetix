@@ -65,3 +65,13 @@ loralib>=0.1.2
 pyrootutils>=1.0.4
 
 
+git+https://github.com/fishaudio/fish-speech.git
+
+# LangChain dependencies
+langchain==0.3.7
+langchain-openai==0.2.0
+langchain-core==0.3.15
+langchain-community==0.3.7
+langchain-g4f==0.0.7
+langchain-google-genai==2.0.8
+langchain-cloudflare==0.0.3

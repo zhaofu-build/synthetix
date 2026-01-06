@@ -3,7 +3,7 @@ import soundfile as sf
 from src.service import dh_live
 from src.util import string_util, file_util
 import config
-from src.model.base import BaseReq
+from src.model.base import BaseReq, FishVoiceTTSReq
 from src.model.entity.audio_source import AudioSource
 from src.db.session import get_db
 from sqlalchemy.orm import Session
@@ -154,7 +154,7 @@ from src.service import fish_voice
 
 # # 语音克隆
 @router.post("/fish_voice")
-async def fish_voice_tts_endpoint(req: BaseReq, db: Session = Depends(get_db)):
+async def fish_voice_tts_endpoint(req: FishVoiceTTSReq, db: Session = Depends(get_db)):
     """
       生成语音
       :param req.text: 要合成的文本

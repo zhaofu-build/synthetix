@@ -2,6 +2,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, Integer, String, Float, Text, DateTime, Boolean
 from datetime import datetime
 from pydantic import BaseModel, Field
+from typing import Optional
 
 # SQLAlchemy Base
 Base = declarative_base()
@@ -14,3 +15,16 @@ class BaseReq(BaseModel):
 
     class Config:
         extra = 'allow'  # 允许额外的字段
+
+
+# Fish Voice TTS请求模型
+class FishVoiceTTSReq(BaseModel):
+    text: str = ""
+    audio_source_id: int = -1
+    seed: int = -1
+    speed_factor: float = 1.0
+    top_p: float = 0.5
+    temperature: float = 0.5
+    repetition_penalty: float = 1.35
+    references_audio: Optional[str] = None
+    references_text: str = ""
