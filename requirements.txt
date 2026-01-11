@@ -2,7 +2,7 @@ uvicorn
 fastapi==0.115.4
 sqlalchemy==2.0.23
 alembic==1.13.1
-numpy==1.23.5
+numpy>=1.26.0
 huggingface_hub==0.30.2
 modelscope
 qwen_vl_utils
@@ -10,7 +10,7 @@ qwen_vl_utils
 yt_dlp
 faster_whisper==1.1.1
 # onnxruntime==1.18.1
-onnxruntime_gpu==1.16.3
+onnxruntime-gpu==1.23.2
 openai_whisper==20231117
 openai==1.77.0
 matplotlib
@@ -20,10 +20,10 @@ SQLAlchemy
 
 python-multipart==0.0.20
 x_transformers
-transformers==4.46.2
+transformers==4.57.3
 jieba==0.42.1
 jieba_fast==0.53
-g4f==0.5.2.1
+# g4f==0.5.2.1
 PyYAML==6.0.2
 regex==2024.7.24
 xxhash==3.5.0
@@ -37,11 +37,10 @@ pypinyin==0.54.0
 imageio==2.37.0
 Pillow==9.5.0
 opencv_python==4.11.0.86
-opencv_python_headless==4.10.0.84
 soundfile==0.12.1
 audio-separator==0.21.2
-descript-audiotools
-descript-audio-codec
+# descript-audiotools  # Removed due to protobuf version conflict with onnx
+# descript-audio-codec  # Removed due to protobuf version conflict with onnx
 
 inflect==7.5.0
 librosa==0.10.2.post1
@@ -65,13 +64,15 @@ loralib>=0.1.2
 pyrootutils>=1.0.4
 
 
-git+https://github.com/fishaudio/fish-speech.git
+
 
 # LangChain dependencies
 langchain==0.3.7
 langchain-openai==0.2.0
-langchain-core==0.3.15
+langchain-core==0.3.17
 langchain-community==0.3.7
-langchain-g4f==0.0.7
-langchain-google-genai==2.0.8
-langchain-cloudflare==0.0.3
+# langchain-g4f==0.0.7
+# langchain-google-genai==2.0.8
+# langchain-cloudflare==0.0.3
+
+# git+https://github.com/fishaudio/fish-speech.git
