@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from enum import Enum
 
 
 # 获取程序执行目录
@@ -38,3 +39,12 @@ llm_key = 'sk-'
 
 video_type = 'pexels'
 video_api_keys = 'AQanz5J1ptLpe8EzANVz4fFN9R0friFxQLnvzpTjTLFbwKjpR3eL6XLA'
+
+
+# 模型配置
+MODEL_CACHE_DIR = "D:/hf-model"
+
+
+class ModelType(Enum):
+    """模型类型枚举"""
+    VL = "vl"  # 视觉语言模型，如Qwen-VL系列

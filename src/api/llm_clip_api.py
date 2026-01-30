@@ -1,6 +1,6 @@
-from src.service import prompt_config, video_downloader
+from src.service import video_downloader
 from src.service import use_langchain_llm, use_ffmpeg
-from src.util import string_util
+from src.util import string_util, prompt_config
 import config
 from fastapi import APIRouter, Depends
 from src.model.base import BaseReq

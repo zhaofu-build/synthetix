@@ -1,7 +1,8 @@
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
-from modelscope import snapshot_download
 import threading
+from config import MODEL_CACHE_DIR
+from src.util.modelscope_util import ModelScopeUtil
 
 # 全局模型和处理器变量
 _model = None
@@ -9,6 +10,9 @@ _processor = None
 _model_lock = threading.Lock()  # 模型初始化锁
 _min_pixels = 256 * 28 * 28
 _max_pixels = 1280 * 28 * 28
+
+# 模型工具实例
+_model_util = ModelScopeUtil(cache_dir=MODEL_CACHE_DIR)
 
 
 def _initialize_model():
@@ -20,8 +24,8 @@ def _initialize_model():
             # 双重检查锁定
             if _model is None or _processor is None:
                 # 下载模型（使用缓存避免重复下载）
-                model_dir = snapshot_download('Qwen/Qwen3-VL-2B-Instruct', cache_dir='D:/hf-model')
-                # model_dir = snapshot_download('Qwen/Qwen2.5-VL-7B-Instruct', cache_dir='D:/hf-model')
+                model_dir = _model_util.download_model('Qwen/Qwen3-VL-2B-Instruct', cache_dir=MODEL_CACHE_DIR)
+                # model_dir = _model_util.download_model('Qwen/Qwen2.5-VL-7B-Instruct', cache_dir=MODEL_CACHE_DIR)
 
                 # 初始化模型（自动检测设备）
                 _model = Qwen3VLForConditionalGeneration.from_pretrained(

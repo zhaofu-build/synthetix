@@ -2,7 +2,7 @@ uvicorn
 fastapi==0.115.4
 sqlalchemy==2.0.23
 alembic==1.13.1
-numpy>=1.26.0
+numpy>=1.26.0,<2.0.0
 huggingface_hub==0.30.2
 modelscope
 qwen_vl_utils

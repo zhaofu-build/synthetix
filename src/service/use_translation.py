@@ -4,8 +4,6 @@ os.environ["translators_default_region"] = "EN"
 
 import translators as ts
 
-import config
-
 
 # 搜索引擎
 # bing - 必应
@@ -48,7 +46,7 @@ def translator_build(messages, to_language='zh', translator_server='bing'):
     # llm大模型翻译
     if translator_server == "ollama":
         from src.service import use_langchain_llm
-        from prompt_config import llm_translate
+        from src.util.prompt_config import llm_translate
         return use_langchain_llm.generate_response(
             messages=[{"role": "user", "content": llm_translate}]
         )
