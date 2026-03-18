@@ -118,16 +118,21 @@ def del_source_videos(req: BaseReq, db: Session = Depends(get_db)):
 # 上传视频素材
 @router.post("/upload_source_videos_stream")
 async def upload_source_videos_stream(file_stream: UploadFile = File(...), db: Session = Depends(get_db)):
+    """上传视频素材到数据库"""
     # 生成唯一文件名
-    file_ext = file_stream.filename.split('.')[-1]
+    file_ext = file_stream.filename.split('.')[-1] if file_stream.filename else 'mp4'
     filename = f"{uuid.uuid4().hex}.{file_ext}"
     file_path = os.path.join(config.source_videos_dir, filename)
-    # 分块写入文件（适合大文件）
+
+    # 分块写入文件
+    chunk_size = 1024 * 1024
     with open(file_path, "wb") as buffer:
-        while content := await file_stream.read(1024 * 1024):  # 每次读取1MB
+        while content := await file_stream.read(chunk_size):
             buffer.write(content)
+
     access_url_path = config.ROOT_DIR_WIN / config.source_videos_dir / filename
     video_info = use_ffmpeg.get_video_info(access_url_path)
+
     # 创建数据库记录
     video_obj = VideoSourceEntity(
         video_name=filename,

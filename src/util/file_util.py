@@ -4,6 +4,9 @@ import re
 import shutil
 import ast
 import base64
+import logging
+
+logger = logging.getLogger(__name__)
 
 def format_windows_path(path):
     """安全格式化 Windows 路径"""
@@ -38,14 +41,14 @@ def join_suffix(folder, file_url):
 
 def del_file(file_path):
     if not os.path.exists(file_path):
-        print(f"路径 {file_path} 不存在")
+        logger.warning(f"路径 {file_path} 不存在")
         return
 
     try:
         if os.path.isfile(file_path):
             # 删除单个文件
             os.remove(file_path)
-            print(f"文件 {file_path} 已删除")
+            logger.info(f"文件 {file_path} 已删除")
         else:
             # 清空文件夹下所有内容
             for filename in os.listdir(file_path):
@@ -54,10 +57,10 @@ def del_file(file_path):
                     os.unlink(file_item)  # 删除文件或符号链接
                 else:
                     shutil.rmtree(file_item)  # 递归删除子目录
-            print(f"文件夹 {file_path} 内容已清空")
+            logger.info(f"文件夹 {file_path} 内容已清空")
 
     except Exception as e:
-        print(f"删除操作失败，错误信息: {e}")
+        logger.error(f"删除操作失败: {e}")
 
 
 # 保存文本到文件
@@ -155,11 +158,14 @@ def load_config():
                         if isinstance(target, ast.Name):
                             try:
                                 value = ast.literal_eval(node.value)
-                            except:
+                            except (ValueError, SyntaxError):
+                                # 无法解析的字面量，跳过
                                 value = None
                             config[target.id] = value
     except FileNotFoundError:
-        pass
+        logger.warning("配置文件 config.py 未找到，使用默认配置")
+    except Exception as e:
+        logger.error(f"读取配置文件失败: {e}")
     return config
 
 
@@ -199,3 +205,43 @@ def audio_to_base64(file_path: str) -> str:
     with open(file_path, "rb") as audio_file:
         audio_data = audio_file.read()
         return base64.b64encode(audio_data).decode("utf-8")
+
+
+async def save_uploaded_file(upload_file: "UploadFile", upload_dir: str, max_size_mb: int = 500) -> dict:
+    """
+    通用的文件上传处理函数
+
+    :param upload_file: FastAPI UploadFile 对象
+    :param upload_dir: 上传目录
+    :param max_size_mb: 最大文件大小（MB），默认500MB
+    :return: 包含文件路径信息的字典
+    :raises ValueError: 文件大小超过限制
+    """
+    import uuid
+
+    # 获取文件扩展名
+    file_ext = upload_file.filename.split('.')[-1] if upload_file.filename else 'tmp'
+    filename = f"{uuid.uuid4().hex}.{file_ext}"
+    file_path = os.path.join(upload_dir, filename)
+
+    # 分块写入文件（每次读取1MB）
+    chunk_size = 1024 * 1024
+    total_size = 0
+    max_bytes = max_size_mb * 1024 * 1024
+
+    with open(file_path, "wb") as buffer:
+        while content := await upload_file.read(chunk_size):
+            total_size += len(content)
+            if total_size > max_bytes:
+                # 超过大小限制，删除已写入的文件
+                buffer.close()
+                os.remove(file_path)
+                raise ValueError(f"文件大小超过限制 ({max_size_mb}MB)")
+            buffer.write(content)
+
+    return {
+        "filename": filename,
+        "webPath": os.path.join(upload_dir, filename),
+        "localPath": os.path.abspath(file_path),
+        "size": total_size
+    }

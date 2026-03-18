@@ -63,11 +63,20 @@ async def save_timbre(file: UploadFile = File(...),
                       output_format: str = Form(...),
                       db: Session = Depends(get_db)
                       ):
+    """保存音色文件到数据库"""
+    # 使用通用文件上传函数
+    upload_dir = os.path.join(config.ROOT_DIR_WIN, config.source_audios_dir)
+    os.makedirs(upload_dir, exist_ok=True)
+
+    # 手动生成带指定扩展名的文件名
+    import uuid
     filename = f"{uuid.uuid4().hex}.{output_format}"
-    web_path = os.path.join(config.ROOT_DIR_WIN,config.source_audios_dir, filename)
-    # 分块写入文件（适合大文件）
+    web_path = os.path.join(upload_dir, filename)
+
+    # 分块写入文件
+    chunk_size = 1024 * 1024
     with open(web_path, "wb") as buffer:
-        while content := await file.read(1024 * 1024):  # 每次读取1MB
+        while content := await file.read(chunk_size):
             buffer.write(content)
 
     # 插入数据库记录

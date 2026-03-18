@@ -65,10 +65,10 @@ app.include_router(llm_clip_api, tags=["AI对话与剪辑"])
 # app.include_router(video_generation_api, tags=["视频生成"])
 
 # ⚠️ 重要：CORS 中间件必须在其他中间件之前添加
-# 警告：生产环境必须限制 allow_origins 为具体域名
+# 从环境变量读取允许的来源，支持多域名（逗号分隔）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 允许所有来源（仅开发环境）
+    allow_origins=config.cors_origins,  # 从配置读取允许的来源
     allow_credentials=True,
     allow_methods=["*"],  # 允许所有方法
     allow_headers=["*"],  # 允许所有头部

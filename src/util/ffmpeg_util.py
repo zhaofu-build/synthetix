@@ -148,7 +148,8 @@ def smart_max_bitrate(video_info, default_bitrate='8000k'):
 
     try:
         default_value = int(default_bitrate.replace('k', ''))
-    except:
+    except (ValueError, AttributeError) as e:
+        logger.warning(f"无法解析比特率值 '{default_bitrate}': {e}，使用默认值")
         default_value = 8000
 
     # 计算原始视频比特率（单位kbps）

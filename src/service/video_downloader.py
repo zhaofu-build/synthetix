@@ -1,5 +1,6 @@
 import os
 import random
+import logging
 import yt_dlp
 from src.util.string_util import sanitize_title
 from src.util import time_util
@@ -8,6 +9,8 @@ import requests
 from urllib.parse import urlencode
 from src.db.session import get_db_context
 from src.model.entity.video_source import VideoSource
+
+logger = logging.getLogger(__name__)
 
 
 def dlp_download_video(info, output_dir, resolution='1080p'):
@@ -98,7 +101,6 @@ def search_videos_pexels(
         query_url,
         headers=headers,
         proxies=[],
-        verify=False,
         timeout=(30, 60),
     )
     response = r.json()
@@ -148,7 +150,7 @@ def search_videos_pixabay(
     query_url = f"https://pixabay.com/api/videos/?{urlencode(params)}"
 
     r = requests.get(
-        query_url, proxies=config.proxy, verify=False, timeout=(30, 60)
+        query_url, proxies=config.proxy or None, timeout=(30, 60)
     )
     response = r.json()
     video_items = []
@@ -217,18 +219,18 @@ def download_video(video_info):
         db.add(video_obj)
         db.commit()
         db.refresh(video_obj)
-    print(f"已下载：{filename}")
+    logger.info(f"已下载：{filename}")
     return True
 
 
 def keywords_download(keywords):
-    print(f"开始下载任务:")
+    logger.info("开始下载任务:")
     for keyword in keywords:
-        print(f"关键词:{keyword}")
+        logger.info(f"关键词:{keyword}")
         video_infos = search_videos_pexels(keyword, 0)
         count = 2
         if len(video_infos) < count:
-            print(f"警告：关键词 '{keyword}' 的视频数量不足 {count} 个（实际 {len(video_infos)} 个），跳过下载")
+            logger.warning(f"关键词 '{keyword}' 的视频数量不足 {count} 个（实际 {len(video_infos)} 个），跳过下载")
             continue  # 或改为下载所有可用视频
         # 随机选择？个URL
         video_infos = random.sample(video_infos, count)
@@ -237,8 +239,8 @@ def keywords_download(keywords):
             try:
                 download_video(video_info)
             except Exception as e:
-                print(f"video_info：{video_info}，下载异常：{e}")
-    print("下载任务完成")
+                logger.error(f"video_info：{video_info}，下载异常：{e}")
+    logger.info("下载任务完成")
     return True
 
 

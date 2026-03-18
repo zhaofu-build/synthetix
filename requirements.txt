@@ -19,6 +19,7 @@ alembic
 SQLAlchemy
 
 python-multipart==0.0.20
+python-dotenv==1.0.0
 x_transformers
 transformers==4.57.3
 jieba==0.42.1

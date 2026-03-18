@@ -1,9 +1,10 @@
 from fastapi import APIRouter, UploadFile, File
-import uuid, os
+import os
 import config
 from src.service import use_ffmpeg
 from src.util import file_util
 from src.model.base import BaseReq
+
 router = APIRouter()
 
 
@@ -18,39 +19,23 @@ router = APIRouter()
 
 @router.post("/upload_file_stream")
 async def upload_file_stream(file_stream: UploadFile = File(...)):
-    # 生成唯一文件名
-    file_ext = file_stream.filename.split('.')[-1]
-    filename = f"{uuid.uuid4().hex}.{file_ext}"
-    file_path = os.path.join(config.UPLOAD_DIR, filename)
-
-    # 分块写入文件（适合大文件）
-    with open(file_path, "wb") as buffer:
-        while content := await file_stream.read(1024 * 1024):  # 每次读取1MB
-            buffer.write(content)
-    access_url_path = config.ROOT_DIR_WIN / config.UPLOAD_DIR / filename
-    video_info = use_ffmpeg.get_video_info(access_url_path)
+    """上传视频文件并获取视频信息"""
+    file_info = await file_util.save_uploaded_file(file_stream, config.UPLOAD_DIR)
+    video_info = use_ffmpeg.get_video_info(file_info["localPath"])
     return {
-        "webPath": config.UPLOAD_DIR + filename,
-        "localPath": access_url_path,
+        "webPath": file_info["webPath"],
+        "localPath": file_info["localPath"],
         "duration": video_info["duration_hms"]
     }
 
 
 @router.post("/upload_all_file_stream")
 async def upload_img_file_stream(file_stream: UploadFile = File(...)):
-    # 生成唯一文件名
-    file_ext = file_stream.filename.split('.')[-1]
-    filename = f"{uuid.uuid4().hex}.{file_ext}"
-    file_path = os.path.join(config.UPLOAD_DIR, filename)
-
-    # 分块写入文件（适合大文件）
-    with open(file_path, "wb") as buffer:
-        while content := await file_stream.read(1024 * 1024):  # 每次读取1MB
-            buffer.write(content)
-    access_url_path = config.ROOT_DIR_WIN / config.UPLOAD_DIR / filename
+    """上传通用文件"""
+    file_info = await file_util.save_uploaded_file(file_stream, config.UPLOAD_DIR)
     return {
-        "webPath": config.UPLOAD_DIR + filename,
-        "localPath": access_url_path
+        "webPath": file_info["webPath"],
+        "localPath": file_info["localPath"]
     }
 
 
