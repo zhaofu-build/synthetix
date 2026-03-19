@@ -2,11 +2,29 @@ import os, sys, json, subprocess, shutil
 from pathlib import Path
 from src.util.file_util import get_download_folder, get_file_name, get_file_suffix, get_file_name_no_suffix, del_file
 from src.util import time_util, string_util, ffmpeg_util, file_util
-import logging as logger
+import logging
 import config
 import time
 from src.db.session import get_db_context
 from src.model.entity.video_source import VideoSource
+
+logger = logging.getLogger(__name__)
+
+
+def _video_source_to_dict(video_obj: VideoSource) -> dict:
+    """将 VideoSource 对象转换为字典"""
+    return {
+        "id": video_obj.id,
+        "video_name": video_obj.video_name,
+        "web_path": video_obj.web_path,
+        "local_path": video_obj.local_path,
+        "duration": video_obj.duration,
+        "duration_hms": video_obj.duration_hms,
+        "description": video_obj.description,
+        "video_type": video_obj.video_type,
+        "create_time": video_obj.create_time,
+        "del_flag": video_obj.del_flag,
+    }
 
 
 def get_video_info(input_path):
@@ -68,8 +86,8 @@ def process_video(input_path, output_path=None,
                   width=None, height=None,
                   cover_image=None,
                   output_format='mp4'):
-    print(speed_factor)
-    print(volume_factor)
+    logger.debug(f"速度因子: {speed_factor}")
+    logger.debug(f"音量因子: {volume_factor}")
     if speed_factor is None:
         speed_factor = 1.0
     if volume_factor is None:
@@ -450,11 +468,23 @@ def cut_video_silence(input_path, start_time, end_time, output_suffix):
 
 
 def concatenate_videos_with_transitions(clip_infos, output_path):
-    print("========================剪切生成中间文件=================================")
+    logger.info("========================剪切生成中间文件=================================")
     intermediate_files = []
     # 总时长
     cut_total_duration = 0
     n = len(clip_infos)
+
+    # 批量查询所有需要的视频（修复 N+1 查询问题）
+    video_ids = [clip['id'] for clip in clip_infos]
+    with get_db_context() as db:
+        video_objs = db.query(VideoSource).filter(VideoSource.id.in_(video_ids)).all()
+        video_dict = {v.id: _video_source_to_dict(v) for v in video_objs}
+
+    # 检查是否所有视频都找到了
+    missing_ids = set(video_ids) - set(video_dict.keys())
+    if missing_ids:
+        raise ValueError(f"Videos with ids {missing_ids} not found")
+
     for i in range(n):
         clip = clip_infos[i]
         start = clip['start_time']
@@ -464,33 +494,22 @@ def concatenate_videos_with_transitions(clip_infos, output_path):
         if i < n - 1 and clip['transition'] == 'dissolve':
             end = time_util.adjust_time(end, +0.5)
 
-        # 使用SQLAlchemy查询视频信息
-        with get_db_context() as db:
-            video_obj = db.query(VideoSource).filter(VideoSource.id == clip['id']).first()
-            if video_obj:
-                video_source = {
-                    "id": video_obj.id,
-                    "video_name": video_obj.video_name,
-                    "web_path": video_obj.web_path,
-                    "local_path": video_obj.local_path,
-                    "duration": video_obj.duration,
-                    "duration_hms": video_obj.duration_hms,
-                    "description": video_obj.description,
-                    "video_type": video_obj.video_type,
-                    "create_time": video_obj.create_time,
-                    "del_flag": video_obj.del_flag,
-                }
-            else:
-                raise ValueError(f"Video with id {clip['id']} not found")
+        # 从预加载的字典中获取视频信息
+        video_source = video_dict.get(clip['id'])
+        if not video_source:
+            raise ValueError(f"Video with id {clip['id']} not found")
+
         output_file = cut_video_silence(
             video_source["local_path"],
             str(start),
             end_time=str(end),
             output_suffix=f"({len(intermediate_files)})"
         )
-        cut_total_duration += video_source["duration"]
+        # duration 可能是字符串，需要转换为浮点数
+        duration_val = float(video_source["duration"]) if video_source.get("duration") else 0
+        cut_total_duration += duration_val
         intermediate_files.append(output_file)
-    print("========================合成视频前处理=================================")
+    logger.info("视频合成前处理完成，开始合成...")
     inputs = []
     for file in intermediate_files:
         inputs.extend(['-i', str(file)])
@@ -524,7 +543,7 @@ def concatenate_videos_with_transitions(clip_infos, output_path):
         f"aevalsrc=0:d={cut_total_duration}[aout];"
         f"[{current_stream}]format=yuv420p[vout]"
     )
-    print("========================合成视频=================================")
+    logger.info("开始视频合成...")
     # 构建完整命令（增加硬件加速支持）
     command = [
         '-y',
@@ -629,21 +648,44 @@ def compress_video_h265(
         return None
 
 
-def batch_compress_videos(input_dir, backup_dir, crf=20, max_bitrate='8000k', skip_existing=True):
+def batch_compress_videos(
+    input_dir,
+    backup_dir,
+    crf=20,
+    max_bitrate='8000k',
+    skip_existing=True,
+    max_workers=None
+):
     """
-    批量压缩文件夹内所有视频
+    批量压缩文件夹内所有视频（支持并发处理）
+
     参数:
     - input_dir: 输入文件夹路径
     - backup_dir: 原始视频备份目录
     - crf: 压缩质量因子 值越高压缩越多 (22-26)
     - max_bitrate: 限制最大比特率
     - skip_existing: 是否跳过已存在的压缩文件
+    - max_workers: 最大并发工作线程数，None 表示根据 CPU 核心数自动确定
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+
+    # 确定并发工作线程数
+    if max_workers is None:
+        import os
+        # 默认使用 CPU 核心数，最多 4 个
+        cpu_count = os.cpu_count() or 1
+        max_workers = min(cpu_count, 4)
+
+    logger.info(f"批量压缩任务启动，并发线程数: {max_workers}")
+
     # 确保备份目录存在
     backup_path = Path(backup_dir)
     backup_path.mkdir(parents=True, exist_ok=True)
+
     # 支持的视频扩展名
     video_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.mpg', '.mpeg', '.ts', '.mts', '.m2ts']
+
     # 先获取所有视频文件列表
     all_video_files = []
     for file_path in Path(input_dir).rglob('*'):
@@ -652,39 +694,35 @@ def batch_compress_videos(input_dir, backup_dir, crf=20, max_bitrate='8000k', sk
             if '_h256' in file_path.stem:
                 continue
             all_video_files.append(file_path)
-    # 统计信息
-    total_files = len(all_video_files)  # 视频文件总数
-    processed_files = 0  # 已处理文件计数
-    skipped_files = 0
-    compressed_files = 0
-    failed_files = 0
-    # 添加时间管理变量
-    start_time = time.time()  # 批处理开始时间
-    last_break_time = start_time  # 上次休息结束时间
-    # 遍历所有视频文件
-    for file_path in all_video_files:
-        # 检查是否需要休息
-        current_time = time.time()
-        working_duration = current_time - last_break_time
-        if working_duration >= 30 * 60:  # 30分钟
-            logger.info(f"\n{'=' * 50}")
-            logger.info(f"已连续工作 {working_duration / 60:.1f} 分钟，开始休息15分钟...")
-            time.sleep(15 * 60)  # 15分钟
-            logger.info("休息结束，继续处理...")
-            last_break_time = time.time()  # 更新上次休息结束时间
 
-        processed_files += 1
-        remaining_files = total_files - processed_files
-        logger.info(f"\n{'=' * 50}")
-        logger.info(f"处理进度: {processed_files}/{total_files} (剩余: {remaining_files})")
-        logger.info(f"当前处理: {file_path.name} ({file_path.stat().st_size / (1024 * 1024):.2f}MB)")
+    # 统计信息（使用线程安全的方式）
+    stats = {
+        'total_files': len(all_video_files),
+        'processed_files': 0,
+        'skipped_files': 0,
+        'compressed_files': 0,
+        'failed_files': 0,
+    }
+    stats_lock = threading.Lock()
+
+    def process_single_video(file_path):
+        """处理单个视频压缩"""
+        processed_files = 0
+        skipped_files = 0
+        compressed_files = 0
+        failed_files = 0
+
         # 生成压缩后的路径
         output_path = file_path.parent / f"{file_path.stem}_h256.mp4"
+
         # 如果压缩文件已存在且需要跳过
         if skip_existing and output_path.exists():
-            logger.info(f"压缩文件已存在，跳过: {output_path.name}")
-            skipped_files += 1
-            continue
+            with stats_lock:
+                stats['skipped_files'] += 1
+                stats['processed_files'] += 1
+            logger.info(f"跳过已存在: {file_path.name}")
+            return 0, 1, 0, 0  # processed, skipped, compressed, failed
+
         try:
             # 压缩视频
             compressed_file = compress_video_h265(
@@ -693,6 +731,7 @@ def batch_compress_videos(input_dir, backup_dir, crf=20, max_bitrate='8000k', sk
                 crf=crf,
                 max_bitrate=max_bitrate
             )
+
             # 如果压缩成功且文件存在
             if compressed_file and compressed_file.exists():
                 # 移动原始文件到备份目录
@@ -700,26 +739,56 @@ def batch_compress_videos(input_dir, backup_dir, crf=20, max_bitrate='8000k', sk
                 if not backup_file.exists():  # 避免覆盖
                     try:
                         shutil.move(str(file_path), str(backup_file))
-                        logger.info(f"原始文件已备份到: {backup_file}")
+                        logger.info(f"✓ {file_path.name} - 压缩成功，已备份")
                     except Exception as e:
                         logger.error(f"备份原始文件失败: {e}")
                 else:
-                    logger.info(f"备份文件已存在，跳过备份: {backup_file.name}")
-                compressed_files += 1
+                    logger.info(f"✓ {file_path.name} - 压缩成功（备份已存在）")
+
+                with stats_lock:
+                    stats['compressed_files'] += 1
+                    stats['processed_files'] += 1
+                return 1, 0, 1, 0  # processed, skipped, compressed, failed
             else:
-                failed_files += 1
-                logger.warning("压缩未成功完成")
+                logger.warning(f"✗ {file_path.name} - 压缩未成功完成")
+                with stats_lock:
+                    stats['failed_files'] += 1
+                    stats['processed_files'] += 1
+                return 1, 0, 0, 1
         except Exception as e:
-            failed_files += 1
-            logger.error(f"处理文件时出错 {file_path.name}: {e}")
-            continue
+            logger.error(f"✗ {file_path.name} - 处理失败: {e}")
+            with stats_lock:
+                stats['failed_files'] += 1
+                stats['processed_files'] += 1
+            return 1, 0, 0, 1
+
+    start_time = time.time()
+
+    # 使用线程池并发处理
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 提交所有任务
+        future_to_file = {
+            executor.submit(process_single_video, file_path): file_path
+            for file_path in all_video_files
+        }
+
+        # 处理完成的任务
+        for future in as_completed(future_to_file):
+            file_path = future_to_file[future]
+            try:
+                future.result()
+            except Exception as e:
+                logger.error(f"任务异常 {file_path.name}: {e}")
+
     # 输出统计信息
+    elapsed_time = time.time() - start_time
     logger.info(f"\n{'=' * 50}")
-    logger.info(f"批量压缩完成!")
-    logger.info(f"总文件数: {total_files}")
-    logger.info(f"跳过文件: {skipped_files}")
-    logger.info(f"成功压缩: {compressed_files}")
-    logger.info(f"失败文件: {failed_files}")
+    logger.info(f"批量压缩完成! 用时: {elapsed_time / 60:.1f} 分钟")
+    logger.info(f"总文件数: {stats['total_files']}")
+    logger.info(f"跳过文件: {stats['skipped_files']}")
+    logger.info(f"成功压缩: {stats['compressed_files']}")
+    logger.info(f"失败文件: {stats['failed_files']}")
+    logger.info(f"平均速度: {stats['total_files'] / (elapsed_time / 60):.1f} 文件/分钟")
 
 
 def run_ffmpeg_cmd(cmd):
@@ -741,7 +810,7 @@ def run_ffmpeg_cmd(cmd):
         # if ffmpeg_util.check_cuda_support():
         #     command.extend(['-hwaccel', 'cuda'])
         command.extend(cmd)
-        print(f"ffmpeg运行命令：{command}")
+        logger.debug(f"ffmpeg运行命令：{' '.join(str(c) for c in command)}")
         result = subprocess.run(command,
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT,
@@ -752,10 +821,10 @@ def run_ffmpeg_cmd(cmd):
                                 )
         return result
     except subprocess.CalledProcessError as e:
-        print("An error occurred while running the command.")
-        print(f"Command: {e.cmd}")
-        print(f"Return code: {e.returncode}")
-        print(f"Output: {e.output}")
+        logger.error("ffmpeg 命令执行失败")
+        logger.error(f"Command: {e.cmd}")
+        logger.error(f"Return code: {e.returncode}")
+        logger.error(f"Output: {e.output}")
 
 
 if __name__ == '__main__':

@@ -146,8 +146,31 @@ def clean_upload_dir(clean_dir):
         raise RuntimeError(f"目录清理失败: {str(e)}")
 
 
-def load_config():
-    """读取配置文件到字典"""
+# 配置缓存
+_config_cache: dict = None
+_config_mtime: float = 0
+
+
+def load_config(use_cache: bool = True) -> dict:
+    """读取配置文件到字典（带缓存）
+
+    Args:
+        use_cache: 是否使用缓存，默认为True
+
+    Returns:
+        配置字典
+    """
+    global _config_cache, _config_mtime
+
+    # 检查缓存
+    if use_cache and _config_cache is not None:
+        try:
+            current_mtime = os.path.getmtime('config.py')
+            if current_mtime == _config_mtime:
+                return _config_cache
+        except FileNotFoundError:
+            pass
+
     config = {}
     try:
         with open('config.py', 'r', encoding='utf-8') as f:
@@ -162,11 +185,27 @@ def load_config():
                                 # 无法解析的字面量，跳过
                                 value = None
                             config[target.id] = value
+
+        # 更新缓存
+        _config_cache = config
+        try:
+            _config_mtime = os.path.getmtime('config.py')
+        except FileNotFoundError:
+            _config_mtime = 0
+
     except FileNotFoundError:
         logger.warning("配置文件 config.py 未找到，使用默认配置")
     except Exception as e:
         logger.error(f"读取配置文件失败: {e}")
+
     return config
+
+
+def clear_config_cache():
+    """清除配置缓存"""
+    global _config_cache, _config_mtime
+    _config_cache = None
+    _config_mtime = 0
 
 
 def update_value(key: str, value):

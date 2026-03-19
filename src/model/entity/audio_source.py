@@ -1,11 +1,17 @@
 """音频素材表实体模型"""
-from sqlalchemy import Column, Integer, Text, TIMESTAMP, SmallInteger, Float, func
+from sqlalchemy import Column, Integer, Text, TIMESTAMP, SmallInteger, Float, func, Index
 
 from src.model.base import Base
 
 class AudioSource(Base):
     """音频素材表"""
     __tablename__ = 'audio_source'
+
+    # 定义索引
+    __table_args__ = (
+        Index('idx_del_flag', 'del_flag'),
+        Index('idx_create_time', 'create_time'),
+    )
     
     # 主键，自动递增
     id = Column(Integer, primary_key=True, autoincrement=True, comment='主键ID')

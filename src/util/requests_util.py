@@ -1,4 +1,7 @@
 import requests
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def post(url, params=None):
@@ -14,7 +17,7 @@ def post(url, params=None):
         response.raise_for_status()  # 如果响应状态码不是 200，则抛出异常
         return response
     except requests.RequestException as e:
-        print(f"请求失败: {e}")
+        logger.error(f"POST 请求失败: {url}, 错误: {e}")
         return None
 
 
@@ -31,7 +34,7 @@ def get(url, params=None):
         response.raise_for_status()
         return response
     except requests.RequestException as e:
-        print(f"请求失败: {e}")
+        logger.error(f"GET 请求失败: {url}, 错误: {e}")
         return None
 
 
@@ -48,5 +51,5 @@ def delete(url, params=None):
         response.raise_for_status()
         return response
     except requests.RequestException as e:
-        print(f"请求失败: {e}")
+        logger.error(f"DELETE 请求失败: {url}, 错误: {e}")
         return None

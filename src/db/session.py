@@ -29,6 +29,7 @@ def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
+        db.commit()  # 提交事务
     except Exception:
         db.rollback()
         raise
@@ -37,14 +38,19 @@ def get_db() -> Generator[Session, None, None]:
 
 
 @contextmanager
-def get_db_context():
+def get_db_context(commit: bool = False):
     """
     获取数据库会话的上下文管理器
     用于非 FastAPI 场景
+
+    Args:
+        commit: 是否在退出时自动提交事务
     """
     db = SessionLocal()
     try:
         yield db
+        if commit:
+            db.commit()
     except Exception:
         db.rollback()
         raise

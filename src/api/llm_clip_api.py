@@ -33,7 +33,7 @@ def videos_transitions(req: BaseReq, db: Session = Depends(get_db)):
     # folder_file_names = file_util.get_folder_file_name(save_dir)
     # source_infos = []
     video_objs = db.query(VideoSource).filter(VideoSource.video_type == 1).all()
-    source_infos = [{"id": obj.id, "duration": obj.duration, "description": obj.description} 
+    source_infos = [{"id": obj.id, "duration": obj.duration, "description": obj.description}
                     for obj in video_objs]
     # for video_source in video_source_use:
     #     source_info = {
@@ -45,6 +45,9 @@ def videos_transitions(req: BaseReq, db: Session = Depends(get_db)):
     duration = 30
     if audioUrl is not None:
         video_info = use_ffmpeg.get_video_info(req.audioUrl)
+        if video_info is None:
+            logger.error(f"无法获取视频信息: {req.audioUrl}")
+            raise ValueError(f"无法获取视频信息: {req.audioUrl}")
         duration = video_info['duration']
     logger.info("=================================llm获取剪辑视频提示词=================================")
     clip_prompt = prompt_config.clip_prompt(req.creative, source_infos, duration)

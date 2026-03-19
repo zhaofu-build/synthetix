@@ -1,232 +1,217 @@
-from fastapi import APIRouter, UploadFile, Form, File, Depends
-import soundfile as sf
-from src.service import dh_live
-from src.util import string_util, file_util
+"""
+语音服务 API 模块
+
+提供语音相关的 API 接口，包括 TTS、音频处理、音色管理等功能
+"""
+from typing import Optional
+
+from fastapi import APIRouter, UploadFile, Form, File, Depends, Query
+from sqlalchemy.orm import Session
+
 import config
 from src.model.base import BaseReq, FishVoiceTTSReq
-from src.model.entity.audio_source import AudioSource
+from src.model.response import success_response, error_response
 from src.db.session import get_db
-from sqlalchemy.orm import Session
-from sqlalchemy import func
-import os
-import uuid
+from src.service.audio_service import AudioService
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def get_audio_service(db: Session = Depends(get_db)) -> AudioService:
+    """获取 AudioService 依赖"""
+    return AudioService(db)
+
+
 @router.post("/get_source_audio")
-def get_source_audio(db: Session = Depends(get_db)):
-    # 获取音色列表
-    all_objs = db.query(AudioSource).limit(1000).all()
-    all_files = []
-    for obj in all_objs:
-        file_dict = {
-            "id": obj.id,
-            "audio_name": obj.audio_name,
-            "prompt_text": obj.prompt_text,
-            "web_path": obj.web_path,
-            "seed": obj.seed,
-            "speed": obj.speed,
-            "top_p": obj.top_p,
-            "temperature": obj.temperature,
-            "repetition_penalty": obj.repetition_penalty,
-            "create_time": obj.create_time,
-        }
-        file_dict["web_path"] = os.path.join(config.source_audios_dir, file_dict.get("web_path"))
-        all_files.append(file_dict)
-    return all_files
+def get_source_audio(
+    req: BaseReq = None,
+    service: AudioService = Depends(get_audio_service)
+):
+    """获取音色列表（分页）"""
+    # 如果请求体为空，使用默认值
+    if req is None:
+        req = BaseReq()
+
+    logger.info(f"get_source_audio request: {req.model_dump()}")
+    from src.util.pagination import PaginatedQuery
+
+    page_params = PaginatedQuery(page=req.current, page_size=req.size)
+
+    # 获取总数
+    total = service.repository.count_active()
+    logger.info(f"count_active result: {total}")
+
+    # 获取数据
+    items = service.repository.get_active_audios(skip=page_params.offset, limit=page_params.limit)
+    logger.info(f"get_active_audios result: {len(items)} items")
+
+    return success_response(
+        data={
+            "items": service.repository.bulk_to_dict(items, include_web_path=True),
+            "total": total,
+            "page": page_params.page,
+            "page_size": page_params.page_size,
+            "total_pages": (total + page_params.page_size - 1) // page_params.page_size
+        },
+        message="获取音色列表成功"
+    )
 
 
 @router.post("/del_source_audio")
-def del_source_audio(req: BaseReq, db: Session = Depends(get_db)):
-    # 删除音色
-    audio_obj = db.query(AudioSource).filter(AudioSource.id == req.id).first()
-    if audio_obj:
-        web_path = os.path.join(config.ROOT_DIR_WIN, config.source_audios_dir, audio_obj.web_path)
-        file_util.del_file(web_path)
-        db.delete(audio_obj)
-        db.commit()
-        return True
-    return False
+def del_source_audio(
+    req: BaseReq,
+    service: AudioService = Depends(get_audio_service)
+):
+    """删除音色"""
+    try:
+        service.delete_audio(req.id)
+        return success_response(data={"id": req.id}, message="删除成功")
+    except FileNotFoundError as e:
+        return error_response(error="NotFound", message=str(e), code=404)
 
 
-# 保存音色
 @router.post("/save_timbre")
-async def save_timbre(file: UploadFile = File(...),
-                      audio_name: str = Form(...),
-                      prompt_text: str = Form(...),
-                      seed: int = Form(...),
-                      speed: float = Form(...),
-                      top_p: float = Form(...),
-                      temperature: float = Form(...),
-                      repetition_penalty: float = Form(...),
-                      output_format: str = Form(...),
-                      db: Session = Depends(get_db)
-                      ):
+async def save_timbre(
+    file: UploadFile = File(...),
+    audio_name: str = Form(...),
+    prompt_text: str = Form(...),
+    seed: int = Form(...),
+    speed: float = Form(...),
+    top_p: float = Form(...),
+    temperature: float = Form(...),
+    repetition_penalty: float = Form(...),
+    output_format: str = Form(...),
+    service: AudioService = Depends(get_audio_service)
+):
     """保存音色文件到数据库"""
-    # 使用通用文件上传函数
-    upload_dir = os.path.join(config.ROOT_DIR_WIN, config.source_audios_dir)
-    os.makedirs(upload_dir, exist_ok=True)
+    try:
+        # 读取文件内容（异步读取）
+        content = await file.read()
 
-    # 手动生成带指定扩展名的文件名
-    import uuid
-    filename = f"{uuid.uuid4().hex}.{output_format}"
-    web_path = os.path.join(upload_dir, filename)
-
-    # 分块写入文件
-    chunk_size = 1024 * 1024
-    with open(web_path, "wb") as buffer:
-        while content := await file.read(chunk_size):
-            buffer.write(content)
-
-    # 插入数据库记录
-    audio_obj = AudioSource(
-        audio_name=audio_name,
-        prompt_text=prompt_text,
-        web_path=filename,
-        seed=seed,
-        speed=speed,
-        top_p=top_p,
-        temperature=temperature,
-        repetition_penalty=repetition_penalty,
-    )
-    db.add(audio_obj)
-    db.commit()
-    db.refresh(audio_obj)
-    return True
+        result = service.save_timbre_from_bytes(
+            file_content=content,
+            filename=file.filename or "audio.wav",
+            audio_name=audio_name,
+            prompt_text=prompt_text,
+            seed=seed,
+            speed=speed,
+            top_p=top_p,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+            output_format=output_format
+        )
+        return success_response(data={"id": result["id"]}, message="保存音色成功")
+    except (ValueError, IOError) as e:
+        return error_response(error="SaveError", message=str(e), code=400)
 
 
-# 语音克隆
 @router.post("/sovits_v4")
 async def tts_endpoint(req: BaseReq):
-    from src.service.sovits_v4 import use_sovits_v4
-    # 获取字段，如果字段为空则返回None
-    req_dict = req.dict()
-    if req_dict.get("prompt_language", None) is None:
-        language = string_util.detect_prompt_language(req_dict.get("prompt_text", None))
-        req_dict["prompt_language"] = language
-    if req_dict.get("text_language", None) is None:
-        language = string_util.detect_prompt_language(req_dict.get("text", None))
-        req_dict["text_language"] = language
-    opt_sr, audio_opt = use_sovits_v4.get_tts_wav(
-        ref_wav_path=req_dict.get("ref_wav_path", None),
-        prompt_text=req_dict.get("prompt_text", None),
-        prompt_language=req_dict.get("prompt_language", None),
-        text=req_dict.get("text", None),
-        text_language=req_dict.get("text_language", None),
-        how_to_cut=req_dict.get("how_to_cut", None),
-        top_k=req_dict.get("top_k", None),
-        top_p=req_dict.get("top_p", None),
-        temperature=req_dict.get("temperature", None),
-        # ref_free=ref_free,
-        speed=req_dict.get("speed", None),
-        # if_freeze=if_freeze,
-        # inp_refs=inp_refs,
-        # sample_steps=sample_steps,
-        # if_sr=if_sr,
-        # pause_second=pause_second,
-    )
-    access_url_path = config.ROOT_DIR_WIN / config.UPLOAD_DIR / 'sovits_v4_audio.wav'
-    sf.write(access_url_path, audio_opt, opt_sr)
-    return {
-        "vitsV4WebUrl": 'static/uploads/sovits_v4_audio.wav',
-        "vitsV4Url": access_url_path,
-    }
+    """语音克隆（SoVITS V4）"""
+    from src.db.session import get_db_context
+
+    with get_db_context() as db:
+        service = AudioService(db)
+        try:
+            req_dict = req.dict()
+
+            result = service.generate_sovits_tts(
+                text=req_dict.get("text", ""),
+                ref_wav_path=req_dict.get("ref_wav_path", ""),
+                prompt_text=req_dict.get("prompt_text", None),
+                prompt_language=req_dict.get("prompt_language", None),
+                text_language=req_dict.get("text_language", None),
+                how_to_cut=req_dict.get("how_to_cut", None),
+                top_k=req_dict.get("top_k", None),
+                top_p=req_dict.get("top_p", None),
+                temperature=req_dict.get("temperature", None),
+                speed=req_dict.get("speed", None),
+            )
+            return success_response(data=result, message="语音生成成功")
+        except ValueError as e:
+            return error_response(error="TTSError", message=str(e), code=500)
 
 
-# 分离音频和伴奏
 @router.post("/separate_audio")
 async def separate_audio(req: BaseReq):
-    vocalUrl, accompanimentUrl = dh_live.do_s(req.audio_path, config.UPLOAD_DIR)
-    return {
-        "vocalUrl": config.UPLOAD_DIR + vocalUrl,
-        "vocalWebUrl": config.UPLOAD_DIR + vocalUrl,
-        "accompanimentUrl": config.UPLOAD_DIR + accompanimentUrl,
-        "accompanimentWebUrl": config.UPLOAD_DIR + accompanimentUrl
-    }
+    """分离音频和伴奏"""
+    from src.db.session import get_db_context
+
+    with get_db_context() as db:
+        service = AudioService(db)
+        try:
+            result = service.separate_audio(req.audio_path)
+            return success_response(data=result, message="分离成功")
+        except ValueError as e:
+            return error_response(error="SeparateError", message=str(e), code=500)
 
 
-# 合并伴奏
 @router.post("/merge_audio")
 async def merge_audio(req: BaseReq):
-    # 转换 歌曲人声req.vocalUrl  素材人声req.sourceAudioPath
-    final_vocal = req.sourceAudioPath
-    finalUrl = dh_live.do_m(final_vocal, req.accompanimentUrl, config.UPLOAD_DIR)
-    return {
-        "finalUrl": config.UPLOAD_DIR + finalUrl,
-        "finalWebUrl": config.UPLOAD_DIR + finalUrl,
-    }
+    """合并伴奏"""
+    from src.db.session import get_db_context
+
+    with get_db_context() as db:
+        service = AudioService(db)
+        try:
+            result = service.merge_audio(
+                source_audio_path=req.sourceAudioPath,
+                accompaniment_url=req.accompanimentUrl
+            )
+            return success_response(data=result, message="合并成功")
+        except ValueError as e:
+            return error_response(error="MergeError", message=str(e), code=500)
 
 
-from src.service import fish_voice
-
-
-# # 语音克隆
 @router.post("/fish_voice")
-async def fish_voice_tts_endpoint(req: FishVoiceTTSReq, db: Session = Depends(get_db)):
+async def fish_voice_tts_endpoint(
+    req: FishVoiceTTSReq,
+    service: AudioService = Depends(get_audio_service)
+):
+    """生成语音（Fish Speech TTS）
+
+    Args:
+        req.text: 要合成的文本
+        req.audio_source_id: 音色ID，-1表示使用自定义参考音频
+        req.speed_factor: 语速因子 (1.0为正常语速)
+        req.top_p: 采样概率阈值 (控制生成多样性)
+        req.temperature: 温度参数 (控制随机性)
+        req.repetition_penalty: 重复惩罚因子 (避免重复)
+        req.references_audio: 参考音频(base64编码的音频字符串)
+        req.references_text: 参考音频文本
     """
-      生成语音
-      :param req.text: 要合成的文本
-      :param req.seed: 随机种子
-      :param req.speed_factor: 语速因子 (1.0为正常语速)
-      :param req.output_format: 输出格式 (wav/pcm/mp3)
-      :param req.top_p: 采样概率阈值 (控制生成多样性)
-      :param req.temperature: 温度参数 (控制随机性)
-      :param req.repetition_penalty: 重复惩罚因子 (避免重复)
-      :param req.references_audio: 参考音频(base64编码的音频字符串)
-      :param req.references_text: 参考音频文本
-      """
-    references  = []
-    output_format = "wav"
-    if req.audio_source_id == -1:
-        if req.references_audio is not None:
-            references = [{
-                # 实际使用base64编码的音频字符串
-                "audio": req.references_audio,
-                "text": req.references_text
-            }]
-        audio_data = fish_voice.fish_voice(req.text, output_format, references, req.seed, req.speed_factor, req.top_p,
-                                           req.temperature, req.repetition_penalty)
-    else:
-        audio_obj = db.query(AudioSource).filter(AudioSource.id == req.audio_source_id).first()
-        if not audio_obj:
-            raise ValueError("Audio source not found")
-        web_path = os.path.join(config.ROOT_DIR_WIN, config.source_audios_dir, audio_obj.web_path)
-
-        references = [{
-            # 实际使用base64编码的音频字符串
-            "audio": file_util.audio_to_base64(web_path),
-            "text": audio_obj.prompt_text
-        }]
-        audio_data = fish_voice.fish_voice(req.text, output_format, references, audio_obj.seed, audio_obj.speed, audio_obj.top_p,
-                                           audio_obj.temperature, audio_obj.repetition_penalty)
-
-    filename = f"{uuid.uuid4().hex}.{output_format}"
-    file_path = os.path.join(config.UPLOAD_DIR, filename)
-    # 保存结果
-    with open(file_path, "wb") as f:
-        f.write(audio_data)
-    return {"webPath": config.UPLOAD_DIR + filename}
+    try:
+        result = service.generate_fish_speech_tts(
+            text=req.text,
+            audio_source_id=req.audio_source_id,
+            seed=req.seed,
+            speed_factor=req.speed_factor,
+            top_p=req.top_p,
+            temperature=req.temperature,
+            repetition_penalty=req.repetition_penalty,
+            references_audio=req.references_audio,
+            references_text=req.references_text
+        )
+        return success_response(data=result, message="语音生成成功")
+    except ValueError as e:
+        return error_response(error="TTSError", message=str(e), code=500)
+    except Exception as e:
+        logger.error(f"语音生成失败: {e}")
+        return error_response(error="TTSError", message=f"语音生成失败: {str(e)}", code=500)
 
 
-# 获取随机音色
 @router.get("/get_random_audio")
-def get_random_audio(db: Session = Depends(get_db)):
-    audio_obj = db.query(AudioSource).filter(
-        AudioSource.del_flag == False
-    ).order_by(func.random()).limit(1).first()
-    if audio_obj:
-        audio_dict = {
-            "id": audio_obj.id,
-            "audio_name": audio_obj.audio_name,
-            "prompt_text": audio_obj.prompt_text,
-            "web_path": audio_obj.web_path,
-            "seed": audio_obj.seed,
-            "speed": audio_obj.speed,
-            "top_p": audio_obj.top_p,
-            "temperature": audio_obj.temperature,
-            "repetition_penalty": audio_obj.repetition_penalty,
-            "create_time": audio_obj.create_time,
-        }
-        return audio_dict
-    return None
+def get_random_audio(
+    service: AudioService = Depends(get_audio_service)
+):
+    """获取随机音色"""
+    try:
+        audio_obj = service.repository.get_random_active()
+        if audio_obj:
+            return success_response(data=service.repository.to_dict(audio_obj), message="获取成功")
+        return error_response(error="NotFound", message="没有可用的音色", code=404)
+    except Exception as e:
+        logger.error(f"获取随机音色失败: {e}")
+        return error_response(error="DatabaseError", message=f"获取失败: {str(e)}", code=500)

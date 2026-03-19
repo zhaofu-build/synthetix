@@ -7,6 +7,19 @@ from dotenv import load_dotenv
 # 加载环境变量
 load_dotenv()
 
+# 导入常量
+try:
+    from src.constants import APIConfig, DirectoryConfig
+except ImportError:
+    # 如果常量模块不可用，使用默认值
+    class APIConfig:
+        DEFAULT_API_PORT = 9527
+        DEFAULT_WEB_PORT = 9528
+    class DirectoryConfig:
+        UPLOAD_DIR = "static/uploads/"
+        SOURCE_VIDEOS_DIR = "static/source_videos/"
+        SOURCE_AUDIOS_DIR = "static/source_timbre/"
+
 
 # 获取程序执行目录
 def _get_executable_path():
@@ -24,14 +37,16 @@ ROOT_DIR = _get_executable_path()
 _root_path = Path(ROOT_DIR)
 
 
-api_host = 9527
-web_host = 9528
+# API 端口配置
+api_host = int(os.getenv('API_PORT', str(APIConfig.DEFAULT_API_PORT)))
+web_host = int(os.getenv('WEB_PORT', str(APIConfig.DEFAULT_WEB_PORT)))
 listenport = 9529
 
-UPLOAD_DIR = "static/uploads/"
-source_videos_dir = "static/source_videos/"
-source_bgm_dir = "static/source_bgm/"
-source_audios_dir = "static/source_timbre/"
+# 目录配置
+UPLOAD_DIR = DirectoryConfig.UPLOAD_DIR
+source_videos_dir = DirectoryConfig.SOURCE_VIDEOS_DIR
+source_bgm_dir = DirectoryConfig.SOURCE_BGM_DIR
+source_audios_dir = DirectoryConfig.SOURCE_AUDIOS_DIR
 
 # 数据库配置
 database_path = ROOT_DIR_WIN / "src" / "db" / "we_library.db"
@@ -55,7 +70,7 @@ proxy = os.getenv('PROXY', '')
 
 
 # 模型配置
-MODEL_CACHE_DIR = "D:/hf-model"
+MODEL_CACHE_DIR = DirectoryConfig.MODEL_CACHE_DIR
 
 
 class ModelType(Enum):

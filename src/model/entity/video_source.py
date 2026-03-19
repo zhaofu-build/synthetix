@@ -1,11 +1,19 @@
 """视频素材表实体模型"""
-from sqlalchemy import Column, Integer, String, Text, TIMESTAMP, SmallInteger, func
+from sqlalchemy import Column, Integer, String, Text, TIMESTAMP, SmallInteger, func, Index
 
 from src.model.base import Base
 
 class VideoSource(Base):
     """视频素材表"""
     __tablename__ = 'video_source'
+
+    # 定义索引
+    __table_args__ = (
+        Index('idx_video_type', 'video_type'),
+        Index('idx_del_flag', 'del_flag'),
+        Index('idx_create_time', 'create_time'),
+        Index('idx_video_type_del_flag', 'video_type', 'del_flag'),
+    )
     
     # 主键，自动递增
     id = Column(Integer, primary_key=True, autoincrement=True, comment='主键ID')

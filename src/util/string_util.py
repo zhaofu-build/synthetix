@@ -1,5 +1,8 @@
 import json
 import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def sanitize_title(title):
@@ -48,9 +51,7 @@ def parse_srt(srt_text):
         end = end_time
         subs.append({'start': start, 'end': end, 'content': content})
     for sub in subs:
-        print(f"Start: {sub['start']}s")
-        print(f"End: {sub['end']}s")
-        print(f"Content: {sub['content']}\n")
+        logger.debug(f"字幕: Start={sub['start']}s, End={sub['end']}s, Content={sub['content'][:50]}...")
 
 
 # 设置ass字体格式

@@ -77,3 +77,10 @@ langchain-community==0.3.7
 # langchain-cloudflare==0.0.3
 
 # git+https://github.com/fishaudio/fish-speech.git
+
+
+# Testing dependencies
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.11.0
