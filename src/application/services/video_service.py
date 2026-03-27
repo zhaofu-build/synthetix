@@ -11,8 +11,12 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 from sqlalchemy.orm import Session
 
-import config
-from src.application.services import use_ffmpeg, use_fast_whisper, video_downloader
+from src import config
+from src.application.services import (
+    ffmpeg_adapter as use_ffmpeg,
+    whisper_adapter as use_fast_whisper,
+    video_downloader_adapter as video_downloader
+)
 from src.shared.utils import time_util, file_util
 from src.infrastructure.repositories import VideoRepository
 
@@ -31,11 +35,6 @@ class VideoService:
         """
         self.db = db
         self._repository = VideoRepository(db)
-
-    @property
-    def repository(self) -> VideoRepository:
-        """获取视频仓储"""
-        return self._repository
 
     def upload_video_file(
         self,
@@ -574,3 +573,56 @@ class VideoService:
             "page_size": page_size,
             "total_pages": total_pages
         }
+
+    def get_video_by_id(self, video_id: int) -> Optional[Dict[str, Any]]:
+        """
+        根据 ID 获取视频信息
+
+        Args:
+            video_id: 视频 ID
+
+        Returns:
+            视频信息字典，不存在则返回 None
+        """
+        video_obj = self._repository.get_by_id(video_id)
+        return video_obj.to_dict() if video_obj else None
+
+    def get_random_video(self, video_type: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """
+        获取随机视频
+
+        Args:
+            video_type: 视频类型过滤（可选）
+
+        Returns:
+            随机视频信息字典，不存在则返回 None
+        """
+        video_obj = self._repository.get_random_active(video_type=video_type)
+        return video_obj.to_dict() if video_obj else None
+
+    def update_video(self, video_id: int, **kwargs) -> Optional[Dict[str, Any]]:
+        """
+        更新视频信息
+
+        Args:
+            video_id: 视频 ID
+            **kwargs: 要更新的属性
+
+        Returns:
+            更新后的视频信息字典，不存在则返回 None
+        """
+        video_obj = self._repository.update(video_id, **kwargs)
+        return video_obj.to_dict() if video_obj else None
+
+    def update_video_description(self, video_id: int, description: str) -> bool:
+        """
+        更新视频描述
+
+        Args:
+            video_id: 视频 ID
+            description: 新的描述内容
+
+        Returns:
+            更新成功返回 True
+        """
+        return self._repository.update_description(video_id, description) is not None

@@ -8,29 +8,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # 导入常量
-try:
-    from src.constants import APIConfig, DirectoryConfig
-except ImportError:
-    # 如果常量模块不可用，使用默认值
-    class APIConfig:
-        DEFAULT_API_PORT = 9527
-        DEFAULT_WEB_PORT = 9528
-    class DirectoryConfig:
-        UPLOAD_DIR = "static/uploads/"
-        SOURCE_VIDEOS_DIR = "static/source_videos/"
-        SOURCE_AUDIOS_DIR = "static/source_timbre/"
+from src.shared.constants import APIConfig, DirectoryConfig
 
 
 # 获取程序执行目录
 def _get_executable_path():
     if getattr(sys, 'frozen', False):
-        # 如果程序是被“冻结”打包的，使用这个路径
+        # 如果程序是被"冻结"打包的，使用这个路径
         return Path(sys.executable).parent.as_posix()
     else:
-        return Path(__file__).parent.parent.parent.as_posix()
+        return Path(__file__).parent.parent.resolve()
 
 
-ROOT_DIR_WIN = Path(__file__).parent.resolve()
+ROOT_DIR_WIN = Path(__file__).parent.parent.resolve()
 
 # 程序根目录
 ROOT_DIR = _get_executable_path()
@@ -49,7 +39,7 @@ source_bgm_dir = DirectoryConfig.SOURCE_BGM_DIR
 source_audios_dir = DirectoryConfig.SOURCE_AUDIOS_DIR
 
 # 数据库配置
-database_path = ROOT_DIR_WIN / "src" / "db" / "we_library.db"
+database_path = ROOT_DIR_WIN / "src" / "db" / "synthetix.db"
 # alembic配置
 alembic_path = ROOT_DIR_WIN / "alembic" / "versions"
 

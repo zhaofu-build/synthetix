@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from contextlib import contextmanager
 from typing import Generator
-import config
+from src import config
 # 数据库文件路径
 DATABASE_URL = f"sqlite:///{config.database_path}"
 

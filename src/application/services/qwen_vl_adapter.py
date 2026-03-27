@@ -1,7 +1,7 @@
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
 import threading
-from config import MODEL_CACHE_DIR
+from src.config import MODEL_CACHE_DIR
 from src.shared.utils.modelscope_util import ModelScopeUtil
 
 # 全局模型和处理器变量

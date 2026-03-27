@@ -4,7 +4,7 @@ ModelScope工具类，用于处理ModelScope模型下载和管理功能
 from modelscope import snapshot_download
 import os
 import logging
-from config import MODEL_CACHE_DIR
+from src.config import MODEL_CACHE_DIR
 
 
 class ModelScopeUtil:

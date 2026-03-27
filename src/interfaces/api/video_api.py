@@ -14,10 +14,17 @@ from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Depends, Query, Path as PathParam
 from sqlalchemy.orm import Session
 
-import config
-from src.shared.models.base import BaseReq
+from src import config
 from src.shared.models.response import success_response, error_response
 from src.shared.models.request import VideoUpdateRequest, VideoProcessRequest, TranscribeRequest
+from src.interfaces.api.schemas.video_schemas import (
+    VideoDownloadRequest,
+    VideoExtractFrameRequest,
+    VideoExtractAudioRequest,
+    VideoAddAudioRequest,
+    VideoAddSubtitleRequest,
+    BatchCompressRequest,
+)
 from src.infrastructure.db.session import get_db
 from src.application.services.video_service import VideoService
 
@@ -40,24 +47,8 @@ def get_videos(
     service: VideoService = Depends(get_video_service)
 ):
     """获取视频素材列表（分页）"""
-    filters = {}
-    if video_type is not None:
-        filters['video_type'] = video_type
-
-    total = service.repository.count(filters=filters)
-    skip = (page - 1) * page_size
-    items = service.repository.get_all(skip=skip, limit=page_size, filters=filters)
-
-    return success_response(
-        data={
-            "items": service.repository.bulk_to_dict(items),
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 0
-        },
-        message="获取素材列表成功"
-    )
+    result = service.get_paginated_videos(page=page, page_size=page_size, video_type=video_type)
+    return success_response(data=result, message="获取素材列表成功")
 
 
 @router.post("", summary="上传视频")
@@ -83,9 +74,9 @@ def get_random_video(
     service: VideoService = Depends(get_video_service)
 ):
     """获取随机视频"""
-    video_obj = service.repository.get_random_active(video_type=video_type)
-    if video_obj:
-        return success_response(data=service.repository.to_dict(video_obj), message="获取成功")
+    video_data = service.get_random_video(video_type=video_type)
+    if video_data:
+        return success_response(data=video_data, message="获取成功")
     return error_response(error="NotFound", message="没有可用的视频", code=404)
 
 
@@ -93,7 +84,7 @@ def get_random_video(
 
 @router.post("/download", summary="下载视频")
 async def download_video(
-    req: BaseReq,
+    req: VideoDownloadRequest,
     service: VideoService = Depends(get_video_service)
 ):
     """从URL下载视频"""
@@ -135,7 +126,7 @@ async def process_video(
 
 @router.post("/extract-frame", summary="提取视频帧")
 async def extract_frame(
-    req: BaseReq,
+    req: VideoExtractFrameRequest,
     service: VideoService = Depends(get_video_service)
 ):
     """提取视频帧为图片"""
@@ -148,7 +139,7 @@ async def extract_frame(
 
 @router.post("/extract-audio", summary="提取音频")
 async def extract_audio(
-    req: BaseReq,
+    req: VideoExtractAudioRequest,
     service: VideoService = Depends(get_video_service)
 ):
     """从视频中提取音频"""
@@ -161,7 +152,7 @@ async def extract_audio(
 
 @router.post("/add-audio", summary="添加音频")
 async def add_audio(
-    req: BaseReq,
+    req: VideoAddAudioRequest,
     service: VideoService = Depends(get_video_service)
 ):
     """添加音频到视频"""
@@ -197,7 +188,7 @@ async def transcribe(
 
 @router.post("/subtitle", summary="添加字幕")
 async def add_subtitle(
-    req: BaseReq,
+    req: VideoAddSubtitleRequest,
     service: VideoService = Depends(get_video_service)
 ):
     """为视频添加字幕"""
@@ -219,10 +210,10 @@ async def add_subtitle(
 # ==================== 批量操作 ====================
 
 @router.post("/compress", summary="批量压缩")
-def batch_compress(req: BaseReq):
+def batch_compress(req: BatchCompressRequest):
     """启动批量视频压缩任务"""
     from src.shared.utils import file_util
-    from src.application.services import use_ffmpeg
+    from src.application.services import ffmpeg_adapter as use_ffmpeg
 
     logger.info("启动批量视频压缩任务")
     use_ffmpeg.batch_compress_videos(
@@ -242,10 +233,10 @@ def get_video(
     service: VideoService = Depends(get_video_service)
 ):
     """获取视频详情"""
-    video_obj = service.repository.get_by_id(video_id)
-    if not video_obj:
+    video_data = service.get_video_by_id(video_id)
+    if not video_data:
         return error_response(error="NotFound", message=f"视频 {video_id} 不存在", code=404)
-    return success_response(data=service.repository.to_dict(video_obj), message="获取成功")
+    return success_response(data=video_data, message="获取成功")
 
 
 @router.patch("/{video_id}", summary="更新视频信息")
@@ -273,8 +264,8 @@ def update_video(
     if req.del_flag is not None:
         update_data['del_flag'] = req.del_flag
 
-    video_obj = service.repository.update(video_id, **update_data)
-    if video_obj:
+    video_data = service.update_video(video_id, **update_data)
+    if video_data:
         return success_response(data={"id": video_id}, message="更新成功")
     return error_response(error="NotFound", message=f"视频 {video_id} 不存在", code=404)
 
@@ -298,16 +289,16 @@ def get_video_description(
     service: VideoService = Depends(get_video_service)
 ):
     """获取视频描述（通过 AI 分析）"""
-    video_obj = service.repository.get_by_id(video_id)
-    if not video_obj:
+    video_data = service.get_video_by_id(video_id)
+    if not video_data:
         return error_response(error="NotFound", message=f"视频 {video_id} 不存在", code=404)
 
     try:
         from src.service.video_summary import video_summary
-        description = video_summary(video_obj.local_path, None)
+        description = video_summary(video_data.get("local_path"), None)
     except ImportError:
         logger.warning(f"video_summary 模块不可用，跳过描述生成")
         description = ""
 
-    service.repository.update_description(video_id, description)
+    service.update_video_description(video_id, description)
     return success_response(data={"description": description}, message="获取描述成功")

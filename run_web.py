@@ -13,8 +13,7 @@ import logging
 import signal
 import sys
 import os
-import config as config
-import log_config
+from src import config, log_config
 
 # 获取日志记录器
 logger = logging.getLogger(__name__)

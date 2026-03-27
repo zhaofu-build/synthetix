@@ -3,7 +3,7 @@
 """
 import logging
 from typing import Optional, List, Dict, Any
-import config
+from src import config
 from src.shared.utils.langchain_llm_util import (
     convert_messages,
     handle_g4f,

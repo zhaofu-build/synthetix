@@ -3,10 +3,10 @@ import os
 os.environ["translators_default_region"] = "EN"
 
 from faster_whisper import WhisperModel
-import config
+from src import config
 import torch
 
-from src.application.services import use_translation
+from src.application.services import translation_adapter as use_translation
 
 
 def transcribe(audio_path, model_type, output_format_type, is_translate, subtitle_double,

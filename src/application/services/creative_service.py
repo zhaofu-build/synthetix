@@ -8,10 +8,13 @@ from typing import List, Dict, Any, Optional
 
 from sqlalchemy.orm import Session
 
-from src.application.services import video_downloader
-from src.application.services import use_langchain_llm, use_ffmpeg
+from src.application.services import (
+    video_downloader_adapter as video_downloader,
+    llm_adapter as use_langchain_llm,
+    ffmpeg_adapter as use_ffmpeg
+)
 from src.shared.utils import string_util, prompt_config
-import config
+from src import config
 from src.infrastructure.db.session import get_db_context
 from src.domain.entities.video_source import VideoSource
 

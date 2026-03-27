@@ -113,7 +113,6 @@ class DownloadVideoRequest(BaseModel):
 
 class VideoUpdateRequest(BaseModel):
     """视频信息更新请求"""
-    id: int = Field(..., ge=1, description="视频ID")
     video_name: Optional[str] = Field(None, min_length=1, max_length=255, description="视频名称")
     web_path: Optional[str] = Field(None, max_length=500, description="Web路径")
     local_path: Optional[str] = Field(None, max_length=500, description="本地路径")

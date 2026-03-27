@@ -9,8 +9,7 @@ os.environ['HF_HOME'] = 'D:/hf-model'
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-import log_config
-import config
+from src import log_config, config
 from src.infrastructure.db.alembic_manager import init_database_with_alembic
 from src.interfaces.api.svc_api import router as audio_api
 from src.interfaces.api.tool_api import router as tool_api

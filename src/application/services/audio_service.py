@@ -11,8 +11,11 @@ from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
 
 import soundfile as sf
-import config
-from src.application.services import dh_live, fish_voice
+from src import config
+from src.application.services import (
+    dh_live_adapter as dh_live,
+    fish_speech_adapter as fish_voice
+)
 from src.shared.utils import string_util, file_util
 from src.infrastructure.repositories import AudioRepository
 
@@ -31,11 +34,6 @@ class AudioService:
         """
         self.db = db
         self._repository = AudioRepository(db)
-
-    @property
-    def repository(self) -> AudioRepository:
-        """获取音频仓储"""
-        return self._repository
 
     def save_timbre(
         self,
@@ -485,3 +483,26 @@ class AudioService:
             "temperature": audio_obj.temperature,
             "repetition_penalty": audio_obj.repetition_penalty,
         }
+
+    def get_audio_by_id(self, audio_id: int) -> Optional[Dict[str, Any]]:
+        """
+        根据 ID 获取音色信息
+
+        Args:
+            audio_id: 音色 ID
+
+        Returns:
+            音色信息字典，不存在则返回 None
+        """
+        audio_obj = self._repository.get_by_id(audio_id)
+        return audio_obj.to_dict() if audio_obj else None
+
+    def get_random_audio(self) -> Optional[Dict[str, Any]]:
+        """
+        获取随机音色
+
+        Returns:
+            随机音色信息字典，不存在则返回 None
+        """
+        audio_obj = self._repository.get_random_active()
+        return audio_obj.to_dict() if audio_obj else None

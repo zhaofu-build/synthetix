@@ -7,7 +7,7 @@
 """
 from fastapi import APIRouter, UploadFile, File, Depends
 import os
-import config
+from src import config
 from src.application.services import use_ffmpeg
 from src.shared.utils import file_util
 from src.shared.models.base import BaseReq

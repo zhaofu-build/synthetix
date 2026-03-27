@@ -148,11 +148,10 @@ def clean_upload_dir(clean_dir):
 
 # 配置缓存
 _config_cache: dict = None
-_config_mtime: float = 0
 
 
 def load_config(use_cache: bool = True) -> dict:
-    """读取配置文件到字典（带缓存）
+    """读取配置到字典（带缓存）
 
     Args:
         use_cache: 是否使用缓存，默认为True
@@ -160,78 +159,46 @@ def load_config(use_cache: bool = True) -> dict:
     Returns:
         配置字典
     """
-    global _config_cache, _config_mtime
+    global _config_cache
 
     # 检查缓存
     if use_cache and _config_cache is not None:
-        try:
-            current_mtime = os.path.getmtime('config.py')
-            if current_mtime == _config_mtime:
-                return _config_cache
-        except FileNotFoundError:
-            pass
+        return _config_cache
 
-    config = {}
+    # 从 src.config 模块获取配置
     try:
-        with open('config.py', 'r', encoding='utf-8') as f:
-            tree = ast.parse(f.read())
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Assign):
-                    for target in node.targets:
-                        if isinstance(target, ast.Name):
-                            try:
-                                value = ast.literal_eval(node.value)
-                            except (ValueError, SyntaxError):
-                                # 无法解析的字面量，跳过
-                                value = None
-                            config[target.id] = value
+        from src import config as src_config
+        import inspect
 
-        # 更新缓存
+        config = {}
+        # 获取模块中的所有变量（排除私有变量和函数）
+        for name, value in inspect.getmembers(src_config):
+            if not name.startswith('_') and not inspect.isfunction(value) and not inspect.isclass(value) and not inspect.ismodule(value):
+                config[name] = value
+
         _config_cache = config
-        try:
-            _config_mtime = os.path.getmtime('config.py')
-        except FileNotFoundError:
-            _config_mtime = 0
+        return config
 
-    except FileNotFoundError:
-        logger.warning("配置文件 config.py 未找到，使用默认配置")
+    except ImportError as e:
+        logger.warning(f"无法导入配置模块: {e}")
+        return {}
     except Exception as e:
-        logger.error(f"读取配置文件失败: {e}")
-
-    return config
+        logger.error(f"读取配置失败: {e}")
+        return {}
 
 
 def clear_config_cache():
     """清除配置缓存"""
-    global _config_cache, _config_mtime
+    global _config_cache
     _config_cache = None
-    _config_mtime = 0
 
 
 def update_value(key: str, value):
-    """更新配置文件"""
-    try:
-        with open('config.py', 'r+', encoding='utf-8') as f:
-            content = f.read()
-
-            # 保留注释的替换逻辑
-            new_content = re.sub(
-                rf'^(\s*{key}\s*=\s*)(.*?)(\s*#.*)?$',
-                rf'\g<1>{repr(value)}\g<3>',
-                content,
-                flags=re.MULTILINE
-            )
-
-            # 如果没找到配置项则追加
-            # if new_content == content:
-            #     new_content += f"\n{key} = {repr(value)}\n"
-
-            f.seek(0)
-            f.write(new_content)
-            f.truncate()
-    except FileNotFoundError:
-        with open('config.py', 'w') as f:
-            f.write(f"{key} = {repr(value)}")
+    """更新配置值（仅更新缓存，不写入文件）"""
+    global _config_cache
+    if _config_cache is not None:
+        _config_cache[key] = value
+    logger.warning(f"配置项 {key} 已更新为 {value}（仅缓存，未持久化）")
 
 
 def audio_to_base64(file_path: str) -> str:

@@ -5,7 +5,7 @@ import os
 from alembic.config import Config
 from alembic import command
 import logging
-import config as alconfig
+from src import config as alconfig
 logger = logging.getLogger(__name__)
 
 

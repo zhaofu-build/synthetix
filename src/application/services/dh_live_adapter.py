@@ -1,6 +1,6 @@
 from audio_separator.separator import Separator
 from pydub import AudioSegment
-import config
+from src import config
 
 
 # 分离人声与伴奏

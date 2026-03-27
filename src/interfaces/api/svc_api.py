@@ -10,9 +10,14 @@ from typing import Optional
 from fastapi import APIRouter, UploadFile, Form, File, Depends, Query, Path as PathParam
 from sqlalchemy.orm import Session
 
-import config
-from src.shared.models.base import BaseReq, FishVoiceTTSReq
+from src import config
 from src.shared.models.response import success_response, error_response
+from src.interfaces.api.schemas.audio_schemas import (
+    FishSpeechTTSRequest,
+    SovitsTTSRequest,
+    AudioSeparateRequest,
+    AudioMergeRequest,
+)
 from src.infrastructure.db.session import get_db
 from src.application.services.audio_service import AudioService
 import logging
@@ -36,24 +41,8 @@ def get_audios(
 ):
     """获取音色列表（分页）"""
     logger.info(f"get_audios request: page={page}, page_size={page_size}")
-
-    total = service.repository.count_active()
-    logger.info(f"count_active result: {total}")
-
-    skip = (page - 1) * page_size
-    items = service.repository.get_active_audios(skip=skip, limit=page_size)
-    logger.info(f"get_active_audios result: {len(items)} items")
-
-    return success_response(
-        data={
-            "items": service.repository.bulk_to_dict(items, include_web_path=True),
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 0
-        },
-        message="获取音色列表成功"
-    )
+    result = service.get_paginated_audios(page=page, page_size=page_size)
+    return success_response(data=result, message="获取音色列表成功")
 
 
 @router.post("", summary="创建音色")
@@ -95,9 +84,9 @@ def get_random_audio(
 ):
     """获取随机音色"""
     try:
-        audio_obj = service.repository.get_random_active()
-        if audio_obj:
-            return success_response(data=service.repository.to_dict(audio_obj), message="获取成功")
+        audio_data = service.get_random_audio()
+        if audio_data:
+            return success_response(data=audio_data, message="获取成功")
         return error_response(error="NotFound", message="没有可用的音色", code=404)
     except Exception as e:
         logger.error(f"获取随机音色失败: {e}")
@@ -110,10 +99,10 @@ def get_audio(
     service: AudioService = Depends(get_audio_service)
 ):
     """获取音色详情"""
-    audio_obj = service.repository.get_by_id(audio_id)
-    if not audio_obj:
+    audio_data = service.get_audio_by_id(audio_id)
+    if not audio_data:
         return error_response(error="NotFound", message=f"音色 {audio_id} 不存在", code=404)
-    return success_response(data=service.repository.to_dict(audio_obj), message="获取成功")
+    return success_response(data=audio_data, message="获取成功")
 
 
 @router.delete("/{audio_id}", summary="删除音色")
@@ -133,7 +122,7 @@ def delete_audio(
 
 @router.post("/tts/fish-speech", summary="Fish Speech TTS")
 async def fish_speech_tts(
-    req: FishVoiceTTSReq,
+    req: FishSpeechTTSRequest,
     service: AudioService = Depends(get_audio_service)
 ):
     """生成语音（Fish Speech TTS）
@@ -170,24 +159,22 @@ async def fish_speech_tts(
 
 @router.post("/tts/sovits-v4", summary="SoVITS V4 语音克隆")
 async def sovits_v4_tts(
-    req: BaseReq,
+    req: SovitsTTSRequest,
     service: AudioService = Depends(get_audio_service)
 ):
     """语音克隆（SoVITS V4）"""
     try:
-        req_dict = req.dict()
-
         result = service.generate_sovits_tts(
-            text=req_dict.get("text", ""),
-            ref_wav_path=req_dict.get("ref_wav_path", ""),
-            prompt_text=req_dict.get("prompt_text", None),
-            prompt_language=req_dict.get("prompt_language", None),
-            text_language=req_dict.get("text_language", None),
-            how_to_cut=req_dict.get("how_to_cut", None),
-            top_k=req_dict.get("top_k", None),
-            top_p=req_dict.get("top_p", None),
-            temperature=req_dict.get("temperature", None),
-            speed=req_dict.get("speed", None),
+            text=req.text,
+            ref_wav_path=req.ref_wav_path,
+            prompt_text=req.prompt_text,
+            prompt_language=req.prompt_language,
+            text_language=req.text_language,
+            how_to_cut=req.how_to_cut,
+            top_k=req.top_k,
+            top_p=req.top_p,
+            temperature=req.temperature,
+            speed=req.speed,
         )
         return success_response(data=result, message="语音生成成功")
     except ValueError as e:
@@ -198,7 +185,7 @@ async def sovits_v4_tts(
 
 @router.post("/separate", summary="分离音频")
 async def separate_audio(
-    req: BaseReq,
+    req: AudioSeparateRequest,
     service: AudioService = Depends(get_audio_service)
 ):
     """分离音频和伴奏"""
@@ -211,7 +198,7 @@ async def separate_audio(
 
 @router.post("/merge", summary="合并音频")
 async def merge_audio(
-    req: BaseReq,
+    req: AudioMergeRequest,
     service: AudioService = Depends(get_audio_service)
 ):
     """合并伴奏"""

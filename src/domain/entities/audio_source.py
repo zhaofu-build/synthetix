@@ -5,9 +5,10 @@
 from sqlalchemy import Column, Integer, Text, TIMESTAMP, SmallInteger, Float, func, Index
 
 from src.domain.entities.base import Base
+from src.domain.entities.mixins import ToDictMixin
 
 
-class AudioSource(Base):
+class AudioSource(Base, ToDictMixin):
     """音频素材表"""
     __tablename__ = 'audio_source'
 

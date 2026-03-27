@@ -4,7 +4,7 @@ import logging
 import yt_dlp
 from src.shared.utils.string_util import sanitize_title
 from src.shared.utils import time_util
-import config
+from src import config
 import requests
 from urllib.parse import urlencode
 from src.infrastructure.db.session import get_db_context
@@ -200,7 +200,7 @@ def download_video(video_info):
             if chunk:
                 f.write(chunk)
     # 保存到数据库
-    from src.application.services import use_ffmpeg
+    from src.application.services import ffmpeg_adapter as use_ffmpeg
     video_info_detail = use_ffmpeg.get_video_info(filepath)
     video_data = {
         "video_name": filename,

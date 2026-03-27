@@ -5,9 +5,10 @@
 from sqlalchemy import Column, Integer, Text, TIMESTAMP, SmallInteger, func, Index
 
 from src.domain.entities.base import Base
+from src.domain.entities.mixins import ToDictMixin
 
 
-class VideoSource(Base):
+class VideoSource(Base, ToDictMixin):
     """视频素材表"""
     __tablename__ = 'video_source'
 

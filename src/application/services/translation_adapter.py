@@ -45,7 +45,7 @@ def batch_translate(texts, to_lang='zh', translator_server='bing'):
 def translator_build(messages, to_language='zh', translator_server='bing'):
     # llm大模型翻译
     if translator_server == "ollama":
-        from src.application.services import use_langchain_llm
+        from src.application.services import llm_adapter as use_langchain_llm
         from src.shared.utils.prompt_config import llm_translate
         return use_langchain_llm.generate_response(
             messages=[{"role": "user", "content": llm_translate}]

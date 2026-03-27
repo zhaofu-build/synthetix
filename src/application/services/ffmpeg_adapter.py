@@ -3,7 +3,7 @@ from pathlib import Path
 from src.shared.utils.file_util import get_download_folder, get_file_name, get_file_suffix, get_file_name_no_suffix, del_file
 from src.shared.utils import time_util, string_util, ffmpeg_util, file_util
 import logging
-import config
+from src import config
 import time
 from src.infrastructure.db.session import get_db_context
 from src.domain.entities.video_source import VideoSource
