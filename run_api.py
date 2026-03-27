@@ -11,16 +11,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import log_config
 import config
-from src.db.alembic_manager import init_database_with_alembic
-from src.api.svc_api import router as api_interface
-from src.api.tool_api import router as api_tool
-from src.api.video_api import router as video_api
-from src.api.llm_clip_api import router as llm_clip_api
+from src.infrastructure.db.alembic_manager import init_database_with_alembic
+from src.interfaces.api.svc_api import router as audio_api
+from src.interfaces.api.tool_api import router as tool_api
+from src.interfaces.api.video_api import router as video_api
+from src.interfaces.api.llm_clip_api import router as ai_api
 
-from src.util import file_util
+from src.shared.utils import file_util
 
 # 导入异常处理器
-from src.exception import register_exception_handlers
+from src.shared.exceptions import register_exception_handlers
 
 
 logger = logging.getLogger(__name__)
@@ -57,11 +57,11 @@ app = FastAPI(
 # 注册全局异常处理器
 register_exception_handlers(app)
 
-# 注册 API 路由
-app.include_router(api_interface, tags=["语音克隆"])
-app.include_router(api_tool, tags=["工具"])
-app.include_router(video_api, tags=["视频处理"])
-app.include_router(llm_clip_api, tags=["AI对话与剪辑"])
+# 注册 API 路由（RESTful 风格，带前缀）
+app.include_router(audio_api, prefix="/api/audios", tags=["音频服务"])
+app.include_router(tool_api, prefix="/api/tools", tags=["工具服务"])
+app.include_router(video_api, prefix="/api/videos", tags=["视频服务"])
+app.include_router(ai_api, prefix="/api/ai", tags=["AI服务"])
 # app.include_router(video_generation_api, tags=["视频生成"])
 
 # ⚠️ 重要：CORS 中间件必须在其他中间件之前添加

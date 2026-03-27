@@ -13,9 +13,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # 导入 Base 和所有模型
-from src.model.base import Base
-from src.model.entity.audio_source import AudioSource
-from src.model.entity.video_source import VideoSource
+from src.domain.entities.base import Base
+from src.domain.entities.audio_source import AudioSource
+from src.domain.entities.video_source import VideoSource
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
