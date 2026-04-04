@@ -375,7 +375,7 @@ class VideoService:
         return {
             "filename": output_filename,
             "audio_path": output_dir + output_filename,
-            "audio_web_path": output_dir + output_filename,
+            "web_path": output_dir + output_filename,
             "local_path": str(output_path)
         }
 

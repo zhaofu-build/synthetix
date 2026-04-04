@@ -1,86 +1,36 @@
-uvicorn
-fastapi==0.115.4
-sqlalchemy==2.0.23
-alembic==1.13.1
-numpy>=1.26.0,<2.0.0
-huggingface_hub==0.30.2
+# ==================== Web 框架 ====================
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+python-multipart>=0.0.20
+
+# ==================== 数据库 ====================
+sqlalchemy>=2.0.37
+alembic>=1.14.0
+
+# ==================== HTTP 客户端 ====================
+httpx>=0.28.1
+requests>=2.32.0
+
+# ==================== 音频处理 ====================
+soundfile>=0.13.0
+pydub>=0.25.1
+mutagen>=1.47.0
+audio-separator>=0.24.0
+onnxruntime>=1.20.0
+
+# ==================== 视频处理 ====================
+yt-dlp>=2025.1.1
+
+# ==================== 工具库 ====================
+python-dotenv>=1.0.1
+PyYAML>=6.0.2
+tqdm>=4.67.0
 modelscope
-qwen_vl_utils
 
-yt_dlp
-faster_whisper==1.1.1
-# onnxruntime==1.18.1
-onnxruntime-gpu==1.23.2
-openai_whisper==20231117
-openai==1.77.0
-matplotlib
+# ==================== 翻译 ====================
+translators>=5.9.9
 
-alembic
-SQLAlchemy
-
-python-multipart==0.0.20
-python-dotenv==1.0.0
-x_transformers
-transformers==4.57.3
-jieba==0.42.1
-jieba_fast==0.53
-# g4f==0.5.2.1
-PyYAML==6.0.2
-regex==2024.7.24
-xxhash==3.5.0
-
-accelerate==1.6.0
-cn2an==0.5.23
-dashscope==1.23.2
-diffusers==0.33.1
-g2p_en==2.1.0
-pypinyin==0.54.0
-imageio==2.37.0
-Pillow==9.5.0
-opencv_python==4.11.0.86
-soundfile==0.12.1
-audio-separator==0.21.2
-# descript-audiotools  # Removed due to protobuf version conflict with onnx
-# descript-audio-codec  # Removed due to protobuf version conflict with onnx
-
-inflect==7.5.0
-librosa==0.10.2.post1
-mutagen==1.47.0
-nltk==3.9.1
-OpenCC==1.1.9
-peft==0.15.2
-pydub==0.25.1
-split_lang==2.1.0
-rotary_embedding_torch==0.6.5
-pytorch_lightning==2.5.1.post0
-torchmetrics==1.7.1
-tqdm==4.66.5
-translators==5.9.9
-typeguard==4.4.2
-wordsegment==1.3.1
-hydra-core>=1.3.2
-natsort>=8.4.0
-lightning>=2.1.0
-loralib>=0.1.2
-pyrootutils>=1.0.4
-
-
-
-
-# LangChain dependencies
-langchain==0.3.7
-langchain-openai==0.2.0
-langchain-core==0.3.17
-langchain-community==0.3.7
-# langchain-g4f==0.0.7
-# langchain-google-genai==2.0.8
-# langchain-cloudflare==0.0.3
-
-# git+https://github.com/fishaudio/fish-speech.git
-
-
-# Testing dependencies
-pytest>=7.4.0
-pytest-cov>=4.1.0
-pytest-asyncio>=0.21.0
-pytest-mock>=3.11.0
+# ==================== 测试 ====================
+pytest>=8.3.0
+pytest-cov>=6.0.0
+pytest-asyncio>=0.24.0

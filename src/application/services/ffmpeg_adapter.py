@@ -1,4 +1,9 @@
-import os, sys, json, subprocess, shutil
+import os
+import sys
+import json
+import subprocess
+import shutil
+import shlex
 from pathlib import Path
 from src.shared.utils.file_util import get_download_folder, get_file_name, get_file_suffix, get_file_name_no_suffix, del_file
 from src.shared.utils import time_util, string_util, ffmpeg_util, file_util
@@ -9,6 +14,48 @@ from src.infrastructure.db.session import get_db_context
 from src.domain.entities.video_source import VideoSource
 
 logger = logging.getLogger(__name__)
+
+
+def safe_path(path: str) -> str:
+    """
+    安全处理 FFmpeg 命令中的路径参数
+
+    Args:
+        path: 原始路径
+
+    Returns:
+        处理后的安全路径
+    """
+    # 统一使用正斜杠（FFmpeg 在 Windows 上也支持）
+    return str(path).replace('\\', '/')
+
+
+def validate_path(path: str, must_exist: bool = True) -> str:
+    """
+    验证并返回安全路径
+
+    Args:
+        path: 原始路径
+        must_exist: 是否必须存在
+
+    Returns:
+        验证后的安全路径
+
+    Raises:
+        ValueError: 路径无效或不存在
+    """
+    if not path:
+        raise ValueError("路径不能为空")
+
+    # 防止路径遍历攻击
+    normalized = os.path.normpath(path)
+    if '..' in normalized.split(os.sep):
+        raise ValueError("路径不能包含 '..'")
+
+    if must_exist and not os.path.exists(normalized):
+        raise ValueError(f"路径不存在: {normalized}")
+
+    return safe_path(normalized)
 
 
 def _video_source_to_dict(video_obj: VideoSource) -> dict:
@@ -394,9 +441,12 @@ def add_subtitle(video_path, subtitle_content, subtitle_type,
         str_to_ass(srt_file, ass_file)
         # 设置ass字体格式
         string_util.set_ass_font(ass_file, fontname, fontsize, fontcolor, fontbordercolor, subtitle_bottom)
+        # FFmpeg 字幕滤镜需要转义路径中的特殊字符（冒号、反斜杠）
+        # Windows 路径需要转义：C\:/path/to/file.ass
+        escaped_ass_path = ass_file.replace('\\', '/').replace(':', '\\:')
         cmd += [
             '-c:v', 'libx264',
-            '-vf', f"subtitles={ass_file}",
+            '-vf', f"subtitles='{escaped_ass_path}'",
             '-crf', '13',
             '-preset', "slow"
         ]

@@ -261,7 +261,8 @@ class AudioService:
         logger.info(f"语音生成成功: 文件名={filename}")
         return {
             "filename": filename,
-            "web_path": config.UPLOAD_DIR + filename
+            "web_path": config.UPLOAD_DIR + filename,
+            "local_path": file_path
         }
 
     def generate_sovits_tts(
@@ -361,10 +362,10 @@ class AudioService:
             vocal_url, accompaniment_url = dh_live.do_s(audio_path, output_dir)
             logger.info(f"音频分离成功")
             return {
-                "vocal_url": output_dir + vocal_url,
-                "vocal_web_url": output_dir + vocal_url,
-                "accompaniment_url": output_dir + accompaniment_url,
-                "accompaniment_web_url": output_dir + accompaniment_url
+                "vocal_path": output_dir + vocal_url,
+                "vocal_web_path": output_dir + vocal_url,
+                "accompaniment_path": output_dir + accompaniment_url,
+                "accompaniment_web_path": output_dir + accompaniment_url
             }
         except Exception as e:
             logger.error(f"音频分离失败: {e}")
@@ -394,8 +395,8 @@ class AudioService:
             final_url = dh_live.do_m(source_audio_path, accompaniment_url, output_dir)
             logger.info(f"音频合并成功")
             return {
-                "final_url": output_dir + final_url,
-                "final_web_url": output_dir + final_url
+                "merged_path": output_dir + final_url,
+                "merged_web_path": output_dir + final_url
             }
         except Exception as e:
             logger.error(f"音频合并失败: {e}")

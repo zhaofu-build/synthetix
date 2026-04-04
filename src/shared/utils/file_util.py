@@ -201,16 +201,32 @@ def update_value(key: str, value):
     logger.warning(f"配置项 {key} 已更新为 {value}（仅缓存，未持久化）")
 
 
-def audio_to_base64(file_path: str) -> str:
+def audio_to_base64(file_path: str, with_data_url: bool = True) -> str:
     """
     将音频文件转换为 Base64 编码的字符串
 
     :param file_path: 音频文件路径
+    :param with_data_url: 是否返回 data URL 格式 (data:audio/xxx;base64,...)
     :return: Base64 编码的字符串
     """
     with open(file_path, "rb") as audio_file:
         audio_data = audio_file.read()
-        return base64.b64encode(audio_data).decode("utf-8")
+        base64_str = base64.b64encode(audio_data).decode("utf-8")
+
+        if with_data_url:
+            # 检测音频格式
+            ext = os.path.splitext(file_path)[1].lower().lstrip('.')
+            mime_types = {
+                'wav': 'audio/wav',
+                'mp3': 'audio/mpeg',
+                'flac': 'audio/flac',
+                'ogg': 'audio/ogg',
+                'm4a': 'audio/mp4',
+            }
+            mime_type = mime_types.get(ext, 'audio/wav')
+            return f"data:{mime_type};base64,{base64_str}"
+
+        return base64_str
 
 
 async def save_uploaded_file(upload_file: "UploadFile", upload_dir: str, max_size_mb: int = 500) -> dict:
@@ -247,7 +263,7 @@ async def save_uploaded_file(upload_file: "UploadFile", upload_dir: str, max_siz
 
     return {
         "filename": filename,
-        "webPath": os.path.join(upload_dir, filename),
-        "localPath": os.path.abspath(file_path),
+        "web_path": os.path.join(upload_dir, filename).replace("\\", "/"),
+        "local_path": os.path.abspath(file_path),
         "size": total_size
     }

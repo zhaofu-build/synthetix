@@ -5,43 +5,56 @@
 
 路由前缀: /api/tools
 """
-from fastapi import APIRouter, UploadFile, File, Depends
-import os
+import logging
+from fastapi import APIRouter, UploadFile, File
+
 from src import config
 from src.application.services import use_ffmpeg
 from src.shared.utils import file_util
 from src.shared.models.base import BaseReq
 from src.shared.models.response import success_response, error_response
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 @router.post("/upload/video", summary="上传视频文件")
 async def upload_video(file_stream: UploadFile = File(...)):
     """上传视频文件并获取视频信息"""
-    file_info = await file_util.save_uploaded_file(file_stream, config.UPLOAD_DIR)
-    video_info = use_ffmpeg.get_video_info(file_info["localPath"])
-    return success_response(
-        data={
-            "webPath": file_info["webPath"],
-            "localPath": file_info["localPath"],
-            "duration": video_info["duration_hms"]
-        },
-        message="上传成功"
-    )
+    try:
+        file_info = await file_util.save_uploaded_file(file_stream, config.UPLOAD_DIR)
+        video_info = use_ffmpeg.get_video_info(file_info["local_path"])
+
+        # 统一使用 snake_case，success_response 会自动转换为 camelCase
+        return success_response(
+            data={
+                "web_path": file_info["web_path"],
+                "local_path": file_info["local_path"],
+                "duration": video_info.get("duration_hms", "00:00:00")
+            },
+            message="上传成功"
+        )
+    except Exception as e:
+        logger.error(f"上传视频失败: {e}", exc_info=True)
+        return error_response(error="UploadError", message=str(e), code=500)
 
 
 @router.post("/upload/file", summary="上传通用文件")
 async def upload_file(file_stream: UploadFile = File(...)):
     """上传通用文件"""
-    file_info = await file_util.save_uploaded_file(file_stream, config.UPLOAD_DIR)
-    return success_response(
-        data={
-            "webPath": file_info["webPath"],
-            "localPath": file_info["localPath"]
-        },
-        message="上传成功"
-    )
+    try:
+        file_info = await file_util.save_uploaded_file(file_stream, config.UPLOAD_DIR)
+
+        return success_response(
+            data={
+                "web_path": file_info["web_path"],
+                "local_path": file_info["local_path"]
+            },
+            message="上传成功"
+        )
+    except Exception as e:
+        logger.error(f"上传文件失败: {e}", exc_info=True)
+        return error_response(error="UploadError", message=str(e), code=500)
 
 
 @router.get("/config", summary="获取配置")

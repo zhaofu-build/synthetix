@@ -15,6 +15,7 @@ from src.interfaces.api.svc_api import router as audio_api
 from src.interfaces.api.tool_api import router as tool_api
 from src.interfaces.api.video_api import router as video_api
 from src.interfaces.api.llm_clip_api import router as ai_api
+from src.interfaces.api.core_nexus_api import router as core_nexus_api
 
 from src.shared.utils import file_util
 
@@ -61,6 +62,7 @@ app.include_router(audio_api, prefix="/api/audios", tags=["音频服务"])
 app.include_router(tool_api, prefix="/api/tools", tags=["工具服务"])
 app.include_router(video_api, prefix="/api/videos", tags=["视频服务"])
 app.include_router(ai_api, prefix="/api/ai", tags=["AI服务"])
+app.include_router(core_nexus_api, prefix="/api/nexus", tags=["Core-Nexus-AI"])
 # app.include_router(video_generation_api, tags=["视频生成"])
 
 # ⚠️ 重要：CORS 中间件必须在其他中间件之前添加

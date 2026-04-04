@@ -1,128 +1,131 @@
-from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
-from qwen_vl_utils import process_vision_info
-import threading
-from src.config import MODEL_CACHE_DIR
-from src.shared.utils.modelscope_util import ModelScopeUtil
+"""
+VL 视觉语言服务
 
-# 全局模型和处理器变量
-_model = None
-_processor = None
-_model_lock = threading.Lock()  # 模型初始化锁
-_min_pixels = 256 * 28 * 28
-_max_pixels = 1280 * 28 * 28
+通过 core-nexus-ai API 进行图像/视频理解
+"""
+import logging
+from typing import Optional
 
-# 模型工具实例
-_model_util = ModelScopeUtil(cache_dir=MODEL_CACHE_DIR)
+from src.shared.utils.core_nexus_client import get_client
+
+logger = logging.getLogger(__name__)
 
 
-def _initialize_model():
-    """初始化模型和处理器（线程安全）"""
-    global _model, _processor
-
-    if _model is None or _processor is None:
-        with _model_lock:
-            # 双重检查锁定
-            if _model is None or _processor is None:
-                # 下载模型（使用缓存避免重复下载）
-                model_dir = _model_util.download_model('Qwen/Qwen3-VL-2B-Instruct', cache_dir=MODEL_CACHE_DIR)
-                # model_dir = _model_util.download_model('Qwen/Qwen2.5-VL-7B-Instruct', cache_dir=MODEL_CACHE_DIR)
-
-                # 初始化模型（自动检测设备）
-                _model = Qwen3VLForConditionalGeneration.from_pretrained(
-                    model_dir,
-                    torch_dtype="auto",
-                    device_map="auto"
-                    # attn_implementation="flash_attention_2" # 启用flash_attention_2以获得更好的性能（推荐）
-                )
-
-                # 初始化处理器
-                _processor = AutoProcessor.from_pretrained(
-                    model_dir,
-                    min_pixels=_min_pixels,
-                    max_pixels=_max_pixels
-                )
-
-
-def generate_summary(messages: list):
-    """通用生成函数，处理图像/视频并生成描述"""
-    # 确保模型已初始化
-    _initialize_model()
-
-    # 应用聊天模板处理文本
-    text = _processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-
-    # 处理视觉信息
-    image_inputs, video_inputs = process_vision_info(messages)
-
-    # 准备模型输入
-    inputs = _processor(
-        text=[text],
-        images=image_inputs,
-        videos=video_inputs,
-        padding=True,
-        return_tensors="pt",
-    ).to(_model.device)
-
-    # 生成文本
-    generated_ids = _model.generate(**inputs, max_new_tokens=512)
-    generated_ids_trimmed = [
-        out_ids[len(in_ids):]
-        for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-    ]
-
-    return _processor.batch_decode(
-        generated_ids_trimmed,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=False
-    )[0]
-
-
-def image_summary(tmp_path, prompt):
+def image_summary(tmp_path: str, prompt: Optional[str] = None) -> str:
     """
-    图片内容总结接口
-    tmp_path：上传的图片文件
-    prompt：可选的自定义提示词
+    图片内容总结
+
+    Args:
+        tmp_path: 图片文件路径
+        prompt: 自定义提示词（可选）
+
+    Returns:
+        图片描述文本
     """
     if prompt is None:
         prompt = "用简练的语言描述这张图片"
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": tmp_path},
-                {"type": "text", "text": prompt}
-            ]
-        }
-    ]
-    return generate_summary(messages)
+
+    logger.info(f"🖼️ 图片理解 | 路径: {tmp_path}")
+
+    try:
+        client = get_client()
+        response = client.vl_generate(
+            prompt=prompt,
+            image=tmp_path
+        )
+        logger.info(f"✅ 图片理解完成")
+        return response
+
+    except Exception as e:
+        logger.error(f"❌ 图片理解失败: {e}")
+        raise ValueError(f"图片理解失败: {e}")
 
 
-def video_summary(tmp_path, prompt):
+def video_summary(tmp_path: str, prompt: Optional[str] = None) -> str:
     """
-    视频内容总结接口
-    tmp_path：上传的视频文件
-    prompt：可选的自定义提示词
+    视频内容总结
+
+    Args:
+        tmp_path: 视频文件路径
+        prompt: 自定义提示词（可选）
+
+    Returns:
+        视频描述文本
     """
     if prompt is None:
         prompt = "用简练的语言描述这个视频，总结成一句话"
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "video", "video": tmp_path},
-                {"type": "text", "text": prompt}
-            ]
-        }
-    ]
-    return generate_summary(messages)
+
+    logger.info(f"🎬 视频理解 | 路径: {tmp_path}")
+
+    try:
+        client = get_client()
+        response = client.vl_generate(
+            prompt=prompt,
+            image=tmp_path  # API 应该支持视频输入
+        )
+        logger.info(f"✅ 视频理解完成")
+        return response
+
+    except Exception as e:
+        logger.error(f"❌ 视频理解失败: {e}")
+        raise ValueError(f"视频理解失败: {e}")
+
+
+def generate_summary(messages: list) -> str:
+    """
+    通用生成函数，处理图像/视频并生成描述
+
+    Args:
+        messages: 消息列表，包含图片/视频和文本
+
+    Returns:
+        生成的描述文本
+    """
+    logger.info(f"🔄 VL 通用生成 | 消息数: {len(messages)}")
+
+    try:
+        client = get_client()
+
+        # 从消息中提取 prompt 和图片
+        prompt = ""
+        images = []
+
+        for msg in messages:
+            if msg.get("role") == "user":
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    for item in content:
+                        if item.get("type") == "text":
+                            prompt = item.get("text", "")
+                        elif item.get("type") in ["image", "video"]:
+                            img_path = item.get("image") or item.get("video")
+                            if img_path:
+                                images.append(img_path)
+                elif isinstance(content, str):
+                    prompt = content
+
+        if not prompt:
+            prompt = "请描述这个内容"
+
+        response = client.vl_generate(
+            prompt=prompt,
+            images=images if images else None,
+            messages=messages
+        )
+        return response
+
+    except Exception as e:
+        logger.error(f"❌ VL 生成失败: {e}")
+        raise ValueError(f"VL 生成失败: {e}")
 
 
 if __name__ == '__main__':
-    tmp_path = "D:\\aupi\\8.png"
-    result = image_summary(tmp_path, None)
+    # 测试代码
+    import sys
 
-    # tmp_path = "E:\\aupi\\2\\dfgdg.mp4"
-    # result = video_summary(tmp_path,None)
-    print(result)
+    if len(sys.argv) > 1:
+        image_path = sys.argv[1]
+        result = image_summary(image_path, None)
+        print(result)
+    else:
+        print("用法: python qwen_vl_adapter.py <image_path>")

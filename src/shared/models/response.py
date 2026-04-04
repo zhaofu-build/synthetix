@@ -91,8 +91,20 @@ class ErrorResponse(BaseModel):
 
 
 # 常用响应构造函数
-def success_response(data: Any = None, message: str = "操作成功", code: int = 200) -> APIResponse:
-    """构造成功响应"""
+def success_response(data: Any = None, message: str = "操作成功", code: int = 200, to_camel: bool = True) -> APIResponse:
+    """
+    构造成功响应
+
+    Args:
+        data: 响应数据
+        message: 响应消息
+        code: 状态码
+        to_camel: 是否将 key 转换为 camelCase（默认 True，方便前端使用）
+    """
+    from src.shared.utils.response_util import convert_keys_to_camel
+
+    if to_camel and data is not None:
+        data = convert_keys_to_camel(data)
     return APIResponse(success=True, data=data, message=message, code=code)
 
 

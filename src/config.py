@@ -43,10 +43,13 @@ database_path = ROOT_DIR_WIN / "src" / "db" / "synthetix.db"
 # alembic配置
 alembic_path = ROOT_DIR_WIN / "alembic" / "versions"
 
-# LLM 配置
+# LLM 配置（保留用于兼容，实际使用 core-nexus-ai）
 llm_model = os.getenv('LLM_MODEL', 'deepseek')
 model_name = os.getenv('MODEL_NAME', 'deepseek-chat')
 llm_key = os.getenv('LLM_KEY', '')
+
+# core-nexus-ai 配置
+CORE_NEXUS_BASE_URL = os.getenv('CORE_NEXUS_BASE_URL', '')
 
 # 视频API配置
 video_type = os.getenv('VIDEO_TYPE', 'pexels')
