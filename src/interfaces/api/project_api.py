@@ -255,6 +255,30 @@ def ai_generate_bgm(req: AiGenerateBgmRequest, db: Session = Depends(get_db)):
         return error_response(error="GenerateError", message=str(e), code=500)
 
 
+class GenerateTtsRequest(BaseModel):
+    text: str
+    speaker_id: int
+
+
+@router.post("/generate-tts", summary="生成文案语音")
+def generate_tts(req: GenerateTtsRequest):
+    """生成TTS语音并返回音频路径"""
+    try:
+        from src.application.services.audio_service import AudioService
+        audio_service = AudioService()
+        result = audio_service.generate_fish_speech_tts(
+            text=req.text,
+            audio_source_id=req.speaker_id
+        )
+        tts_path = result.get("local_path")
+        if tts_path:
+            return success_response(data={"web_path": tts_path, "local_path": tts_path}, message="语音生成成功")
+        return error_response(error="TtsError", message="语音生成失败", code=500)
+    except Exception as e:
+        logger.error(f"TTS生成失败: {e}")
+        return error_response(error="TtsError", message=str(e), code=500)
+
+
 @router.post("", summary="创建项目")
 def create_project(
     req: CreateProjectRequest,
@@ -570,6 +594,7 @@ class RenderRequest(BaseModel):
     """渲染请求"""
     creative: Optional[str] = None
     speaker_id: Optional[int] = None
+    tts_path: Optional[str] = None
     bgm_id: Optional[int] = None
     bgm_volume: Optional[float] = 0.3
 
@@ -594,7 +619,9 @@ def render_project(
         # 构建音频配置
         audio_config = {}
         if req:
-            if req.creative and req.speaker_id:
+            if req.tts_path:
+                audio_config["tts_path"] = req.tts_path
+            elif req.creative and req.speaker_id:
                 audio_config["creative"] = req.creative
                 audio_config["speaker_id"] = req.speaker_id
             if req.bgm_id:
