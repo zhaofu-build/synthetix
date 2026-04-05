@@ -485,6 +485,22 @@ class AudioService:
             "repetition_penalty": audio_obj.repetition_penalty,
         }
 
+    def update_audio(self, audio_id: int, **kwargs) -> Optional[Dict[str, Any]]:
+        """
+        更新音色信息
+
+        Args:
+            audio_id: 音色 ID
+            **kwargs: 要更新的字段（audio_name, prompt_text, seed, speed, top_p, temperature, repetition_penalty）
+
+        Returns:
+            更新后的音色信息字典，不存在则返回 None
+        """
+        audio_obj = self._repository.update(audio_id, **kwargs)
+        if not audio_obj:
+            return None
+        return audio_obj.to_dict()
+
     def get_audio_by_id(self, audio_id: int) -> Optional[Dict[str, Any]]:
         """
         根据 ID 获取音色信息

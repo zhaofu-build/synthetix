@@ -61,7 +61,7 @@ def video_summary(tmp_path: str, prompt: Optional[str] = None) -> str:
         client = get_client()
         response = client.vl_generate(
             prompt=prompt,
-            image=tmp_path  # API 应该支持视频输入
+            video=tmp_path
         )
         logger.info(f"✅ 视频理解完成")
         return response

@@ -294,7 +294,7 @@ def get_video_description(
         return error_response(error="NotFound", message=f"视频 {video_id} 不存在", code=404)
 
     try:
-        from src.service.video_summary import video_summary
+        from src.application.services.qwen_vl_adapter import video_summary
         description = video_summary(video_data.get("local_path"), None)
     except ImportError:
         logger.warning(f"video_summary 模块不可用，跳过描述生成")

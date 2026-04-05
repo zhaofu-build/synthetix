@@ -133,7 +133,7 @@ class AudioRepository(BaseRepository[AudioSource]):
 
         if include_web_path:
             import os
-            import config
+            from src import config
             result["web_path"] = os.path.join(config.source_audios_dir, audio.web_path)
 
         return result

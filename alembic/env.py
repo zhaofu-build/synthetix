@@ -16,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.domain.entities.base import Base
 from src.domain.entities.audio_source import AudioSource
 from src.domain.entities.video_source import VideoSource
+from src.domain.entities.video_project import VideoProject, ClipPlanItem
+from src.domain.entities.bgm_item import BGMItem
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

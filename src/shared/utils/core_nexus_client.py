@@ -288,6 +288,8 @@ class CoreNexusClient:
         prompt: str,
         image: Optional[str] = None,
         images: Optional[List[str]] = None,
+        video: Optional[str] = None,
+        videos: Optional[List[str]] = None,
         messages: Optional[List[Dict]] = None,
         **generation_params
     ) -> str:
@@ -296,9 +298,11 @@ class CoreNexusClient:
 
         Args:
             prompt: 提示词
-            image: 单张图片（base64、data URL 或 HTTP URL）
+            image: 单张图片（本地路径、base64、data URL 或 HTTP URL）
             images: 多张图片列表
-            messages: 多轮对话消息（包含图片）
+            video: 单个视频（本地路径、HTTP URL、base64 或 data URL）
+            videos: 多个视频列表
+            messages: 多轮对话消息（包含图片/视频）
             **generation_params: 其他生成参数
 
         Returns:
@@ -312,6 +316,10 @@ class CoreNexusClient:
             payload["image"] = self._process_image_input(image)
         if images:
             payload["images"] = [self._process_image_input(img) for img in images]
+        if video:
+            payload["video"] = video
+        if videos:
+            payload["videos"] = videos
         if messages:
             payload["messages"] = messages
         if generation_params:
@@ -325,6 +333,8 @@ class CoreNexusClient:
         prompt: str,
         image: Optional[str] = None,
         images: Optional[List[str]] = None,
+        video: Optional[str] = None,
+        videos: Optional[List[str]] = None,
         messages: Optional[List[Dict]] = None,
         **generation_params
     ) -> Generator[str, None, None]:
@@ -335,6 +345,8 @@ class CoreNexusClient:
             prompt: 提示词
             image: 单张图片
             images: 多张图片列表
+            video: 单个视频
+            videos: 多个视频列表
             messages: 多轮对话消息
             **generation_params: 其他生成参数
 
@@ -349,6 +361,10 @@ class CoreNexusClient:
             payload["image"] = self._process_image_input(image)
         if images:
             payload["images"] = [self._process_image_input(img) for img in images]
+        if video:
+            payload["video"] = video
+        if videos:
+            payload["videos"] = videos
         if messages:
             payload["messages"] = messages
         if generation_params:
@@ -462,7 +478,7 @@ class CoreNexusClient:
         with open(image, 'rb') as f:
             image_bytes = f.read()
 
-        # 检测图片格式
+        # 检测媒体格式（图片 + 视频）
         ext = Path(image).suffix.lower().lstrip('.')
         mime_types = {
             'jpg': 'image/jpeg',
@@ -470,8 +486,13 @@ class CoreNexusClient:
             'png': 'image/png',
             'gif': 'image/gif',
             'webp': 'image/webp',
+            'mp4': 'video/mp4',
+            'webm': 'video/webm',
+            'avi': 'video/x-msvideo',
+            'mov': 'video/quicktime',
+            'mkv': 'video/x-matroska',
         }
-        mime_type = mime_types.get(ext, 'image/jpeg')
+        mime_type = mime_types.get(ext, 'application/octet-stream')
 
         base64_data = base64.b64encode(image_bytes).decode('utf-8')
         return f"data:{mime_type};base64,{base64_data}"

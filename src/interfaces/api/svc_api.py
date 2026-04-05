@@ -7,7 +7,7 @@
 """
 from typing import Optional
 
-from fastapi import APIRouter, UploadFile, Form, File, Depends, Query, Path as PathParam
+from fastapi import APIRouter, UploadFile, Form, File, Depends, Query, Path as PathParam, Body
 from sqlalchemy.orm import Session
 
 from src import config
@@ -50,12 +50,12 @@ async def create_audio(
     file: UploadFile = File(...),
     audio_name: str = Form(...),
     prompt_text: str = Form(...),
-    seed: int = Form(...),
-    speed: float = Form(...),
-    top_p: float = Form(...),
-    temperature: float = Form(...),
-    repetition_penalty: float = Form(...),
-    output_format: str = Form(...),
+    output_format: str = Form(default="wav"),
+    seed: int = Form(default=42),
+    speed: float = Form(default=1.0),
+    top_p: float = Form(default=0.5),
+    temperature: float = Form(default=0.5),
+    repetition_penalty: float = Form(default=1.35),
     service: AudioService = Depends(get_audio_service)
 ):
     """保存音色文件到数据库"""
@@ -103,6 +103,29 @@ def get_audio(
     if not audio_data:
         return error_response(error="NotFound", message=f"音色 {audio_id} 不存在", code=404)
     return success_response(data=audio_data, message="获取成功")
+
+
+@router.put("/{audio_id}", summary="更新音色")
+def update_audio(
+    audio_id: int = PathParam(..., description="音色ID"),
+    audio_name: Optional[str] = None,
+    prompt_text: Optional[str] = None,
+    service: AudioService = Depends(get_audio_service)
+):
+    """更新音色信息"""
+    kwargs = {}
+    if audio_name is not None:
+        kwargs["audio_name"] = audio_name
+    if prompt_text is not None:
+        kwargs["prompt_text"] = prompt_text
+
+    if not kwargs:
+        return error_response(error="BadRequest", message="没有需要更新的字段", code=400)
+
+    result = service.update_audio(audio_id, **kwargs)
+    if not result:
+        return error_response(error="NotFound", message=f"音色 {audio_id} 不存在", code=404)
+    return success_response(data=result, message="更新成功")
 
 
 @router.delete("/{audio_id}", summary="删除音色")

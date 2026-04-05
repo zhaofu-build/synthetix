@@ -1,16 +1,9 @@
 def keywords_prompt(creative):
-    return f"""
-    根据下面的文案生成2个高度相关的视频搜索关键词：
-    {creative}
-    要求：
-    1. 搜索词以,分隔
-    2. 每个搜索词应由 1-3 个单词组成，始终添加视频的主要主题。
-    3. 搜索词只能返回关键词，不要标题和解释性说明
-    4. 仅使用英文搜索词进行回复。
-    返回示例:
-    search term 1, "search term 2,  search term 3
-    注意，必须使用英语生成视频搜索词;不接受中文。
-    """
+    return f"""根据下面的文案生成2个高度相关的英文视频搜索关键词，用逗号分隔，不要编号、引号、标题或任何解释。
+每个搜索词由 1-3 个英文单词组成。
+只返回关键词本身，例如：stargazing, night sky
+
+文案：{creative}"""
 
 
 def clip_prompt(creative, source_infos, duration):

@@ -60,7 +60,20 @@ class CreativeService:
         messages = [{"role": "user", "content": keywords_prompt}]
         keywords_resp = use_langchain_llm.generate_response(messages)
         keywords_resp = string_util.remove_think_tags(keywords_resp)
-        return keywords_resp.split(",")
+        # 清理并提取关键词：去引号、去编号前缀、去空白，过滤空值
+        keywords = []
+        for part in keywords_resp.split(","):
+            word = part.strip().strip('"').strip("'")
+            # 去掉类似 "1." "2)" 等编号前缀
+            if word and word[0].isdigit():
+                dot_idx = word.find('.')
+                paren_idx = word.find(')')
+                sep = max(dot_idx, paren_idx)
+                if sep >= 0:
+                    word = word[sep + 1:].strip()
+            if word:
+                keywords.append(word)
+        return keywords
 
     def create_video_with_transitions(
         self,

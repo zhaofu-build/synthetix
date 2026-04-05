@@ -380,6 +380,63 @@ def add_audio_to_video(video_path, audio_path, output_path):
     return output_path
 
 
+def mix_audios_to_video(video_path, tts_path=None, bgm_path=None, bgm_volume=0.3, output_path=None):
+    """
+    将 TTS 语音和 BGM 混合后添加到视频
+
+    Args:
+        video_path: 输入视频路径
+        tts_path: TTS 语音文件路径（可选）
+        bgm_path: BGM 文件路径（可选）
+        bgm_volume: BGM 音量 (0.0-1.0)，TTS 固定为 1.0
+        output_path: 输出文件路径
+    """
+    if not output_path:
+        output_path = video_path.replace(".mp4", "_mixed.mp4")
+
+    if tts_path and bgm_path:
+        # 两者都有：用 amix 混合 TTS + BGM
+        command = [
+            '-y',
+            '-i', str(video_path),
+            '-i', str(tts_path),
+            '-i', str(bgm_path),
+            '-filter_complex',
+            f'[1:a]volume=1.0[tts];[2:a]volume={bgm_volume}[bgm];[tts][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]',
+            '-map', '0:v:0',
+            '-map', '[aout]',
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-shortest',
+            str(output_path)
+        ]
+    elif tts_path:
+        # 只有 TTS
+        return add_audio_to_video(video_path, tts_path, output_path)
+    elif bgm_path:
+        # 只有 BGM（按指定音量）
+        command = [
+            '-y',
+            '-i', str(video_path),
+            '-i', str(bgm_path),
+            '-filter_complex',
+            f'[1:a]volume={bgm_volume}[aout]',
+            '-map', '0:v:0',
+            '-map', '[aout]',
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-shortest',
+            str(output_path)
+        ]
+    else:
+        return video_path
+
+    run_ffmpeg_cmd(command)
+    return output_path
+
+
 # 合并视频
 def concatenate_videos_with_filter(video_paths, output_path):
     # 构建filter_complex选项
