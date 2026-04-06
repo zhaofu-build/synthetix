@@ -21,6 +21,7 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     """对话请求"""
     session_id: Optional[str] = None
+    project_id: Optional[int] = None
     message: str
     context: Optional[Dict[str, Any]] = None
 

@@ -18,11 +18,29 @@ class VideoProject(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), nullable=False, comment="项目名称")
     description = Column(Text, nullable=True, comment="项目描述")
+    mode = Column(String(20), default="workflow", comment="模式: workflow/conversation")
     status = Column(String(50), default="draft", comment="状态: draft/processing/completed")
     duration = Column(Float, default=0.0, comment="总时长（秒）")
+
+    # 工作流配置
+    material_ids = Column(JSON, nullable=True, comment="素材ID列表")
+    creative = Column(Text, nullable=True, comment="文案内容")
+    target_duration = Column(Float, nullable=True, comment="目标时长（秒）")
+    style = Column(String(50), nullable=True, comment="风格")
+    speaker_id = Column(Integer, nullable=True, comment="音色ID")
+    tts_path = Column(String(500), nullable=True, comment="TTS音频路径")
+    bgm_id = Column(Integer, nullable=True, comment="BGM ID")
+    bgm_volume = Column(Float, default=0.3, comment="BGM音量")
+    current_step = Column(Integer, default=0, comment="当前步骤(0-3)")
+
+    # 对话模式
+    chat_history = Column(JSON, nullable=True, comment="对话历史")
+
+    # 时间线与方案
     timeline_data = Column(JSON, nullable=True, comment="时间线数据（JSON）")
     plan_data = Column(JSON, nullable=True, comment="剪辑方案数据（JSON）")
     output_path = Column(String(500), nullable=True, comment="输出文件路径")
+
     created_at = Column(DateTime, default=datetime.utcnow, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment="更新时间")
 
@@ -32,8 +50,19 @@ class VideoProject(Base):
             "id": self.id,
             "name": self.name,
             "description": self.description,
+            "mode": self.mode or "workflow",
             "status": self.status,
             "duration": self.duration,
+            "material_ids": self.material_ids or [],
+            "creative": self.creative,
+            "target_duration": self.target_duration,
+            "style": self.style,
+            "speaker_id": self.speaker_id,
+            "tts_path": self.tts_path,
+            "bgm_id": self.bgm_id,
+            "bgm_volume": self.bgm_volume if self.bgm_volume is not None else 0.3,
+            "current_step": self.current_step or 0,
+            "chat_history": self.chat_history or [],
             "timeline_data": self.timeline_data,
             "plan_data": self.plan_data,
             "output_path": self.output_path,

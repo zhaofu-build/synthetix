@@ -4,10 +4,12 @@
 提供强控制性剪辑的项目管理接口
 """
 from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, Body
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
-import os, uuid, logging
+import os, uuid, logging, json
+from datetime import datetime
 
 from src.shared.models.response import success_response, error_response
 from src.infrastructure.db.session import get_db
@@ -27,14 +29,27 @@ class CreateProjectRequest(BaseModel):
     """创建项目请求"""
     name: str
     description: Optional[str] = None
+    mode: str = "workflow"
 
 
 class UpdateProjectRequest(BaseModel):
     """更新项目请求"""
     name: Optional[str] = None
     description: Optional[str] = None
+    mode: Optional[str] = None
+    material_ids: Optional[List[int]] = None
+    creative: Optional[str] = None
+    target_duration: Optional[float] = None
+    style: Optional[str] = None
+    speaker_id: Optional[int] = None
+    tts_path: Optional[str] = None
+    bgm_id: Optional[int] = None
+    bgm_volume: Optional[float] = None
+    current_step: Optional[int] = None
+    chat_history: Optional[List[Dict]] = None
     timeline_data: Optional[Dict] = None
     plan_data: Optional[Dict] = None
+    output_path: Optional[str] = None
 
 
 class SaveTimelineRequest(BaseModel):
@@ -279,6 +294,47 @@ def generate_tts(req: GenerateTtsRequest):
         return error_response(error="TtsError", message=str(e), code=500)
 
 
+# ==================== 项目导入导出（必须在 /{project_id} 之前） ====================
+
+@router.post("/import", summary="导入项目")
+async def import_project(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """从 JSON 文件导入项目"""
+    try:
+        content = await file.read()
+        data = json.loads(content)
+
+        project = VideoProject(
+            name=data.get("name", "导入项目"),
+            description=data.get("description"),
+            mode=data.get("mode", "workflow"),
+            material_ids=data.get("material_ids", []),
+            creative=data.get("creative"),
+            target_duration=data.get("target_duration"),
+            style=data.get("style"),
+            speaker_id=data.get("speaker_id"),
+            tts_path=data.get("tts_path"),
+            bgm_id=data.get("bgm_id"),
+            bgm_volume=data.get("bgm_volume", 0.3),
+            current_step=data.get("current_step", 0),
+            chat_history=data.get("chat_history", []),
+            timeline_data=data.get("timeline_data"),
+            plan_data=data.get("plan_data"),
+            status="draft"
+        )
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+
+        return success_response(data=project.to_dict(), message="项目导入成功")
+    except json.JSONDecodeError:
+        return error_response(error="ImportError", message="无效的JSON文件", code=400)
+    except Exception as e:
+        return error_response(error="ImportError", message=str(e), code=500)
+
+
 @router.post("", summary="创建项目")
 def create_project(
     req: CreateProjectRequest,
@@ -286,9 +342,15 @@ def create_project(
 ):
     """创建新的视频项目"""
     try:
+        # 检查项目名称是否重复
+        existing = db.query(VideoProject).filter(VideoProject.name == req.name).first()
+        if existing:
+            return error_response(error="DuplicateName", message="项目名称已存在，请换一个名称", code=400)
+
         project = VideoProject(
             name=req.name,
             description=req.description,
+            mode=req.mode,
             status="draft"
         )
         db.add(project)
@@ -342,6 +404,78 @@ def get_project(
     return success_response(data=project.to_dict())
 
 
+@router.get("/{project_id}/full", summary="获取项目完整状态")
+def get_project_full(
+    project_id: int,
+    db: Session = Depends(get_db)
+):
+    """获取项目完整状态（含关联数据）"""
+    from src.domain.entities.video_source import VideoSource
+    from src.domain.entities.audio_source import AudioSource
+
+    project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
+    if not project:
+        return error_response(error="NotFound", message="项目不存在", code=404)
+
+    data = project.to_dict()
+
+    # 关联素材
+    material_ids = project.material_ids or []
+    if material_ids:
+        videos = db.query(VideoSource).filter(VideoSource.id.in_(material_ids)).all()
+        data["materials"] = [{
+            "id": v.id,
+            "videoName": v.video_name,
+            "webPath": v.web_path,
+            "duration": v.duration,
+            "durationHms": v.duration_hms,
+            "description": v.description,
+        } for v in videos]
+    else:
+        data["materials"] = []
+
+    # 关联音色
+    if project.speaker_id:
+        speaker = db.query(AudioSource).filter(AudioSource.id == project.speaker_id).first()
+        if speaker:
+            data["speaker"] = {
+                "id": speaker.id,
+                "audioName": speaker.audio_name,
+                "webPath": speaker.web_path,
+            }
+
+    # 关联BGM
+    if project.bgm_id:
+        bgm = db.query(BGMItem).filter(BGMItem.id == project.bgm_id).first()
+        if bgm:
+            data["bgm"] = bgm.to_dict()
+
+    return success_response(data=data)
+
+
+@router.get("/{project_id}/export", summary="导出项目为JSON")
+def export_project(
+    project_id: int,
+    db: Session = Depends(get_db)
+):
+    """导出项目为JSON文件"""
+    project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
+    if not project:
+        return error_response(error="NotFound", message="项目不存在", code=404)
+
+    data = project.to_dict()
+    data["exported_at"] = datetime.utcnow().isoformat()
+    data["export_version"] = 1
+
+    content = json.dumps(data, ensure_ascii=False, indent=2)
+    return JSONResponse(
+        content=data,
+        headers={
+            "Content-Disposition": f"attachment; filename=project_{project_id}.json"
+        }
+    )
+
+
 @router.patch("/{project_id}", summary="更新项目")
 def update_project(
     project_id: int,
@@ -355,13 +489,44 @@ def update_project(
 
     try:
         if req.name is not None:
+            # 检查名称是否与其他项目重复
+            existing = db.query(VideoProject).filter(
+                VideoProject.name == req.name,
+                VideoProject.id != project_id
+            ).first()
+            if existing:
+                return error_response(error="DuplicateName", message="项目名称已存在", code=400)
             project.name = req.name
         if req.description is not None:
             project.description = req.description
+        if req.mode is not None:
+            project.mode = req.mode
+        if req.material_ids is not None:
+            project.material_ids = req.material_ids
+        if req.creative is not None:
+            project.creative = req.creative
+        if req.target_duration is not None:
+            project.target_duration = req.target_duration
+        if req.style is not None:
+            project.style = req.style
+        if req.speaker_id is not None:
+            project.speaker_id = req.speaker_id
+        if req.tts_path is not None:
+            project.tts_path = req.tts_path
+        if req.bgm_id is not None:
+            project.bgm_id = req.bgm_id
+        if req.bgm_volume is not None:
+            project.bgm_volume = req.bgm_volume
+        if req.current_step is not None:
+            project.current_step = req.current_step
+        if req.chat_history is not None:
+            project.chat_history = req.chat_history
         if req.timeline_data is not None:
             project.timeline_data = req.timeline_data
         if req.plan_data is not None:
             project.plan_data = req.plan_data
+        if req.output_path is not None:
+            project.output_path = req.output_path
 
         db.commit()
         db.refresh(project)
@@ -616,18 +781,24 @@ def render_project(
         project.status = "processing"
         db.commit()
 
-        # 构建音频配置
+        # 构建音频配置 & 保存到项目
         audio_config = {}
         if req:
             if req.tts_path:
                 audio_config["tts_path"] = req.tts_path
+                project.tts_path = req.tts_path
             elif req.creative and req.speaker_id:
                 audio_config["creative"] = req.creative
                 audio_config["speaker_id"] = req.speaker_id
+                project.creative = req.creative
+                project.speaker_id = req.speaker_id
             if req.bgm_id:
                 audio_config["bgm_id"] = req.bgm_id
+                project.bgm_id = req.bgm_id
             if req.bgm_volume is not None:
                 audio_config["bgm_volume"] = req.bgm_volume
+                project.bgm_volume = req.bgm_volume
+            db.commit()
 
         # 执行渲染
         render = RenderService()
