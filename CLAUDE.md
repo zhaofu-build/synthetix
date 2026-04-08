@@ -14,7 +14,7 @@ Synthetix 是一个 AI 视频剪辑平台，提供两种剪辑模式：
 
 ```bash
 # 启动 API (端口 9527)
-python run_api.py
+python main.py
 
 # 启动前端 (端口 9528)
 cd synthetix-vue && npm run dev

@@ -57,7 +57,7 @@ alembic upgrade head
 
 ```bash
 # 后端 API（端口 9527）
-python run_api.py
+python main.py
 
 # 前端（端口 9528）
 cd synthetix-vue && npm run dev

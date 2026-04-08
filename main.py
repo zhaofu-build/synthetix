@@ -110,7 +110,7 @@ def run():
         raise
     # 启动服务
     uvicorn.run(
-        app='run_api:app',
+        app='main:app',
         host="127.0.0.1",
         port=config.api_host,
         reload=True,

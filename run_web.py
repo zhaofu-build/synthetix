@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 from pathlib import Path
 import multiprocessing
 from multiprocessing import freeze_support
-import run_api
+import main
 import webbrowser
 import socket
 import time
@@ -44,7 +44,7 @@ async def custom_404_handler(request, exc: HTTPException):
 
 def run():
     uvicorn.run(
-        "run_web:app",  # 使用字符串形式
+        "main:app",  # 使用字符串形式
         host="127.0.0.1",
         port=config.web_host,
         access_log=False
@@ -97,7 +97,7 @@ def main():
 
     # 创建两个进程并设置名称
     api_process = multiprocessing.Process(
-        target=run_api.run,
+        target=main.run,
         name="pixGallery-API"
     )
     web_process = multiprocessing.Process(
