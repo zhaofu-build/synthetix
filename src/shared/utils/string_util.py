@@ -143,3 +143,43 @@ def safe_parse_llm_json(text: str):
         return json.loads(cleaned)
     except (json.JSONDecodeError, ValueError):
         return None
+
+
+# ==================== 安全相关工具函数 ====================
+
+_TIME_FORMAT_PATTERN = re.compile(r'^\d{2}:\d{2}:\d{2}(\.\d+)?$')
+
+
+def sanitize_time(time_str: str) -> str:
+    """
+    校验并清洗时间格式参数
+
+    Args:
+        time_str: 时间字符串，预期格式 HH:MM:SS
+
+    Returns:
+        校验后的时间字符串
+
+    Raises:
+        ValueError: 格式不合法
+    """
+    if not time_str:
+        return time_str
+    if not _TIME_FORMAT_PATTERN.match(time_str):
+        raise ValueError(f"非法时间格式: {time_str}，需要 HH:MM:SS")
+    return time_str
+
+
+def sanitize_ffmpeg_string(value: str) -> str:
+    """
+    清洗 FFmpeg 字符串参数，移除命令注入字符
+
+    Args:
+        value: 待清洗的字符串
+
+    Returns:
+        清洗后的字符串
+    """
+    if not isinstance(value, str):
+        return value
+    return re.sub(r'[;&|`$]', '', value)

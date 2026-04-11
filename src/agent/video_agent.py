@@ -68,7 +68,7 @@ class VideoDialogAgent:
         self.sessions = session_manager or get_session_manager()
         self.intents = intent_recognizer or get_intent_recognizer()
         self.slots = slot_filler or get_slot_filler()
-        self.prompts = AgentPrompts()
+        self.prompts = Prompts()
 
     async def process_message(
         self,
@@ -128,6 +128,9 @@ class VideoDialogAgent:
 
         # 添加助手消息到历史
         state.add_message("assistant", result.get("reply", ""))
+
+        # 持久化会话状态到数据库
+        self.sessions.persist_session(state)
 
         # 构建返回结果
         result["session_id"] = state.session_id
@@ -328,7 +331,7 @@ class VideoDialogAgent:
         return "\n".join(lines)
 
     async def _execute_action(self, action: Dict) -> Dict[str, Any]:
-        """执行操作（带循环纠错重试）"""
+        """执行操作（带循环纠错重试 + Hook 机制）"""
         from src.shared.constants import AgentConfig
 
         tool_name = action.get("tool")
@@ -342,7 +345,20 @@ class VideoDialogAgent:
             }
 
         # 参数校验（如果工具定义了 Pydantic 模型）
-        validated_params = tool.validate_params(params)
+        try:
+            validated_params = tool.validate_params(params)
+        except Exception as e:
+            return {"success": False, "error": f"参数校验失败: {e}"}
+
+        # BEFORE hook
+        if tool.before_execute:
+            try:
+                hook_result = tool.before_execute(validated_params)
+                if hook_result is not None:
+                    validated_params = hook_result
+            except Exception as e:
+                logger.warning(f"工具 {tool_name} before_execute hook 失败: {e}")
+                return {"success": False, "error": str(e)}
 
         last_error = None
         current_params = validated_params.copy()
@@ -351,6 +367,14 @@ class VideoDialogAgent:
             try:
                 result = await tool.execute(**current_params)
                 if result.get("success", True):
+                    # AFTER hook
+                    if tool.after_execute:
+                        try:
+                            hook_result = tool.after_execute(result)
+                            if hook_result is not None:
+                                result = hook_result
+                        except Exception as e:
+                            logger.warning(f"工具 {tool_name} after_execute hook 失败: {e}")
                     return result
 
                 # 工具返回了业务失败
@@ -367,7 +391,12 @@ class VideoDialogAgent:
                     tool_name, current_params, last_error
                 )
                 if corrected:
-                    current_params = corrected
+                    # 重新校验 LLM 修正的参数
+                    try:
+                        current_params = tool.validate_params(corrected)
+                    except Exception:
+                        logger.warning("LLM 修正的参数校验失败，放弃重试")
+                        break
                     logger.info(f"LLM 修正参数后重试: {current_params}")
                 else:
                     break  # LLM 无法修正，直接退出

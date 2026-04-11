@@ -188,5 +188,6 @@ class AgentConfig:
     MAX_HISTORY_MESSAGES = 50      # 单会话最大消息条数
     HISTORY_TRUNCATE_KEEP = 10     # 截断时保留最近的消息条数
     SESSION_CLEANUP_INTERVAL = 600  # 会话清理间隔（秒），10分钟
+    SESSION_DB_TTL = 86400          # DB 中会话保留时长（秒），24 小时
     MAX_ACTION_RETRIES = 2          # 工具执行最大重试次数
     MAX_LLM_PARSE_RETRIES = 1       # LLM JSON 解析最大重试次数

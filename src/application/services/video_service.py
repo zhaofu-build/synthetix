@@ -189,14 +189,14 @@ class VideoService:
 
     def download_video(self, video_url: str, output_dir: str = None) -> Dict[str, Any]:
         """
-        从 URL 下载视频
+        从 URL 下载视频并保存到素材库
 
         Args:
             video_url: 视频 URL
             output_dir: 输出目录，默认使用上传目录
 
         Returns:
-            包含文件路径和时长信息的字典
+            包含文件路径、时长和数据库 ID 的字典
         """
         if output_dir is None:
             output_dir = config.UPLOAD_DIR
@@ -215,11 +215,32 @@ class VideoService:
         except (ValueError, TypeError):
             duration_hms = "00:00:00"
 
-        access_url_path = Path(config.ROOT_DIR_WIN) / "static" / "uploads" / title
+        access_url_path = Path(output_dir) / title
 
+        # 获取视频详细信息
+        try:
+            video_info = use_ffmpeg.get_video_info(access_url_path)
+            duration_hms = video_info.get("duration_hms", duration_hms)
+        except Exception:
+            video_info = {}
+
+        # 保存到数据库
+        web_path = output_dir if output_dir.endswith('/') else output_dir + '/'
+        web_path += title
+
+        video_obj = self._repository.create(
+            video_name=title,
+            web_path=web_path,
+            local_path=str(access_url_path),
+            duration=video_info.get("duration", str(duration) if duration else "0"),
+            duration_hms=duration_hms,
+        )
+
+        logger.info(f"视频下载入库: ID={video_obj.id}, 文件名={title}")
         return {
+            "id": video_obj.id,
             "filename": title,
-            "web_path": config.UPLOAD_DIR + title,
+            "web_path": web_path,
             "local_path": str(access_url_path),
             "duration": duration_hms
         }

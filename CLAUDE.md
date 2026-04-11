@@ -42,26 +42,39 @@ alembic current                              # 查看当前版本
 
 添加新实体后，必须在 `alembic/env.py` 中导入才能被迁移识别。
 
+## 测试
+
+```bash
+pytest tests/unit/ -v                           # 运行单元测试
+pytest tests/unit/test_xxx.py -v                # 运行单个测试
+pytest tests/unit/ --cov=src --cov-report=html  # 覆盖率报告
+```
+
 ## 架构
 
 ```
 src/
 ├── agent/                    # 对话式剪辑 Agent
-│   ├── video_agent.py        # 主 Agent（意图识别→槽位填充→方案确认→工具执行）
-│   ├── tool_registry.py      # 装饰器 @registry.register() 注册工具
-│   └── prompts.py            # 提示词模板
+│   ├── video_agent.py        # 主 Agent（状态机: IDLE→COLLECTING→CONFIRMING→EXECUTING）
+│   ├── tool_registry.py      # @registry.register() 注册工具（含 Pydantic 校验、Hook）
+│   ├── intent_recognizer.py  # 意图识别（规则匹配 + LLM 兜底）
+│   ├── slot_filler.py        # 槽位填充（正则提取 + LLM 兜底）
+│   ├── session_manager.py    # 会话管理（内存缓存 + DB 双写）
+│   └── prompts.py            # LLM 提示词模板
 │
 ├── domain/entities/          # SQLAlchemy 实体
 │   ├── video_source.py       # 视频素材
 │   ├── audio_source.py       # 音频素材（音色）
 │   ├── video_project.py      # 视频项目 + ClipPlanItem
-│   └── bgm_item.py           # BGM 素材
+│   ├── bgm_item.py           # BGM 素材
+│   └── dialog_session.py     # 对话会话持久化
 │
 ├── application/services/     # 业务服务
 │   ├── video_service.py, audio_service.py   # 视频/音频处理
 │   ├── clip_planner.py       # AI 剪辑方案规划
 │   ├── render_service.py     # 视频渲染（FFmpeg）
-│   ├── llm_adapter.py        # LLM 调用封装
+│   ├── llm_adapter.py        # LLM 调用封装（同步 + 真异步）
+│   ├── ffmpeg_adapter.py     # FFmpeg 命令封装（所有视频处理走 subprocess.run）
 │   └── creative_service.py   # 创意内容生成
 │
 ├── interfaces/api/           # FastAPI 路由
@@ -72,9 +85,13 @@ src/
 │   └── core_nexus_api.py     # /api/nexus (AI 服务代理)
 │
 ├── shared/
+│   ├── constants.py          # 集中常量（文件大小、分页、视频参数、Agent 配置等）
 │   ├── models/response.py    # success_response(to_camel=True) 自动转换
 │   ├── models/timeline.py    # Timeline/ClipPlan 数据结构
-│   └── utils/core_nexus_client.py  # core-nexus-ai 统一客户端
+│   └── utils/
+│       ├── core_nexus_client.py  # core-nexus-ai 统一客户端（同步 + async）
+│       ├── string_util.py        # 通用工具（JSON 解析、语言检测、参数清洗）
+│       └── file_util.py          # 文件操作工具
 │
 └── infrastructure/
     ├── db/                   # 数据库会话、Alembic
@@ -88,11 +105,6 @@ synthetix-vue/                # 前端 Vue 3 + Vite + Pinia + Element Plus
 ├── src/store/modules/
 │   ├── system.js             # 主题、系统配置
 │   └── project.js            # 项目 CRUD、防抖自动保存
-├── src/components/
-│   ├── ProjectList.vue       # 项目管理（/projects）
-│   ├── VideoStitching.vue    # 工作流剪辑（/video-stitching）
-│   ├── AIClip.vue            # 对话式剪辑（/ai-clip）
-│   └── ...
 └── src/components/config/api.js  # API 端点常量 + API_HOST
 ```
 
@@ -127,30 +139,81 @@ const response = await fetch(`${API_HOST}/api/agent/chat`, { ... })
 - `src/api/request.js`（axios）：API 模块使用，拦截器自动提取 `data.data`，业务错误弹 ElMessage
 - `src/utils/request.js`（fetch）：工具函数，导出 `assetUrl`、`API_HOST`，部分组件直接使用
 
-## Core-Nexus-AI 集成
+## 对话式 Agent 架构
 
-所有 AI 推理通过 `CoreNexusClient` 调用：
+### 状态机流程
+```
+用户输入 → IDLE(意图识别) → COLLECTING(槽位填充) → CONFIRMING(方案确认) → EXECUTING(工具执行) → 完成
+```
 
-| 功能 | 方法 |
-|------|------|
-| LLM 生成 | `client.llm_generate()` |
-| LLM 流式 | `client.llm_generate_stream()` |
-| TTS 合成 | `client.tts_generate()` |
-| ASR 识别 | `client.asr_transcribe()` |
-| VL 理解 | `client.vl_generate()` |
-| 音乐生成 | `client.text_to_music()` |
+`video_agent.py` 中 `DialogState` 维护每个会话的状态，`SessionManager` 提供内存 + DB 双写持久化。
 
-## 对话式 Agent 工具注册
+### 新增工具的三文件同步
+每新增一个 Agent 工具，需要同步更新 3 个文件：
 
+| 文件 | 更新内容 |
+|------|----------|
+| `src/agent/tool_registry.py` | `@registry.register()` 注册工具函数 |
+| `src/agent/intent_recognizer.py` | INTENTS 字典中增加意图定义（名称、描述、slots、required_slots） |
+| `src/agent/slot_filler.py` | SLOT_DEFINITIONS 增加槽位定义 + `_rule_extract()` 增加正则提取 |
+
+### 工具注册模式
 ```python
 # src/agent/tool_registry.py
-@registry.register()
-def my_tool(params):
-    """工具描述"""
+
+# 1. 定义 Pydantic 参数模型（带校验）
+class CutVideoParams(BaseModel):
+    video_id: int = Field(..., description="视频 ID")
+    start_time: str = Field(default="00:00:00", description="开始时间 (HH:MM:SS)")
+    end_time: Opt[str] = Field(default=None, description="结束时间 (HH:MM:SS)")
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time_format(cls, v):
+        if v and not re.match(r'^\d{2}:\d{2}:\d{2}(\.\d+)?$', v):
+            raise ValueError(f"时间格式错误: {v}")
+        return v
+
+# 2. 注册工具（支持 before_execute/after_execute Hook）
+@registry.register(
+    name="cut_video",
+    description="剪切视频片段",
+    parameters={"video_id": {...}, "start_time": {...}, "end_time": {...}},
+    param_model=CutVideoParams,          # Pydantic 校验
+    before_execute=validate_video_exists,  # 执行前 Hook
+)
+async def tool_cut_video(video_id: int, start_time: str = "00:00:00",
+                         end_time: str = None, **kwargs) -> Dict[str, Any]:
     ...
 ```
 
-意图类型：cut_video, merge_videos, add_subtitle, add_audio, change_speed, smart_clip, analyze_video, generate_tts, list_videos, search_material
+Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；`after_execute` 接收 result dict。`video_agent.py` 的 `_execute_action()` 在执行前后调用。
+
+### 已注册工具分类
+共 63 个工具，按类别：
+
+- **基础视频操作**: cut_video, merge_videos, add_subtitle, change_speed, compress_video, split_video, convert_to_gif, convert_format
+- **音频处理**: add_audio, extract_audio, mix_audio_to_video, separate_vocal, normalize_audio, equalize_audio, fade_audio, add_echo, denoise_audio, pitch_shift, reverse_audio
+- **AI 能力**: smart_clip, analyze_video, analyze_video_vl, transcribe_video, generate_tts, generate_music, translate_text, detect_language
+- **素材管理**: list_videos, search_material, search_files, download_video, delete_material, random_video, set_cover, update_description, list_audios
+- **FFmpeg 滤镜**: adjust_brightness, blur_video, sharpen_video, rotate_video, flip_video, crop_video, fade_video, picture_in_picture, add_watermark, add_text_overlay, reverse_video, stabilize_video, scene_detect, slow_motion, color_adjust
+- **系统工具**: get_current_time, list_directory, get_system_info, open_folder, task_status, time_convert, srt_to_ass, suggest_music, optimize_prompt, help, extract_frames, get_video_detail, batch_compress
+
+## Core-Nexus-AI 集成
+
+所有 AI 推理通过 `CoreNexusClient` 调用（`src/shared/utils/core_nexus_client.py`）：
+
+| 功能 | 同步方法 | 异步方法 |
+|------|---------|---------|
+| LLM 生成 | `llm_generate()` | `llm_generate_async()` |
+| LLM 流式 | `llm_generate_stream()` | `llm_generate_stream_async()` |
+| TTS 合成 | `tts_generate()` | `tts_generate_async()` |
+| ASR 识别 | `asr_transcribe()` | `asr_transcribe_async()` |
+| VL 理解 | `vl_generate()` | `vl_generate_async()` |
+| 音乐生成 | `text_to_music()` | `text_to_music_async()` |
+
+- `llm_adapter.py` 的 `generate_response_async()` 直接调用 `llm_generate_async()`（真异步，非 `asyncio.to_thread`）
+- 重试逻辑使用指数退避，同步用 `time.sleep()`，异步用 `await asyncio.sleep()`
 
 ## 配置 (.env)
 
@@ -161,18 +224,11 @@ CORS_ORIGINS=http://localhost:9528
 API_PORT=9527
 ```
 
-## 测试
-
-```bash
-pytest tests/unit/ -v                           # 运行单元测试
-pytest tests/unit/test_xxx.py -v                # 运行单个测试
-pytest tests/unit/ --cov=src --cov-report=html  # 覆盖率报告
-```
-
 ## 其他约定
 
-- **数据库**：SQLite (`src/db/synthetix.db`)，Alembic `render_as_batch=True` 兼容 SQLite ALTER TABLE
-- **FFmpeg**：二进制文件在 `ffmpeg/` 文件夹
-- **静态文件**：后端挂载 `/static` 目录，前端通过 `assetUrl(path)` 构建完整 URL
-- **el-tag type**：合法值为 `success/warning/danger/info/primary`，不能传空字符串 `''`
-- **ErrorBoundary**：`MainLayout.vue` 用 `ErrorBoundary.vue` 包裹 `router-view`
+- **数据库**: SQLite (`src/db/synthetix.db`)，Alembic `render_as_batch=True` 兼容 SQLite ALTER TABLE
+- **FFmpeg**: 二进制文件在 `ffmpeg/` 目录，所有视频处理通过 `subprocess.run(['ffmpeg', ...])` 本地执行，零网络依赖
+- **静态文件**: 后端挂载 `/static` 目录，前端通过 `assetUrl(path)` 构建完整 URL
+- **el-tag type**: 合法值为 `success/warning/danger/info/primary`，不能传空字符串 `''`
+- **ErrorBoundary**: `MainLayout.vue` 用 `ErrorBoundary.vue` 包裹 `router-view`
+- **安全**: Pydantic `validate_params` 失败抛异常（不静默返回）；LLM 修正后的参数会重新校验；FFmpeg 字符串参数经 `sanitize_ffmpeg_string()` 清洗

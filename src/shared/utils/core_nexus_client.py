@@ -2,12 +2,14 @@
 core-nexus-ai API 客户端
 
 统一的 HTTP 客户端，用于调用 core-nexus-ai 服务
+支持同步和异步两种调用方式
 """
+import asyncio
 import base64
 import logging
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Generator
+from typing import Optional, Dict, Any, List, Generator, AsyncGenerator
 import httpx
 
 from src import config
@@ -32,14 +34,24 @@ class CoreNexusClient:
         if not self.base_url:
             raise ValueError("CORE_NEXUS_BASE_URL 未配置，请在 .env 中设置")
 
-        # 实例级连接复用
+        # 同步客户端（向后兼容）
         self._client = httpx.Client(timeout=timeout)
+        # 异步客户端（懒加载）
+        self._async_client: Optional[httpx.AsyncClient] = None
         logger.info(f"CoreNexusClient 初始化 | base_url: {self.base_url}")
 
     def close(self):
-        """关闭客户端连接"""
+        """关闭同步客户端连接"""
         if hasattr(self, '_client') and self._client:
             self._client.close()
+
+    async def close_async(self):
+        """关闭异步客户端连接"""
+        if self._async_client:
+            await self._async_client.aclose()
+            self._async_client = None
+
+    # ==================== 同步请求方法 ====================
 
     def _request(
         self,
@@ -128,6 +140,99 @@ class CoreNexusClient:
                     import json
                     yield json.loads(data)
 
+    # ==================== 异步请求方法 ====================
+
+    async def _get_async_client(self) -> httpx.AsyncClient:
+        """获取异步客户端（懒加载）"""
+        if self._async_client is None:
+            self._async_client = httpx.AsyncClient(timeout=self.timeout)
+        return self._async_client
+
+    async def _request_async(
+        self,
+        method: str,
+        endpoint: str,
+        json_data: Optional[Dict] = None,
+        max_retries: int = 3,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        异步发送 HTTP 请求（带指数退避重试）
+
+        Args:
+            method: HTTP 方法
+            endpoint: API 端点
+            json_data: JSON 请求数据
+            max_retries: 最大重试次数
+            **kwargs: 其他请求参数
+
+        Returns:
+            响应 JSON 数据
+        """
+        client = await self._get_async_client()
+        url = f"{self.base_url}{endpoint}"
+        kwargs.setdefault('timeout', self.timeout)
+
+        logger.debug(f"异步 API 请求: {method} {url}")
+
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                response = await client.request(method, url, json=json_data, **kwargs)
+                response.raise_for_status()
+                return response.json()
+            except httpx.TransportError as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait = 0.5 * (2 ** attempt)
+                    logger.warning(f"异步请求失败 (尝试 {attempt + 1}/{max_retries}): {e}, {wait}s 后重试")
+                    await asyncio.sleep(wait)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code < 500:
+                    raise
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait = 0.5 * (2 ** attempt)
+                    logger.warning(f"异步服务端错误 (尝试 {attempt + 1}/{max_retries}): {e}, {wait}s 后重试")
+                    await asyncio.sleep(wait)
+
+        raise last_error
+
+    async def _request_stream_async(
+        self,
+        method: str,
+        endpoint: str,
+        json_data: Optional[Dict] = None,
+        **kwargs
+    ) -> AsyncGenerator[Dict, None]:
+        """
+        异步 SSE 流式请求
+
+        Args:
+            method: HTTP 方法
+            endpoint: API 端点
+            json_data: JSON 请求数据
+            **kwargs: 其他请求参数
+
+        Yields:
+            流式响应数据
+        """
+        client = await self._get_async_client()
+        url = f"{self.base_url}{endpoint}"
+        kwargs.setdefault('timeout', self.timeout)
+
+        logger.debug(f"异步 API 流式请求: {method} {url}")
+
+        import json
+        async with client.stream(method, url, json=json_data, **kwargs) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if line.startswith('data: '):
+                    data = line[6:]
+                    if data == '[DONE]':
+                        break
+                    yield json.loads(data)
+
     # ==================== LLM 接口 ====================
 
     def llm_generate(
@@ -165,6 +270,29 @@ class CoreNexusClient:
         response = self._request('POST', '/llm', json_data=payload)
         return response.get('output', {}).get('text', '')
 
+    async def llm_generate_async(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        **generation_params
+    ) -> str:
+        """LLM 异步文本生成"""
+        payload = {
+            "messages": messages,
+            "generation": {
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                **generation_params
+            }
+        }
+        if model:
+            payload["model"] = model
+
+        response = await self._request_async('POST', '/llm', json_data=payload)
+        return response.get('output', {}).get('text', '')
+
     def llm_generate_stream(
         self,
         messages: List[Dict[str, str]],
@@ -175,16 +303,6 @@ class CoreNexusClient:
     ) -> Generator[str, None, None]:
         """
         LLM 流式文本生成
-
-        Args:
-            messages: 对话消息列表
-            model: 模型名称（可选）
-            temperature: 温度参数
-            max_tokens: 最大 token 数
-            **generation_params: 其他生成参数
-
-        Yields:
-            生成的文本片段
         """
         payload = {
             "messages": messages,
@@ -201,6 +319,30 @@ class CoreNexusClient:
             if 'text' in chunk:
                 yield chunk['text']
 
+    async def llm_generate_stream_async(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        **generation_params
+    ) -> AsyncGenerator[str, None]:
+        """LLM 异步流式文本生成"""
+        payload = {
+            "messages": messages,
+            "generation": {
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                **generation_params
+            }
+        }
+        if model:
+            payload["model"] = model
+
+        async for chunk in self._request_stream_async('POST', '/llm/stream', json_data=payload):
+            if 'text' in chunk:
+                yield chunk['text']
+
     # ==================== ASR 接口 ====================
 
     def asr_transcribe(
@@ -209,29 +351,34 @@ class CoreNexusClient:
         language: Optional[str] = None,
         **generation_params
     ) -> Dict[str, Any]:
-        """
-        ASR 语音识别
-
-        Args:
-            audio: 音频数据（base64、data URL 或文件路径）
-            language: 语言代码（可选）
-            **generation_params: 其他生成参数
-
-        Returns:
-            包含 text, language, segments 的字典
-        """
-        # 处理音频输入
+        """ASR 语音识别"""
         audio_data = self._process_audio_input(audio)
 
-        payload = {
-            "audio": audio_data,
-        }
+        payload = {"audio": audio_data}
         if language:
             payload["language"] = language
         if generation_params:
             payload["generation"] = generation_params
 
         response = self._request('POST', '/asr', json_data=payload)
+        return response.get('output', {})
+
+    async def asr_transcribe_async(
+        self,
+        audio: str,
+        language: Optional[str] = None,
+        **generation_params
+    ) -> Dict[str, Any]:
+        """ASR 异步语音识别"""
+        audio_data = self._process_audio_input(audio)
+
+        payload = {"audio": audio_data}
+        if language:
+            payload["language"] = language
+        if generation_params:
+            payload["generation"] = generation_params
+
+        response = await self._request_async('POST', '/asr', json_data=payload)
         return response.get('output', {})
 
     # ==================== TTS 接口 ====================
@@ -247,25 +394,9 @@ class CoreNexusClient:
         instruct: Optional[str] = None,
         generation: Optional[Dict] = None,
     ) -> bytes:
-        """
-        TTS 文本转语音
-
-        Args:
-            text: 要合成的文本
-            model: 模型名称（可选）
-            speaker: 说话人（可选）
-            ref_audio: 参考音频（可选，用于语音克隆）
-            ref_text: 参考音频文本（可选）
-            language: 语言（默认 Auto）
-            instruct: 指令文本（可选）
-            generation: 生成参数字典
-
-        Returns:
-            音频二进制数据
-        """
+        """TTS 文本转语音"""
         payload = {"text": text}
 
-        # 只添加非空参数
         if ref_audio:
             payload["ref_audio"] = self._process_audio_input(ref_audio)
         if ref_text:
@@ -281,7 +412,6 @@ class CoreNexusClient:
         if generation:
             payload["generation"] = generation
 
-        # 打印完整请求参数（调试用）
         import json
         logger.info(f"TTS API 调用: POST {self.base_url}/tts")
         logger.info(f"TTS 完整请求参数: {json.dumps(payload, ensure_ascii=False, indent=2)}")
@@ -296,7 +426,6 @@ class CoreNexusClient:
 
         response.raise_for_status()
 
-        # 如果返回 JSON（包含 base64 音频）
         content_type = response.headers.get('content-type', '')
         if 'application/json' in content_type:
             data = response.json()
@@ -305,7 +434,59 @@ class CoreNexusClient:
                 audio_data = audio_data.split(',', 1)[1]
             return base64.b64decode(audio_data)
 
-        # 直接返回音频二进制
+        return response.content
+
+    async def tts_generate_async(
+        self,
+        text: str,
+        model: Optional[str] = None,
+        speaker: Optional[str] = None,
+        ref_audio: Optional[str] = None,
+        ref_text: Optional[str] = None,
+        language: Optional[str] = "Auto",
+        instruct: Optional[str] = None,
+        generation: Optional[Dict] = None,
+    ) -> bytes:
+        """TTS 异步文本转语音"""
+        payload = {"text": text}
+
+        if ref_audio:
+            payload["ref_audio"] = self._process_audio_input(ref_audio)
+        if ref_text:
+            payload["ref_text"] = ref_text
+        if language:
+            payload["language"] = language
+        if model:
+            payload["model"] = model
+        if speaker:
+            payload["speaker"] = speaker
+        if instruct:
+            payload["instruct"] = instruct
+        if generation:
+            payload["generation"] = generation
+
+        import json
+        logger.info(f"TTS 异步 API 调用: POST {self.base_url}/tts")
+
+        client = await self._get_async_client()
+        url = f"{self.base_url}/tts"
+        response = await client.post(url, json=payload, timeout=self.timeout)
+
+        logger.debug(f"TTS 异步响应状态: {response.status_code}")
+
+        if response.status_code >= 400:
+            logger.error(f"TTS 异步错误响应: {response.text[:500]}")
+
+        response.raise_for_status()
+
+        content_type = response.headers.get('content-type', '')
+        if 'application/json' in content_type:
+            data = response.json()
+            audio_data = data.get('output', {}).get('audio', '')
+            if audio_data.startswith('data:'):
+                audio_data = audio_data.split(',', 1)[1]
+            return base64.b64decode(audio_data)
+
         return response.content
 
     # ==================== VL 接口 ====================
@@ -320,24 +501,8 @@ class CoreNexusClient:
         messages: Optional[List[Dict]] = None,
         **generation_params
     ) -> str:
-        """
-        VL 视觉语言理解
-
-        Args:
-            prompt: 提示词
-            image: 单张图片（本地路径、base64、data URL 或 HTTP URL）
-            images: 多张图片列表
-            video: 单个视频（本地路径、HTTP URL、base64 或 data URL）
-            videos: 多个视频列表
-            messages: 多轮对话消息（包含图片/视频）
-            **generation_params: 其他生成参数
-
-        Returns:
-            生成的文本
-        """
-        payload = {
-            "prompt": prompt,
-        }
+        """VL 视觉语言理解"""
+        payload = {"prompt": prompt}
 
         if image:
             payload["image"] = self._process_image_input(image)
@@ -355,6 +520,35 @@ class CoreNexusClient:
         response = self._request('POST', '/vl', json_data=payload)
         return response.get('output', {}).get('text', '')
 
+    async def vl_generate_async(
+        self,
+        prompt: str,
+        image: Optional[str] = None,
+        images: Optional[List[str]] = None,
+        video: Optional[str] = None,
+        videos: Optional[List[str]] = None,
+        messages: Optional[List[Dict]] = None,
+        **generation_params
+    ) -> str:
+        """VL 异步视觉语言理解"""
+        payload = {"prompt": prompt}
+
+        if image:
+            payload["image"] = self._process_image_input(image)
+        if images:
+            payload["images"] = [self._process_image_input(img) for img in images]
+        if video:
+            payload["video"] = video
+        if videos:
+            payload["videos"] = videos
+        if messages:
+            payload["messages"] = messages
+        if generation_params:
+            payload["generation"] = generation_params
+
+        response = await self._request_async('POST', '/vl', json_data=payload)
+        return response.get('output', {}).get('text', '')
+
     def vl_generate_stream(
         self,
         prompt: str,
@@ -365,24 +559,8 @@ class CoreNexusClient:
         messages: Optional[List[Dict]] = None,
         **generation_params
     ) -> Generator[str, None, None]:
-        """
-        VL 流式视觉语言理解
-
-        Args:
-            prompt: 提示词
-            image: 单张图片
-            images: 多张图片列表
-            video: 单个视频
-            videos: 多个视频列表
-            messages: 多轮对话消息
-            **generation_params: 其他生成参数
-
-        Yields:
-            生成的文本片段
-        """
-        payload = {
-            "prompt": prompt,
-        }
+        """VL 流式视觉语言理解"""
+        payload = {"prompt": prompt}
 
         if image:
             payload["image"] = self._process_image_input(image)
@@ -401,6 +579,36 @@ class CoreNexusClient:
             if 'text' in chunk:
                 yield chunk['text']
 
+    async def vl_generate_stream_async(
+        self,
+        prompt: str,
+        image: Optional[str] = None,
+        images: Optional[List[str]] = None,
+        video: Optional[str] = None,
+        videos: Optional[List[str]] = None,
+        messages: Optional[List[Dict]] = None,
+        **generation_params
+    ) -> AsyncGenerator[str, None]:
+        """VL 异步流式视觉语言理解"""
+        payload = {"prompt": prompt}
+
+        if image:
+            payload["image"] = self._process_image_input(image)
+        if images:
+            payload["images"] = [self._process_image_input(img) for img in images]
+        if video:
+            payload["video"] = video
+        if videos:
+            payload["videos"] = videos
+        if messages:
+            payload["messages"] = messages
+        if generation_params:
+            payload["generation"] = generation_params
+
+        async for chunk in self._request_stream_async('POST', '/vl/stream', json_data=payload):
+            if 'text' in chunk:
+                yield chunk['text']
+
     # ==================== Music 接口 ====================
 
     def text_to_music(
@@ -411,19 +619,7 @@ class CoreNexusClient:
         model: Optional[str] = None,
         **generation_params
     ) -> Dict[str, Any]:
-        """
-        文本生成音乐
-
-        Args:
-            prompt: 音乐描述，如 "轻快的电子音乐"
-            duration: 音乐时长（秒），默认 10 秒
-            style: 风格：pop, classical, electronic, jazz, rock, ambient, hiphop
-            model: 模型名称（可选）
-            **generation_params: 其他生成参数
-
-        Returns:
-            包含 audio, format, duration, sample_rate 的字典
-        """
+        """文本生成音乐"""
         payload = {
             "prompt": prompt,
             "duration": duration,
@@ -437,6 +633,30 @@ class CoreNexusClient:
             payload["generation"] = generation_params
 
         response = self._request('POST', '/text-to-music', json_data=payload)
+        return response.get('output', {})
+
+    async def text_to_music_async(
+        self,
+        prompt: str,
+        duration: float = 10.0,
+        style: Optional[str] = None,
+        model: Optional[str] = None,
+        **generation_params
+    ) -> Dict[str, Any]:
+        """异步文本生成音乐"""
+        payload = {
+            "prompt": prompt,
+            "duration": duration,
+        }
+
+        if style:
+            payload["style"] = style
+        if model:
+            payload["model"] = model
+        if generation_params:
+            payload["generation"] = generation_params
+
+        response = await self._request_async('POST', '/text-to-music', json_data=payload)
         return response.get('output', {})
 
     # ==================== 工具方法 ====================
@@ -478,7 +698,6 @@ class CoreNexusClient:
             return f"data:{mime_type};base64,{base64_data}"
 
         # 纯 base64 字符串，添加 data URL 前缀
-        # 尝试从 base64 内容检测格式（默认使用 wav）
         mime_type = 'audio/wav'
         return f"data:{mime_type};base64,{audio}"
 

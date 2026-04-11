@@ -43,10 +43,38 @@ class AgentPrompts:
 - add_audio: 添加音频/配音
 - change_speed: 调整播放速度
 - smart_clip: 智能剪辑（根据描述自动规划）
-- analyze_video: 分析视频内容
+- analyze_video: 分析视频内容（基础元数据）
+- analyze_video_vl: AI 视频理解（深度内容分析）
 - generate_tts: 生成语音
+- generate_music: 根据描述生成背景音乐
 - list_videos: 查看素材列表
-- search_material: 搜索/下载素材
+- search_material: 按关键词搜索下载素材（从 Pexels/Pixabay）
+- download_video: 从 URL 链接下载视频（用户提供链接）
+- compress_video: 压缩视频
+- extract_frames: 提取视频帧/截图
+- convert_to_gif: 视频转 GIF
+- separate_vocal: 人声分离
+- translate_text: 翻译文本
+- transcribe_video: 提取视频字幕/语音识别
+- extract_audio: 从视频提取音频
+- get_video_detail: 获取视频详细信息
+- split_video: 拆分视频为多段
+- adjust_brightness: 调整亮度/对比度/饱和度
+- blur_video: 模糊视频
+- sharpen_video: 锐化视频
+- rotate_video: 旋转视频
+- flip_video: 翻转视频
+- crop_video: 裁剪视频画面
+- fade_video: 视频淡入淡出
+- picture_in_picture: 画中画效果
+- add_watermark: 添加水印
+- add_text_overlay: 文字叠加
+- reverse_video: 视频倒放
+- stabilize_video: 视频防抖
+- normalize_audio: 音频标准化
+- add_echo: 添加回声/混响
+- denoise_audio: 音频降噪
+- pitch_shift: 音频变调
 - help: 获取帮助
 - unknown: 无法识别
 
@@ -67,6 +95,8 @@ class AgentPrompts:
 1. 如果用户意图不明确，设置 need_clarification=true 并提供 clarification_question
 2. entities 中提取所有相关参数
 3. confidence 表示对意图识别的置信度 (0-1)
+4. 如果用户提供了 URL 链接要下载，意图是 download_video（不是 search_material）
+5. search_material 是按关键词搜索素材（如"下载海边素材"），download_video 是用户直接给链接下载
 """
 
     SLOT_FILLING_PROMPT = """从用户输入中提取信息填充槽位。

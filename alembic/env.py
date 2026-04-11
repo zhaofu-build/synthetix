@@ -18,6 +18,7 @@ from src.domain.entities.audio_source import AudioSource
 from src.domain.entities.video_source import VideoSource
 from src.domain.entities.video_project import VideoProject, ClipPlanItem
 from src.domain.entities.bgm_item import BGMItem
+from src.domain.entities.dialog_session import DialogSession
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

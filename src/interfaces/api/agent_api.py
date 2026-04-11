@@ -46,7 +46,7 @@ class ExecuteRequest(BaseModel):
 # ==================== 对话接口 ====================
 
 @router.post("/chat", summary="处理对话消息")
-async def chat(request: ChatRequest) -> Dict[str, Any]:
+async def chat(request: ChatRequest):
     """
     处理对话消息
 
@@ -124,7 +124,7 @@ async def chat_stream(request: ChatRequest):
 # ==================== 直接执行接口 ====================
 
 @router.post("/execute", summary="直接执行工具")
-async def execute_tool(request: ExecuteRequest) -> Dict[str, Any]:
+async def execute_tool(request: ExecuteRequest):
     """
     直接执行工具（跳过对话）
 
@@ -159,7 +159,7 @@ async def execute_tool(request: ExecuteRequest) -> Dict[str, Any]:
 # ==================== 视频分析接口 ====================
 
 @router.post("/analyze/{video_id}", summary="分析视频")
-async def analyze_video(video_id: int) -> Dict[str, Any]:
+async def analyze_video(video_id: int):
     """
     分析视频内容
 
@@ -194,7 +194,7 @@ async def analyze_video(video_id: int) -> Dict[str, Any]:
 # ==================== 工具列表接口 ====================
 
 @router.get("/tools", summary="获取可用工具列表")
-async def list_tools() -> Dict[str, Any]:
+async def list_tools():
     """
     获取所有可用工具
 
@@ -221,7 +221,7 @@ async def list_tools() -> Dict[str, Any]:
 # ==================== 会话管理接口 ====================
 
 @router.delete("/session/{session_id}", summary="删除会话")
-async def delete_session(session_id: str) -> Dict[str, Any]:
+async def delete_session(session_id: str):
     """
     删除会话
 
@@ -247,7 +247,7 @@ async def delete_session(session_id: str) -> Dict[str, Any]:
 
 
 @router.get("/sessions", summary="获取活跃会话列表")
-async def list_sessions() -> Dict[str, Any]:
+async def list_sessions():
     """
     获取所有活跃会话
 

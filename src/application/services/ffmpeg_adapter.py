@@ -133,6 +133,16 @@ def process_video(input_path, output_path=None,
                   width=None, height=None,
                   cover_image=None,
                   output_format='mp4'):
+    # 参数安全清洗
+    if start_time:
+        start_time = string_util.sanitize_time(start_time)
+    if end_time:
+        end_time = string_util.sanitize_time(end_time)
+    if isinstance(speed_factor, (int, float)):
+        speed_factor = max(0.1, min(10.0, float(speed_factor)))
+    if isinstance(volume_factor, (int, float)):
+        volume_factor = max(0.0, min(5.0, float(volume_factor)))
+
     logger.debug(f"速度因子: {speed_factor}")
     logger.debug(f"音量因子: {volume_factor}")
     if speed_factor is None:
