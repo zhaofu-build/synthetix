@@ -207,45 +207,61 @@ class IntentRecognizer:
         history: List[Dict[str, str]],
         current_video: Optional[str]
     ) -> IntentResult:
-        """使用 LLM 识别意图"""
+        """使用 LLM 识别意图（带重试）"""
+        from src.shared.constants import AgentConfig
+        from src.shared.utils.string_util import safe_parse_llm_json
+
         prompt = self.prompts.format_intent_prompt(
             user_input=user_input,
             history=history,
             current_video=current_video or "无"
         )
 
-        try:
-            messages = [{"role": "user", "content": prompt}]
-            response = generate_response(messages)
+        messages = [{"role": "user", "content": prompt}]
 
-            # 清理响应
-            response = response.strip()
-            if response.startswith("```"):
-                response = response.split("\n", 1)[1]
-            if response.endswith("```"):
-                response = response.rsplit("```", 1)[0]
+        for attempt in range(AgentConfig.MAX_LLM_PARSE_RETRIES + 1):
+            try:
+                response = generate_response(messages)
 
-            result = json.loads(response)
-            return IntentResult.from_dict(result)
+                result = safe_parse_llm_json(response)
 
-        except json.JSONDecodeError as e:
-            logger.warning(f"JSON 解析失败: {e}, 原始响应: {response}")
-            return IntentResult(
-                intent="unknown",
-                confidence=0.0,
-                entities={},
-                need_clarification=True,
-                clarification_question="抱歉，我没理解您的意思。您可以描述得更具体一些吗？"
-            )
-        except Exception as e:
-            logger.error(f"意图识别失败: {e}")
-            return IntentResult(
-                intent="unknown",
-                confidence=0.0,
-                entities={},
-                need_clarification=True,
-                clarification_question="处理时出现错误，请重试。"
-            )
+                if result is None:
+                    if attempt < AgentConfig.MAX_LLM_PARSE_RETRIES:
+                        logger.warning(f"意图识别 JSON 解析失败，重试 ({attempt + 1})")
+                        messages.append({"role": "assistant", "content": response})
+                        messages.append({"role": "user", "content": "请只返回纯JSON，不要包含任何其他内容或markdown标记。"})
+                        continue
+                    raise json.JSONDecodeError("解析失败", response, 0)
+
+                return IntentResult.from_dict(result)
+
+            except json.JSONDecodeError as e:
+                if attempt == AgentConfig.MAX_LLM_PARSE_RETRIES:
+                    logger.warning(f"JSON 解析失败（已重试）: {e}, 原始响应: {response}")
+                    return IntentResult(
+                        intent="unknown",
+                        confidence=0.0,
+                        entities={},
+                        need_clarification=True,
+                        clarification_question="抱歉，我没理解您的意思。您可以描述得更具体一些吗？"
+                    )
+            except Exception as e:
+                logger.error(f"意图识别失败: {e}")
+                return IntentResult(
+                    intent="unknown",
+                    confidence=0.0,
+                    entities={},
+                    need_clarification=True,
+                    clarification_question="处理时出现错误，请重试。"
+                )
+
+        return IntentResult(
+            intent="unknown",
+            confidence=0.0,
+            entities={},
+            need_clarification=True,
+            clarification_question="抱歉，我没理解您的意思。"
+        )
 
     def get_intent_info(self, intent: str) -> Dict:
         """获取意图信息"""

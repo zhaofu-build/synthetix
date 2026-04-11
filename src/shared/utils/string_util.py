@@ -120,3 +120,26 @@ def remove_think_tags(text):
     pattern = r'<think>.*?</think>'
     # 使用 re.DOTALL 确保 . 匹配换行符，flags=re.DOTALL
     return re.sub(pattern, '', text, flags=re.DOTALL)
+
+
+def clean_llm_json_response(text: str) -> str:
+    """清理 LLM 返回的 JSON 文本，移除 markdown 代码块和 think 标签"""
+    text = text.strip()
+    # 移除 think 标签
+    text = remove_think_tags(text).strip()
+    # 移除 markdown 代码块包裹
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:])
+    if text.endswith("```"):
+        text = text.rsplit("```", 1)[0]
+    return text.strip()
+
+
+def safe_parse_llm_json(text: str):
+    """安全解析 LLM 返回的 JSON，返回 None 表示解析失败"""
+    cleaned = clean_llm_json_response(text)
+    try:
+        return json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        return None

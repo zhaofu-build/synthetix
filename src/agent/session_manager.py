@@ -36,8 +36,12 @@ class DialogState:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def add_message(self, role: str, content: str):
-        """添加消息到历史"""
+        """添加消息到历史（带截断保护）"""
         self.history.append({"role": role, "content": content})
+        # 超过上限时截断，保留最近的消息
+        from src.shared.constants import AgentConfig
+        if len(self.history) > AgentConfig.MAX_HISTORY_MESSAGES:
+            self.history = self.history[-AgentConfig.HISTORY_TRUNCATE_KEEP:]
         self.updated_at = time.time()
 
     def get_last_user_message(self) -> Optional[str]:

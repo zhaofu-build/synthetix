@@ -1,4 +1,5 @@
 import os
+import asyncio
 import uvicorn
 import logging
 from contextlib import asynccontextmanager
@@ -28,6 +29,22 @@ from src.shared.exceptions import register_exception_handlers
 logger = logging.getLogger(__name__)
 
 
+async def _session_cleanup_loop():
+    """定期清理过期会话"""
+    from src.shared.constants import AgentConfig
+    from src.agent.session_manager import get_session_manager
+
+    while True:
+        await asyncio.sleep(AgentConfig.SESSION_CLEANUP_INTERVAL)
+        try:
+            manager = get_session_manager()
+            cleaned = manager.cleanup_expired_sessions()
+            if cleaned > 0:
+                logger.info(f"清理了 {cleaned} 个过期会话")
+        except Exception as e:
+            logger.error(f"会话清理失败: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -41,10 +58,20 @@ async def lifespan(app: FastAPI):
         logger.info("临时文件目录清理完成")
     except Exception as e:
         logger.error(f"应用启动初始化失败: {str(e)}", exc_info=True)
-    
+
+    # 启动会话清理后台任务
+    cleanup_task = asyncio.create_task(_session_cleanup_loop())
+
     yield
-    
+
     # 关闭时执行
+    cleanup_task.cancel()
+    # 关闭 CoreNexusClient 连接
+    try:
+        from src.shared.utils.core_nexus_client import get_client
+        get_client().close()
+    except Exception:
+        pass
     logger.info("应用关闭")
 
 

@@ -202,29 +202,43 @@ class SlotFiller:
         slot_names: List[str],
         filled_slots: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """使用 LLM 提取槽位"""
+        """使用 LLM 提取槽位（带重试）"""
+        from src.shared.constants import AgentConfig
+        from src.shared.utils.string_util import safe_parse_llm_json
+
         prompt = self.prompts.format_slot_prompt(
             user_input=user_input,
             slot_names=slot_names,
             filled_slots=filled_slots
         )
 
-        try:
-            messages = [{"role": "user", "content": prompt}]
-            response = generate_response(messages)
+        messages = [{"role": "user", "content": prompt}]
 
-            # 清理响应
-            response = response.strip()
-            if response.startswith("```"):
-                response = response.split("\n", 1)[1]
-            if response.endswith("```"):
-                response = response.rsplit("```", 1)[0]
+        for attempt in range(AgentConfig.MAX_LLM_PARSE_RETRIES + 1):
+            try:
+                response = generate_response(messages)
 
-            return json.loads(response)
+                result = safe_parse_llm_json(response)
 
-        except Exception as e:
-            logger.error(f"槽位提取失败: {e}")
-            return {}
+                if result is None:
+                    if attempt < AgentConfig.MAX_LLM_PARSE_RETRIES:
+                        logger.warning(f"槽位提取 JSON 解析失败，重试 ({attempt + 1})")
+                        messages.append({"role": "assistant", "content": response})
+                        messages.append({"role": "user", "content": "请只返回纯JSON字典，不要包含任何其他内容或markdown标记。"})
+                        continue
+                    raise json.JSONDecodeError("解析失败", response, 0)
+
+                return result
+
+            except json.JSONDecodeError:
+                if attempt == AgentConfig.MAX_LLM_PARSE_RETRIES:
+                    logger.error(f"槽位提取失败（已重试）")
+                    return {}
+            except Exception as e:
+                logger.error(f"槽位提取失败: {e}")
+                return {}
+
+        return {}
 
     def get_missing_slots(
         self,

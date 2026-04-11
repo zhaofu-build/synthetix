@@ -3,6 +3,7 @@ LLM 文本生成服务
 
 通过 core-nexus-ai API 调用大语言模型
 """
+import asyncio
 import logging
 from typing import Optional, List, Dict
 
@@ -85,6 +86,33 @@ def generate_response_stream(
     except Exception as e:
         logger.error(f"LLM 流式调用异常: {str(e)}")
         yield f"错误: {str(e)}"
+
+
+async def generate_response_async(
+    messages: List[Dict[str, str]],
+    model_name: Optional[str] = None,
+    temperature: float = 0.7,
+    max_tokens: int = 2048,
+) -> str:
+    """
+    异步版本的 generate_response，不阻塞事件循环
+
+    Args:
+        messages: 对话消息列表
+        model_name: 模型名称（可选）
+        temperature: 温度参数
+        max_tokens: 最大 token 数
+
+    Returns:
+        生成的文本内容
+    """
+    return await asyncio.to_thread(
+        generate_response,
+        messages=messages,
+        model_name=model_name,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
 
 if __name__ == "__main__":

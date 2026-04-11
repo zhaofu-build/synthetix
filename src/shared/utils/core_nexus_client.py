@@ -5,6 +5,7 @@ core-nexus-ai API 客户端
 """
 import base64
 import logging
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Generator
 import httpx
@@ -31,22 +32,31 @@ class CoreNexusClient:
         if not self.base_url:
             raise ValueError("CORE_NEXUS_BASE_URL 未配置，请在 .env 中设置")
 
+        # 实例级连接复用
+        self._client = httpx.Client(timeout=timeout)
         logger.info(f"CoreNexusClient 初始化 | base_url: {self.base_url}")
+
+    def close(self):
+        """关闭客户端连接"""
+        if hasattr(self, '_client') and self._client:
+            self._client.close()
 
     def _request(
         self,
         method: str,
         endpoint: str,
         json_data: Optional[Dict] = None,
+        max_retries: int = 3,
         **kwargs
     ) -> Dict[str, Any]:
         """
-        发送 HTTP 请求
+        发送 HTTP 请求（带指数退避重试）
 
         Args:
             method: HTTP 方法
             endpoint: API 端点
             json_data: JSON 请求数据
+            max_retries: 最大重试次数
             **kwargs: 其他请求参数
 
         Returns:
@@ -60,10 +70,29 @@ class CoreNexusClient:
 
         logger.debug(f"API 请求: {method} {url}")
 
-        with httpx.Client() as client:
-            response = client.request(method, url, json=json_data, **kwargs)
-            response.raise_for_status()
-            return response.json()
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                response = self._client.request(method, url, json=json_data, **kwargs)
+                response.raise_for_status()
+                return response.json()
+            except httpx.TransportError as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
+                    logger.warning(f"请求失败 (尝试 {attempt + 1}/{max_retries}): {e}, {wait}s 后重试")
+                    time.sleep(wait)
+            except httpx.HTTPStatusError as e:
+                # 4xx 客户端错误不重试
+                if e.response.status_code < 500:
+                    raise
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait = 0.5 * (2 ** attempt)
+                    logger.warning(f"服务端错误 (尝试 {attempt + 1}/{max_retries}): {e}, {wait}s 后重试")
+                    time.sleep(wait)
+
+        raise last_error
 
     def _request_stream(
         self,
@@ -89,16 +118,15 @@ class CoreNexusClient:
 
         logger.debug(f"API 流式请求: {method} {url}")
 
-        with httpx.Client() as client:
-            with client.stream(method, url, json=json_data, **kwargs) as response:
-                response.raise_for_status()
-                for line in response.iter_lines():
-                    if line.startswith('data: '):
-                        data = line[6:]  # 去掉 'data: ' 前缀
-                        if data == '[DONE]':
-                            break
-                        import json
-                        yield json.loads(data)
+        with self._client.stream(method, url, json=json_data, **kwargs) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if line.startswith('data: '):
+                    data = line[6:]  # 去掉 'data: ' 前缀
+                    if data == '[DONE]':
+                        break
+                    import json
+                    yield json.loads(data)
 
     # ==================== LLM 接口 ====================
 
@@ -259,27 +287,26 @@ class CoreNexusClient:
         logger.info(f"TTS 完整请求参数: {json.dumps(payload, ensure_ascii=False, indent=2)}")
 
         url = f"{self.base_url}/tts"
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(url, json=payload)
+        response = self._client.post(url, json=payload, timeout=self.timeout)
 
-            logger.debug(f"TTS 响应状态: {response.status_code}")
+        logger.debug(f"TTS 响应状态: {response.status_code}")
 
-            if response.status_code >= 400:
-                logger.error(f"TTS 错误响应: {response.text[:500]}")
+        if response.status_code >= 400:
+            logger.error(f"TTS 错误响应: {response.text[:500]}")
 
-            response.raise_for_status()
+        response.raise_for_status()
 
-            # 如果返回 JSON（包含 base64 音频）
-            content_type = response.headers.get('content-type', '')
-            if 'application/json' in content_type:
-                data = response.json()
-                audio_data = data.get('output', {}).get('audio', '')
-                if audio_data.startswith('data:'):
-                    audio_data = audio_data.split(',', 1)[1]
-                return base64.b64decode(audio_data)
+        # 如果返回 JSON（包含 base64 音频）
+        content_type = response.headers.get('content-type', '')
+        if 'application/json' in content_type:
+            data = response.json()
+            audio_data = data.get('output', {}).get('audio', '')
+            if audio_data.startswith('data:'):
+                audio_data = audio_data.split(',', 1)[1]
+            return base64.b64decode(audio_data)
 
-            # 直接返回音频二进制
-            return response.content
+        # 直接返回音频二进制
+        return response.content
 
     # ==================== VL 接口 ====================
 

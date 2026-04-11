@@ -5,10 +5,76 @@
 """
 import logging
 from typing import Dict, List, Optional, Callable, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import asyncio
+from pydantic import BaseModel, Field
+from typing import Optional as Opt
 
 logger = logging.getLogger(__name__)
+
+
+# ==================== Pydantic 参数模型 ====================
+
+class CutVideoParams(BaseModel):
+    """剪切视频参数"""
+    video_id: int = Field(..., description="视频 ID")
+    start_time: str = Field(default="00:00:00", description="开始时间 (HH:MM:SS)")
+    end_time: Opt[str] = Field(default=None, description="结束时间 (HH:MM:SS)")
+
+
+class MergeVideosParams(BaseModel):
+    """合并视频参数"""
+    video_ids: List[int] = Field(..., description="视频 ID 列表")
+    transition: str = Field(default="cut", description="转场效果")
+
+
+class AddSubtitleParams(BaseModel):
+    """添加字幕参数"""
+    video_id: int = Field(..., description="视频 ID")
+    subtitle_content: str = Field(..., description="字幕内容或文件路径")
+    hard_subtitle: bool = Field(default=True, description="是否硬字幕")
+
+
+class ChangeSpeedParams(BaseModel):
+    """调整速度参数"""
+    video_id: int = Field(..., description="视频 ID")
+    speed_factor: float = Field(..., gt=0, le=10, description="速度倍数")
+
+
+class SmartClipParams(BaseModel):
+    """智能剪辑参数"""
+    description: str = Field(..., description="剪辑需求描述")
+    duration: float = Field(default=30.0, description="目标时长（秒）")
+    style: str = Field(default="动感", description="风格偏好")
+
+
+class AnalyzeVideoParams(BaseModel):
+    """分析视频参数"""
+    video_id: int = Field(..., description="视频 ID")
+
+
+class GenerateTtsParams(BaseModel):
+    """生成语音参数"""
+    text: str = Field(..., description="要合成的文本")
+    speaker_id: Opt[int] = Field(default=None, description="说话人/音色 ID")
+
+
+class SearchMaterialParams(BaseModel):
+    """搜索素材参数"""
+    keywords: str = Field(..., description="搜索关键词")
+
+
+# 参数模型映射
+PARAM_MODELS = {
+    "cut_video": CutVideoParams,
+    "merge_videos": MergeVideosParams,
+    "add_subtitle": AddSubtitleParams,
+    "change_speed": ChangeSpeedParams,
+    "smart_clip": SmartClipParams,
+    "analyze_video": AnalyzeVideoParams,
+    "generate_tts": GenerateTtsParams,
+    "search_material": SearchMaterialParams,
+}
 
 
 @dataclass
@@ -19,10 +85,22 @@ class Tool:
     parameters: Dict[str, Any]
     execute: Callable
     examples: List[str] = None
+    param_model: Optional[type] = None
 
     def __post_init__(self):
         if self.examples is None:
             self.examples = []
+
+    def validate_params(self, params: Dict) -> Dict:
+        """校验并规范化参数"""
+        if self.param_model is None:
+            return params
+        try:
+            model = self.param_model(**params)
+            return model.model_dump()
+        except Exception as e:
+            logger.warning(f"工具 {self.name} 参数校验失败: {e}")
+            return params  # 校验失败时返回原始参数，不阻断执行
 
 
 class ToolRegistry:
@@ -37,7 +115,8 @@ class ToolRegistry:
         name: str,
         description: str,
         parameters: Dict[str, Any],
-        examples: List[str] = None
+        examples: List[str] = None,
+        param_model: Optional[type] = None
     ) -> Callable:
         """
         注册工具装饰器
@@ -47,6 +126,7 @@ class ToolRegistry:
             description: 工具描述
             parameters: 参数定义
             examples: 使用示例
+            param_model: Pydantic 参数校验模型
 
         Returns:
             装饰器函数
@@ -57,7 +137,8 @@ class ToolRegistry:
                 description=description,
                 parameters=parameters,
                 execute=func,
-                examples=examples or []
+                examples=examples or [],
+                param_model=param_model
             )
             logger.info(f"注册工具: {name}")
             return func
@@ -106,7 +187,8 @@ registry = ToolRegistry()
         "start_time": {"type": "string", "description": "开始时间 (HH:MM:SS)"},
         "end_time": {"type": "string", "description": "结束时间 (HH:MM:SS)"},
     },
-    examples=["帮我把视频前30秒剪出来", "从第10秒到第30秒剪切"]
+    examples=["帮我把视频前30秒剪出来", "从第10秒到第30秒剪切"],
+    param_model=CutVideoParams
 )
 async def tool_cut_video(
     video_id: int,
@@ -158,7 +240,8 @@ async def tool_cut_video(
         "video_ids": {"type": "array", "description": "视频 ID 列表"},
         "transition": {"type": "string", "description": "转场效果 (dissolve/cut)"},
     },
-    examples=["把这两个视频合并", "合并选中的视频"]
+    examples=["把这两个视频合并", "合并选中的视频"],
+    param_model=MergeVideosParams
 )
 async def tool_merge_videos(
     video_ids: List[int],
@@ -213,7 +296,8 @@ async def tool_merge_videos(
         "subtitle_content": {"type": "string", "description": "字幕内容或文件路径"},
         "hard_subtitle": {"type": "boolean", "description": "是否硬字幕"},
     },
-    examples=["给视频添加字幕", "添加硬字幕"]
+    examples=["给视频添加字幕", "添加硬字幕"],
+    param_model=AddSubtitleParams
 )
 async def tool_add_subtitle(
     video_id: int,
@@ -265,7 +349,8 @@ async def tool_add_subtitle(
         "video_id": {"type": "integer", "description": "视频 ID"},
         "speed_factor": {"type": "number", "description": "速度倍数 (0.5=慢放, 2.0=快放)"},
     },
-    examples=["把视频放慢一点", "2倍速播放"]
+    examples=["把视频放慢一点", "2倍速播放"],
+    param_model=ChangeSpeedParams
 )
 async def tool_change_speed(
     video_id: int,
@@ -317,7 +402,8 @@ async def tool_change_speed(
         "duration": {"type": "number", "description": "目标时长（秒）"},
         "style": {"type": "string", "description": "风格偏好"},
     },
-    examples=["帮我做一个30秒的旅行混剪", "做一个燃一点的短视频"]
+    examples=["帮我做一个30秒的旅行混剪", "做一个燃一点的短视频"],
+    param_model=SmartClipParams
 )
 async def tool_smart_clip(
     description: str,
@@ -355,7 +441,8 @@ async def tool_smart_clip(
     parameters={
         "video_id": {"type": "integer", "description": "视频 ID"},
     },
-    examples=["分析这个视频", "看看视频里有什么"]
+    examples=["分析这个视频", "看看视频里有什么"],
+    param_model=AnalyzeVideoParams
 )
 async def tool_analyze_video(
     video_id: int,
@@ -407,7 +494,8 @@ async def tool_analyze_video(
         "text": {"type": "string", "description": "要合成的文本"},
         "speaker_id": {"type": "integer", "description": "说话人/音色 ID"},
     },
-    examples=["生成配音", "把这个文案读出来"]
+    examples=["生成配音", "把这个文案读出来"],
+    param_model=GenerateTtsParams
 )
 async def tool_generate_tts(
     text: str,
@@ -487,7 +575,8 @@ async def tool_list_videos(**kwargs) -> Dict[str, Any]:
     parameters={
         "keywords": {"type": "string", "description": "搜索关键词"},
     },
-    examples=["下载一些海边素材", "搜索城市夜景"]
+    examples=["下载一些海边素材", "搜索城市夜景"],
+    param_model=SearchMaterialParams
 )
 async def tool_search_material(
     keywords: str,

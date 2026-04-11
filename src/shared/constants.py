@@ -180,3 +180,13 @@ class RegexPatterns:
     URL = r'^https?://[^\s/$.?#].[^\s]*$'
     TIME_FORMAT = r'^\d{2}:\d{2}:\d{2}$'  # HH:MM:SS
     HEX_COLOR = r'^#[0-9A-Fa-f]{6}$'
+
+
+# Agent 配置常量
+class AgentConfig:
+    """Agent 配置"""
+    MAX_HISTORY_MESSAGES = 50      # 单会话最大消息条数
+    HISTORY_TRUNCATE_KEEP = 10     # 截断时保留最近的消息条数
+    SESSION_CLEANUP_INTERVAL = 600  # 会话清理间隔（秒），10分钟
+    MAX_ACTION_RETRIES = 2          # 工具执行最大重试次数
+    MAX_LLM_PARSE_RETRIES = 1       # LLM JSON 解析最大重试次数

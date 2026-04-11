@@ -328,7 +328,9 @@ class VideoDialogAgent:
         return "\n".join(lines)
 
     async def _execute_action(self, action: Dict) -> Dict[str, Any]:
-        """执行操作"""
+        """执行操作（带循环纠错重试）"""
+        from src.shared.constants import AgentConfig
+
         tool_name = action.get("tool")
         params = action.get("params", {})
 
@@ -339,16 +341,68 @@ class VideoDialogAgent:
                 "error": f"未知工具: {tool_name}"
             }
 
+        # 参数校验（如果工具定义了 Pydantic 模型）
+        validated_params = tool.validate_params(params)
+
+        last_error = None
+        current_params = validated_params.copy()
+
+        for attempt in range(AgentConfig.MAX_ACTION_RETRIES + 1):
+            try:
+                result = await tool.execute(**current_params)
+                if result.get("success", True):
+                    return result
+
+                # 工具返回了业务失败
+                last_error = result.get("error", "未知错误")
+                logger.warning(f"工具 {tool_name} 第 {attempt + 1} 次执行失败: {last_error}")
+
+            except Exception as e:
+                last_error = str(e)
+                logger.error(f"执行工具 {tool_name} 第 {attempt + 1} 次异常: {e}", exc_info=True)
+
+            # 如果还有重试机会，让 LLM 修正参数
+            if attempt < AgentConfig.MAX_ACTION_RETRIES:
+                corrected = await self._correct_params_with_llm(
+                    tool_name, current_params, last_error
+                )
+                if corrected:
+                    current_params = corrected
+                    logger.info(f"LLM 修正参数后重试: {current_params}")
+                else:
+                    break  # LLM 无法修正，直接退出
+
+        return {"success": False, "error": last_error}
+
+    async def _correct_params_with_llm(
+        self,
+        tool_name: str,
+        params: Dict,
+        error_msg: str
+    ) -> Optional[Dict]:
+        """使用 LLM 根据错误信息修正参数"""
+        from src.application.services.llm_adapter import generate_response
+        from src.shared.utils.string_util import safe_parse_llm_json
+
+        prompt = f"""工具执行失败，请根据错误信息修正参数。
+
+工具名称: {tool_name}
+原始参数: {json.dumps(params, ensure_ascii=False)}
+错误信息: {error_msg}
+
+请返回修正后的参数 JSON（不要包含 ```json 标记），只返回参数字典。
+如果无法修正，返回 null。"""
+
         try:
-            # 调用工具
-            result = await tool.execute(**params)
-            return result
+            messages = [{"role": "user", "content": prompt}]
+            response = generate_response(messages)
+            result = safe_parse_llm_json(response)
+            if result is None:
+                return None
+            return result if isinstance(result, dict) else None
         except Exception as e:
-            logger.error(f"执行工具 {tool_name} 失败: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            logger.warning(f"LLM 参数修正失败: {e}")
+            return None
 
     async def _get_current_video_name(self, state) -> str:
         """获取当前视频名称"""
