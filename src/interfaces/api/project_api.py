@@ -50,6 +50,7 @@ class UpdateProjectRequest(BaseModel):
     timeline_data: Optional[Dict] = None
     plan_data: Optional[Dict] = None
     output_path: Optional[str] = None
+    output_videos: Optional[List[Dict]] = None
 
 
 class SaveTimelineRequest(BaseModel):
@@ -527,6 +528,8 @@ def update_project(
             project.plan_data = req.plan_data
         if req.output_path is not None:
             project.output_path = req.output_path
+        if req.output_videos is not None:
+            project.output_videos = req.output_videos
 
         db.commit()
         db.refresh(project)
@@ -808,12 +811,22 @@ def render_project(
         )
 
         project.output_path = output_path
+        # 追加到输出视频列表
+        from datetime import datetime
+        video_entry = {
+            "path": output_path,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        output_videos = project.output_videos or []
+        output_videos.append(video_entry)
+        project.output_videos = output_videos
         project.status = "completed"
         db.commit()
 
         return success_response(data={
             "output_path": output_path,
-            "web_path": output_path
+            "web_path": output_path,
+            "output_videos": output_videos,
         }, message="渲染完成")
 
     except Exception as e:

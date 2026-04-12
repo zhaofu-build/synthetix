@@ -146,6 +146,12 @@ INTENTS = {
         "slots": [],
         "required_slots": []
     },
+    "get_video_description": {
+        "name": "查看素材描述",
+        "description": "查询视频素材的描述信息",
+        "slots": ["video_id"],
+        "required_slots": ["video_id"]
+    },
     "search_material": {
         "name": "搜索素材",
         "description": "搜索或下载视频素材",
@@ -522,8 +528,35 @@ class IntentRecognizer:
                 clarification_question=""
             )
 
-        # 查看素材
-        if any(kw in text for kw in ["素材", "视频列表", "有什么视频"]):
+        # 查看素材描述（必须在 list_videos 之前匹配，更具体）
+        # 含序数引用（第X个）或具体询问某个素材时，走描述查询
+        if any(kw in text for kw in [
+            "描述", "视频描述", "什么内容", "讲了什么", "视频内容",
+            "是什么", "告诉我", "说第", "第几个", "第一个", "第二个",
+            "第三个", "第四个", "第五个",
+        ]) or re.search(r"第\d+个", text):
+            # 但如果只是问"有什么"或"有哪些"，仍走 list_videos
+            if not any(kw in text for kw in ["有什么", "有哪些", "几个", "多少"]):
+                return IntentResult(
+                    intent="get_video_description",
+                    confidence=0.9,
+                    entities={},
+                    need_clarification=False,
+                    clarification_question=""
+                )
+
+        # AI 分析视频
+        if any(kw in text for kw in ["帮我ai分析", "帮我分析", "ai分析", "分析这个视频"]):
+            return IntentResult(
+                intent="analyze_video_vl",
+                confidence=0.9,
+                entities={},
+                need_clarification=False,
+                clarification_question=""
+            )
+
+        # 查看素材列表
+        if any(kw in text for kw in ["素材", "视频列表", "有什么视频", "都是什么视频", "几个视频"]):
             return IntentResult(
                 intent="list_videos",
                 confidence=0.9,

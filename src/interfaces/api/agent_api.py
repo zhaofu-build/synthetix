@@ -11,6 +11,7 @@ import json
 import asyncio
 
 from src.agent import VideoDialogAgent, get_video_agent
+from src.agent.react_agent import get_react_agent
 from src.shared.models.response import success_response, error_response
 
 router = APIRouter()
@@ -59,7 +60,7 @@ async def chat(request: ChatRequest):
         对话响应
     """
     try:
-        agent = get_video_agent()
+        agent = get_react_agent()
         result = await agent.process_message(
             session_id=request.session_id,
             user_input=request.message,
@@ -91,7 +92,7 @@ async def chat_stream(request: ChatRequest):
     """
     async def generate():
         try:
-            agent = get_video_agent()
+            agent = get_react_agent()
 
             # 先发送处理中状态
             yield f"data: {json.dumps({'status': 'processing'}, ensure_ascii=False)}\n\n"

@@ -296,6 +296,14 @@ def get_video_description(
     try:
         from src.application.services.qwen_vl_adapter import video_summary
         description = video_summary(video_data.get("local_path"), None)
+        # 清洗 LLM 返回的 markdown 代码块标记
+        if description:
+            description = description.strip()
+            if description.startswith("```"):
+                description = description.split("\n", 1)[-1]
+            if description.endswith("```"):
+                description = description[:-3]
+            description = description.strip()
     except ImportError:
         logger.warning(f"video_summary 模块不可用，跳过描述生成")
         description = ""

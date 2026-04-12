@@ -4,9 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-Synthetix 是一个 AI 视频剪辑平台，提供两种剪辑模式：
-1. **对话式 AI 剪辑** - 通过自然语言对话完成视频剪辑（Agent 模式）
-2. **强控制性剪辑（工作流）** - 分步流程，用户精确控制每一步
+Synthetix 是一个 AI 视频剪辑平台，采用**统一编辑器**架构：左侧工作区（剪辑方案/音频）+ 中间 AI 对话栏 + 右侧（素材库 + 视频预览）。左右两侧支持折叠。顶部菜单栏提供文件操作、项目名称编辑和工具弹窗。旧的两个独立页面（AIClip、VideoStitching）保留路由做向后兼容。
 
 后端通过 **core-nexus-ai** 统一推理框架调用 LLM、TTS、ASR、VL 等 AI 服务。
 
@@ -55,10 +53,11 @@ pytest tests/unit/ --cov=src --cov-report=html  # 覆盖率报告
 ```
 src/
 ├── agent/                    # 对话式剪辑 Agent
-│   ├── video_agent.py        # 主 Agent（状态机: IDLE→COLLECTING→CONFIRMING→EXECUTING）
+│   ├── react_agent.py        # ReAct Agent（TAOR 循环：Think→Act→Observe→Repeat）
+│   ├── video_agent.py        # 旧 Agent（状态机，保留兼容）
 │   ├── tool_registry.py      # @registry.register() 注册工具（含 Pydantic 校验、Hook）
-│   ├── intent_recognizer.py  # 意图识别（规则匹配 + LLM 兜底）
-│   ├── slot_filler.py        # 槽位填充（正则提取 + LLM 兜底）
+│   ├── intent_recognizer.py  # 意图识别（规则匹配 + LLM 兜底，旧 Agent 使用）
+│   ├── slot_filler.py        # 槽位填充（正则提取 + LLM 兜底，旧 Agent 使用）
 │   ├── session_manager.py    # 会话管理（内存缓存 + DB 双写）
 │   └── prompts.py            # LLM 提示词模板
 │
@@ -101,10 +100,17 @@ synthetix-vue/                # 前端 Vue 3 + Vite + Pinia + Element Plus
 ├── src/api/
 │   ├── request.js            # axios 实例（自动提取 data.data）
 │   ├── utils/request.js      # fetch 封装（assetUrl, API_HOST）
-│   └── modules/              # API 模块（video, audio, ai, project）
+│   └── modules/              # API 模块（video, audio, ai, project, system）
 ├── src/store/modules/
 │   ├── system.js             # 主题、系统配置
-│   └── project.js            # 项目 CRUD、防抖自动保存
+│   └── project.js            # 项目 CRUD、防抖自动保存、素材/BGM/音色管理
+├── src/layouts/MainLayout.vue  # 顶部菜单栏（文件/工具/设置 + 项目名称编辑），工具以 el-dialog 弹窗打开
+├── src/components/editor/      # 统一编辑器模块
+│   ├── UnifiedEditor.vue     # 主页面（三区域 Grid: 工作区 | AI对话 | 右侧栏，左右可折叠）
+│   ├── ChatSidebar.vue       # AI 对话栏（中间位置）
+│   ├── WorkspacePanel.vue    # 工作区（上方剪辑方案 2/3 + 下方音频 1/3，可向左折叠）
+│   ├── MaterialsPanel.vue    # 素材库（项目素材 + 素材管理/编辑弹窗）
+│   ├── PreviewPanel.vue      # 视频预览（支持多个输出视频）+ 渲染导出
 └── src/components/config/api.js  # API 端点常量 + API_HOST
 ```
 
@@ -118,9 +124,10 @@ synthetix-vue/                # 前端 Vue 3 + Vite + Pinia + Element Plus
 FastAPI 静态路由必须在动态路由（`/{id}`）之前定义，否则 `"bgm"` 等会被当作 `project_id`。
 
 ### 项目中心化
-两种剪辑模式都基于项目：
-- 进入页面先弹命名 dialog → 创建项目 → 后续操作自动保存到项目
-- 从项目列表点"打开" → 加载已有项目回显
+统一编辑器基于项目：
+- 进入页面显示欢迎视图 → 新建/选择项目 → 加载编辑器
+- 顶部菜单栏"文件"菜单可新建、切换、保存、导出项目
+- 从项目列表点"打开" → 路由到 `/editor?projectId=X`
 - 项目名称唯一，创建/修改时校验重复
 - 前端 `watch` 各字段变化 → `debounceSave` (300ms, 每字段独立 timer) → `projectApi.update`
 
@@ -141,21 +148,38 @@ const response = await fetch(`${API_HOST}/api/agent/chat`, { ... })
 
 ## 对话式 Agent 架构
 
-### 状态机流程
+### ReAct Agent（主 Agent，`react_agent.py`）
+
+采用 **"笨引擎 + 聪明模型"** 架构：运行时不含业务逻辑，所有智能决策由 LLM 完成。
+
+**TAOR 循环**: Think → Act → Observe → Repeat
 ```
-用户输入 → IDLE(意图识别) → COLLECTING(槽位填充) → CONFIRMING(方案确认) → EXECUTING(工具执行) → 完成
+用户输入 → LLM 思考 → 调用工具（或直接回复） → 观察工具结果 → 继续思考 → ... → 最终回复
 ```
 
-`video_agent.py` 中 `DialogState` 维护每个会话的状态，`SessionManager` 提供内存 + DB 双写持久化。
+**工具调用格式**（LLM 输出，正则解析）：
+```
+<tool_call name="tool_name">
+{"param": value}
+</tool_call}
+```
 
-### 新增工具的三文件同步
-每新增一个 Agent 工具，需要同步更新 3 个文件：
+关键实现细节：
+- `build_system_prompt()` 使用字符串拼接（非 `.format()`），避免 `}` 冲突
+- `END_CALL = "<" + "/tool_call>"` 避免被当作 XML 或 format 占位符
+- `_strip_tool_call_hints()` 同时移除 `<think/thinking>` 深度思考块
+- 最大 5 轮循环，防止无限循环
+- `project_id` 自动注入工具参数
+- `last_video_list` 缓存视频列表供序数解析（"第一个" → index 0）
 
-| 文件 | 更新内容 |
-|------|----------|
-| `src/agent/tool_registry.py` | `@registry.register()` 注册工具函数 |
-| `src/agent/intent_recognizer.py` | INTENTS 字典中增加意图定义（名称、描述、slots、required_slots） |
-| `src/agent/slot_filler.py` | SLOT_DEFINITIONS 增加槽位定义 + `_rule_extract()` 增加正则提取 |
+**新增工具只需修改 `tool_registry.py`**：注册工具函数即可，LLM 自动从系统提示词中学习工具用法。
+
+### 旧 Agent（`video_agent.py`，保留兼容）
+
+旧的状态机流程仍保留：IDLE → COLLECTING → CONFIRMING → EXECUTING。`intent_recognizer.py` 和 `slot_filler.py` 仅被旧 Agent 使用。`agent_api.py` 的 chat 端点默认使用 ReAct Agent。
+
+### 会话管理
+`session_manager.py` 中 `DialogState` 维护每个会话状态，`SessionManager` 提供内存 + DB 双写持久化。`DialogState` 关键字段：`project_id`, `last_video_list`, `last_referenced_video_id`。
 
 ### 工具注册模式
 ```python
@@ -187,7 +211,13 @@ async def tool_cut_video(video_id: int, start_time: str = "00:00:00",
     ...
 ```
 
-Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；`after_execute` 接收 result dict。`video_agent.py` 的 `_execute_action()` 在执行前后调用。
+Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；`after_execute` 接收 result dict。`react_agent.py` 的 `_execute_tool()` 在执行前后调用。
+
+### 工具注册关键约定
+- `cut_video` 执行后会将结果注册为新素材入库（返回新 `video_id`），支持工具链式调用（剪切 → 分析）
+- `list_videos` 支持 `project_id` 参数，按项目筛选素材
+- `get_video_description` 无描述时提示用户使用 AI 分析
+- `analyze_video_vl` 从数据库读取 `video.duration` 传给 VL，约束片段时间戳不超出视频实际时长
 
 ### 已注册工具分类
 共 63 个工具，按类别：
@@ -195,7 +225,7 @@ Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；
 - **基础视频操作**: cut_video, merge_videos, add_subtitle, change_speed, compress_video, split_video, convert_to_gif, convert_format
 - **音频处理**: add_audio, extract_audio, mix_audio_to_video, separate_vocal, normalize_audio, equalize_audio, fade_audio, add_echo, denoise_audio, pitch_shift, reverse_audio
 - **AI 能力**: smart_clip, analyze_video, analyze_video_vl, transcribe_video, generate_tts, generate_music, translate_text, detect_language
-- **素材管理**: list_videos, search_material, search_files, download_video, delete_material, random_video, set_cover, update_description, list_audios
+- **素材管理**: list_videos, get_video_description, search_material, search_files, download_video, delete_material, random_video, set_cover, update_description, list_audios
 - **FFmpeg 滤镜**: adjust_brightness, blur_video, sharpen_video, rotate_video, flip_video, crop_video, fade_video, picture_in_picture, add_watermark, add_text_overlay, reverse_video, stabilize_video, scene_detect, slow_motion, color_adjust
 - **系统工具**: get_current_time, list_directory, get_system_info, open_folder, task_status, time_convert, srt_to_ass, suggest_music, optimize_prompt, help, extract_frames, get_video_detail, batch_compress
 
@@ -229,6 +259,9 @@ API_PORT=9527
 - **数据库**: SQLite (`src/db/synthetix.db`)，Alembic `render_as_batch=True` 兼容 SQLite ALTER TABLE
 - **FFmpeg**: 二进制文件在 `ffmpeg/` 目录，所有视频处理通过 `subprocess.run(['ffmpeg', ...])` 本地执行，零网络依赖
 - **静态文件**: 后端挂载 `/static` 目录，前端通过 `assetUrl(path)` 构建完整 URL
+- **VL 视频分析**: `qwen_vl_adapter.py` 中本地文件通过 `_file_to_data_url()` 转 base64 data URL 再发给 core-nexus-ai，不能直接传文件路径。`video_summary()` 接受 `duration` 参数，在 prompt 中约束片段时间戳不超过视频实际时长
+- **项目输出视频**: `VideoProject.output_videos` (JSON 数组) 存储渲染输出列表 `[{path, created_at}]`，支持多个输出
 - **el-tag type**: 合法值为 `success/warning/danger/info/primary`，不能传空字符串 `''`
 - **ErrorBoundary**: `MainLayout.vue` 用 `ErrorBoundary.vue` 包裹 `router-view`
+- **工具页面**: TTS/ASR/VL 等工具页通过 `defineAsyncComponent` 懒加载，以 `el-dialog` 弹窗形式打开，不使用独立路由
 - **安全**: Pydantic `validate_params` 失败抛异常（不静默返回）；LLM 修正后的参数会重新校验；FFmpeg 字符串参数经 `sanitize_ffmpeg_string()` 清洗

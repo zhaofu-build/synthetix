@@ -40,6 +40,7 @@ class VideoProject(Base):
     timeline_data = Column(JSON, nullable=True, comment="时间线数据（JSON）")
     plan_data = Column(JSON, nullable=True, comment="剪辑方案数据（JSON）")
     output_path = Column(String(500), nullable=True, comment="输出文件路径")
+    output_videos = Column(JSON, nullable=True, comment="输出视频列表 [{path, created_at}]")
 
     created_at = Column(DateTime, default=datetime.utcnow, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment="更新时间")
@@ -66,6 +67,7 @@ class VideoProject(Base):
             "timeline_data": self.timeline_data,
             "plan_data": self.plan_data,
             "output_path": self.output_path,
+            "output_videos": self.output_videos or [],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

@@ -29,9 +29,14 @@ def image_summary(tmp_path: str, prompt: Optional[str] = None) -> str:
 
     try:
         client = get_client()
+        # 本地文件路径转为 data URL
+        if tmp_path and not tmp_path.startswith(("http://", "https://", "data:")):
+            image_data = _file_to_data_url(tmp_path)
+        else:
+            image_data = tmp_path
         response = client.vl_generate(
             prompt=prompt,
-            image=tmp_path
+            image=image_data
         )
         logger.info(f"✅ 图片理解完成")
         return response
@@ -41,27 +46,60 @@ def image_summary(tmp_path: str, prompt: Optional[str] = None) -> str:
         raise ValueError(f"图片理解失败: {e}")
 
 
-def video_summary(tmp_path: str, prompt: Optional[str] = None) -> str:
+def _file_to_data_url(file_path: str) -> str:
+    """将本地文件转为 data URL 格式（base64）"""
+    import base64
+    import mimetypes
+
+    mime_type, _ = mimetypes.guess_type(file_path)
+    if not mime_type:
+        mime_type = "video/mp4"
+
+    with open(file_path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("utf-8")
+
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def video_summary(tmp_path: str, prompt: Optional[str] = None, duration: Optional[float] = None) -> str:
     """
     视频内容总结
 
     Args:
         tmp_path: 视频文件路径
         prompt: 自定义提示词（可选）
+        duration: 视频时长（秒），用于提示词中约束片段范围
 
     Returns:
         视频描述文本
     """
     if prompt is None:
-        prompt = "用简练的语言描述这个视频，总结成一句话"
+        duration_hint = ""
+        if duration and duration > 0:
+            mins = int(duration) // 60
+            secs = int(duration) % 60
+            duration_str = f"{mins}分{secs}秒" if mins else f"{secs}秒"
+            duration_hint = f"\n重要：该视频总时长为 {duration_str}（{duration:.1f}秒），所有片段的end时间不得超过 {duration:.1f}。"
+
+        prompt = (
+            "请分析这个视频，将画面内容连续片段合并为一段。" +
+            duration_hint + "\n"
+            "要求：\n"
+            "1. start和end必须是视频的真实秒数，严格对齐视频实际时长\n"
+            "2. 所有片段时间必须连续且覆盖完整时长\n"
+            "3. desc简述该时间段的真实画面内容\n"
+            "4. 严格按以下JSON格式输出，不要输出任何其他文字：\n"
+            '{"segments":[{"start":0,"end":5,"desc":"画面描述"},{"start":5,"end":12,"desc":"画面描述"}]}'
+        )
 
     logger.info(f"🎬 视频理解 | 路径: {tmp_path}")
 
     try:
         client = get_client()
+        video_data = _file_to_data_url(tmp_path)
         response = client.vl_generate(
             prompt=prompt,
-            video=tmp_path
+            video=video_data
         )
         logger.info(f"✅ 视频理解完成")
         return response

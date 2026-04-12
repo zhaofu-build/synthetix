@@ -332,6 +332,7 @@ async def tool_cut_video(
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
+    import os
 
     try:
         with get_db_context() as db:
@@ -351,10 +352,28 @@ async def tool_cut_video(
                 end_time=end_time
             )
 
+            # 获取剪切后视频的时长
+            cut_info = ffmpeg.get_video_info(output_path) or {}
+            cut_duration = float(cut_info.get("duration", 0)) or None
+
+            # 入库：注册为新素材
+            cut_name = f"{video.video_name or 'video'}_cut_{start_time.replace(':','')}"
+            if end_time:
+                cut_name += f"_{end_time.replace(':','')}"
+            cut_name += os.path.splitext(video.video_name or '.mp4')[1] or '.mp4'
+
+            new_video = repo.create(
+                video_name=cut_name,
+                local_path=output_path,
+                duration=cut_duration,
+            )
+
             return {
                 "success": True,
+                "video_id": new_video.id,
                 "output_path": output_path,
-                "message": f"剪切完成: {start_time} - {end_time or '结尾'}"
+                "duration": cut_duration,
+                "message": f"剪切完成: {start_time} - {end_time or '结尾'}，新素材 ID={new_video.id}"
             }
 
     except Exception as e:
@@ -671,14 +690,34 @@ async def tool_generate_tts(
     examples=["有什么素材", "查看素材库"]
 )
 async def tool_list_videos(**kwargs) -> Dict[str, Any]:
-    """列出视频工具"""
+    """列出视频工具，支持按项目筛选"""
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
+    from src.domain.entities.video_project import VideoProject
+    from sqlalchemy.orm import joinedload
+
+    project_id = kwargs.get("project_id")
 
     try:
         with get_db_context() as db:
-            repo = VideoRepository(db)
-            videos = repo.get_all(limit=20)
+            if project_id:
+                # 按项目查询：只返回项目关联的素材
+                project = db.query(VideoProject).filter(VideoProject.id == int(project_id)).first()
+                if project and project.material_ids:
+                    repo = VideoRepository(db)
+                    videos = repo.get_by_ids(project.material_ids)
+                    label = f"项目 '{project.name}' 中"
+                else:
+                    return {
+                        "success": True,
+                        "videos": [],
+                        "count": 0,
+                        "message": "当前项目没有关联素材"
+                    }
+            else:
+                repo = VideoRepository(db)
+                videos = repo.get_all(limit=20)
+                label = "素材库中"
 
             video_list = [
                 {
@@ -690,11 +729,18 @@ async def tool_list_videos(**kwargs) -> Dict[str, Any]:
                 for v in videos
             ]
 
+            # 构建包含素材名称的详细消息
+            lines = [f"{label}共 {len(video_list)} 个素材："]
+            for i, v in enumerate(video_list):
+                name = v.get("name") or "未命名"
+                dur = v.get("duration") or ""
+                lines.append(f"{i+1}. {name} ({dur})")
+
             return {
                 "success": True,
                 "videos": video_list,
                 "count": len(video_list),
-                "message": f"共 {len(video_list)} 个素材"
+                "message": "\n".join(lines)
             }
 
     except Exception as e:
@@ -703,6 +749,75 @@ async def tool_list_videos(**kwargs) -> Dict[str, Any]:
             "success": False,
             "error": str(e)
         }
+
+
+@registry.register(
+    name="get_video_description",
+    description="查询视频素材的描述信息，如果无描述会提示用户使用 AI 分析",
+    parameters={
+        "video_id": {"type": "integer", "description": "视频素材 ID"},
+    },
+    examples=["第一个视频的描述", "这个视频讲了什么", "查看描述"],
+)
+async def tool_get_video_description(video_id: int, **kwargs) -> Dict[str, Any]:
+    """查询视频素材的描述信息"""
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+
+    try:
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            if not video:
+                return {"success": False, "error": f"找不到 ID 为 {video_id} 的素材"}
+
+            name = video.video_name or "未命名"
+            desc = video.description
+
+            if desc:
+                # 尝试解析 JSON segments 格式
+                try:
+                    obj = __import__("json").loads(desc)
+                    if isinstance(obj, dict) and "segments" in obj:
+                        segs = obj["segments"]
+                        lines = [f"- **{s.get('start', '?')}s-{s.get('end', '?')}s**: {s.get('desc', '')}" for s in segs]
+                        formatted = "\n".join(lines)
+                        return {
+                            "success": True,
+                            "video_id": video_id,
+                            "video_name": name,
+                            "description": formatted,
+                            "has_description": True,
+                            "message": f"**{name}** 的描述：\n{formatted}",
+                        }
+                except (ValueError, TypeError):
+                    pass
+
+                return {
+                    "success": True,
+                    "video_id": video_id,
+                    "video_name": name,
+                    "description": desc,
+                    "has_description": True,
+                    "message": f"**{name}** 的描述：{desc}",
+                }
+            else:
+                return {
+                    "success": True,
+                    "video_id": video_id,
+                    "video_name": name,
+                    "description": None,
+                    "has_description": False,
+                    "message": (
+                        f"**{name}** 暂无描述。\n\n"
+                        "您可以在素材库中点击「AI分析」按钮获取描述，"
+                        "或者回复 **帮我AI分析** 我来帮您分析。"
+                    ),
+                }
+
+    except Exception as e:
+        logger.error(f"查询视频描述失败: {e}")
+        return {"success": False, "error": str(e)}
 
 
 @registry.register(
@@ -816,13 +931,12 @@ async def tool_analyze_video_vl(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            # 获取基础元数据
-            info = ffmpeg.get_video_info(video.local_path) or {}
-
             # AI 视觉理解
+            duration_sec = video.duration if video.duration else None
             analysis = qwen_vl_adapter.video_summary(
                 tmp_path=video.local_path,
-                prompt=prompt
+                prompt=prompt,
+                duration=duration_sec
             )
 
             return {
@@ -830,8 +944,7 @@ async def tool_analyze_video_vl(
                 "analysis": {
                     "video_id": video_id,
                     "video_name": video.video_name,
-                    "duration": info.get("duration_hms", "未知"),
-                    "resolution": f"{info.get('width', 0)}x{info.get('height', 0)}",
+                    "duration": video.duration_hms or "未知",
                     "ai_summary": analysis
                 },
                 "message": "AI 视频分析完成"

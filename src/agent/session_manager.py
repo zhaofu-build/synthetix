@@ -38,6 +38,9 @@ class DialogState:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    project_id: Optional[int] = None
+    last_video_list: List[Dict] = field(default_factory=list)
+    last_referenced_video_id: Optional[int] = None
 
     def add_message(self, role: str, content: str):
         """添加消息到历史（带截断保护）"""
