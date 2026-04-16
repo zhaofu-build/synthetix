@@ -222,10 +222,10 @@ def process_video(input_path, output_path=None,
         'mkv': {'vcodec': 'copy', 'acodec': 'copy'},
         'avi': {'vcodec': 'libxvid', 'acodec': 'mp3'}
     }
-    config = codec_config.get(output_format, codec_config['mp4'])
+    codec = codec_config.get(output_format, codec_config['mp4'])
     cmd.extend([
-        '-c:v', config['vcodec'],
-        '-c:a', config['acodec'],
+        '-c:v', codec['vcodec'],
+        '-c:a', codec['acodec'],
         '-movflags', '+faststart',
         '-crf', '23',
         '-preset', 'fast'
@@ -942,37 +942,11 @@ def run_ffmpeg_cmd(cmd):
         logger.error(f"Command: {e.cmd}")
         logger.error(f"Return code: {e.returncode}")
         logger.error(f"Output: {e.output}")
+        raise RuntimeError(f"ffmpeg 命令执行失败 (返回码 {e.returncode}): {e.output[:500] if e.output else '无输出'}") from e
 
 
 if __name__ == '__main__':
-    import log_config
-    # 开启日志配置
-    log_config.log_run()
-    # 总大小963GB
-    SOURCE_FOLDER = "G:\\Walloaoer\\动漫\\番"
-    # 备份文件夹
-    BACKUP_FOLDER = "G:\\Walloaoer\\beifen"
-    # 执行批量压缩
-    logger.info("启动批量视频压缩任务")
-    batch_compress_videos(
-        input_dir=SOURCE_FOLDER,
-        backup_dir=BACKUP_FOLDER
-    )
-    # get_video_info("G:\\Walloaoer\\A\\YM\\Who_h256.mp4")
-    # 一些Python与ffmpeg音频处理的实用程序和命令:https://www.cnblogs.com/zhaoke271828/p/17007046.html
-    input_video_path = "D:/abm/abm.mp4"
-    output_video = "D:/output113.mp4"
-    audio_output = "D:/abm.mp3"
-    cover_image_path = "D:/opt/21.jpg"
-    # output_video = "D:/abm/final"
-    # input_subtitle_path = "D:/abm/abm.srt"
-    # add_subtitle(input_video_path, input_subtitle_path, 50)
-
-    # get_audio(input_video_path, audio_output)
-    # get_video(input_video_path, output_video)
-    # change_resolution(input_video_path, output_video, 640, 480)
-    # speed_video(input_video_path, output_video, 1.5)
-    # add_audio_to_video(input_video_path, audio_output, output_video)
+    pass
     # adjust_audio_volume(input_video_path, output_video, 0.5)
     # convert_video_format(input_video_path, "D:/output111.avi")
 

@@ -185,13 +185,15 @@ class RenderService:
     def _generate_tts(self, text: str, speaker_id: int) -> Optional[str]:
         """使用 TTS 合成语音"""
         from src.application.services.audio_service import AudioService
+        from src.infrastructure.db.session import get_db_context
         try:
-            audio_service = AudioService()
-            result = audio_service.generate_fish_speech_tts(
-                text=text,
-                audio_source_id=speaker_id
-            )
-            tts_path = result.get("local_path")
+            with get_db_context() as db:
+                audio_service = AudioService(db)
+                result = audio_service.generate_fish_speech_tts(
+                    text=text,
+                    audio_source_id=speaker_id
+                )
+                tts_path = result.get("local_path")
             if tts_path and os.path.exists(tts_path):
                 logger.info(f"TTS 生成成功: {tts_path}")
                 return tts_path
@@ -231,14 +233,14 @@ class RenderService:
                     video = repo.get_by_name(material_id)
                     if video and video.local_path:
                         return video.local_path
-                    # 尝试模糊匹配 video_name
-                    try:
-                        videos = repo.get_active_videos()
-                        for v in videos:
-                            if v.video_name and material_id in v.video_name:
-                                return v.local_path
-                    except Exception:
-                        pass
+                    # 使用数据库 LIKE 查询代替全表扫描
+                    from src.domain.entities.video_source import VideoSource
+                    video = db.query(VideoSource).filter(
+                        VideoSource.video_name.contains(material_id),
+                        VideoSource.del_flag == 0
+                    ).first()
+                    if video and video.local_path:
+                        return video.local_path
                 return None
         except Exception as e:
             logger.error(f"获取素材路径失败: {e}")

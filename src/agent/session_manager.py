@@ -7,6 +7,7 @@ import json
 import uuid
 import time
 import logging
+from datetime import datetime
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
@@ -216,7 +217,7 @@ class SessionManager:
                     existing.pending_action = state.pending_action
                     existing.plan = state.plan
                     existing.metadata_ = state.metadata
-                    existing.updated_at = __import__('datetime').datetime.utcnow()
+                    existing.updated_at = datetime.utcnow()
                 else:
                     row = DialogSession(
                         session_id=state.session_id,

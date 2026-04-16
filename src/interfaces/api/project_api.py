@@ -281,12 +281,14 @@ def generate_tts(req: GenerateTtsRequest):
     """生成TTS语音并返回音频路径"""
     try:
         from src.application.services.audio_service import AudioService
-        audio_service = AudioService()
-        result = audio_service.generate_fish_speech_tts(
-            text=req.text,
-            audio_source_id=req.speaker_id
-        )
-        tts_path = result.get("local_path")
+        from src.infrastructure.db.session import get_db_context
+        with get_db_context() as db:
+            audio_service = AudioService(db)
+            result = audio_service.generate_fish_speech_tts(
+                text=req.text,
+                audio_source_id=req.speaker_id
+            )
+            tts_path = result.get("local_path")
         if tts_path:
             return success_response(data={"web_path": tts_path, "local_path": tts_path}, message="语音生成成功")
         return error_response(error="TtsError", message="语音生成失败", code=500)

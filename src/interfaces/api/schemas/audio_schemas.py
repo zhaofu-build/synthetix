@@ -20,23 +20,6 @@ class FishSpeechTTSRequest(BaseModel):
         extra = 'forbid'
 
 
-class SovitsTTSRequest(BaseModel):
-    """SoVITS V4 语音克隆请求"""
-    text: str = Field(..., min_length=1, max_length=5000, description="要合成的文本")
-    ref_wav_path: str = Field(..., min_length=1, description="参考音频路径")
-    prompt_text: Optional[str] = Field(None, max_length=500, description="提示文本")
-    prompt_language: Optional[str] = Field(None, description="提示语言")
-    text_language: Optional[str] = Field(None, description="文本语言")
-    how_to_cut: Optional[str] = Field(None, description="切割方式")
-    top_k: Optional[int] = Field(None, ge=1, le=100, description="Top K参数")
-    top_p: Optional[float] = Field(None, ge=0.0, le=1.0, description="Top P参数")
-    temperature: Optional[float] = Field(None, ge=0.0, le=2.0, description="温度参数")
-    speed: Optional[float] = Field(None, ge=0.1, le=5.0, description="语速")
-
-    class Config:
-        extra = 'forbid'
-
-
 class AudioSeparateRequest(BaseModel):
     """音频分离请求"""
     audio_path: str = Field(..., min_length=1, description="音频文件路径")

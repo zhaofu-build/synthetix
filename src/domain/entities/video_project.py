@@ -5,7 +5,7 @@
 """
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from sqlalchemy import Column, Integer, String, Text, Float, DateTime, JSON
+from sqlalchemy import Column, Integer, String, Text, Float, DateTime, JSON, ForeignKey
 from sqlalchemy.orm import relationship
 
 from src.domain.entities.base import Base
@@ -19,7 +19,7 @@ class VideoProject(Base):
     name = Column(String(255), nullable=False, comment="项目名称")
     description = Column(Text, nullable=True, comment="项目描述")
     mode = Column(String(20), default="workflow", comment="模式: workflow/conversation")
-    status = Column(String(50), default="draft", comment="状态: draft/processing/completed")
+    status = Column(String(50), default="draft", comment="状态: draft/processing/completed", index=True)
     duration = Column(Float, default=0.0, comment="总时长（秒）")
 
     # 工作流配置
@@ -27,9 +27,9 @@ class VideoProject(Base):
     creative = Column(Text, nullable=True, comment="文案内容")
     target_duration = Column(Float, nullable=True, comment="目标时长（秒）")
     style = Column(String(50), nullable=True, comment="风格")
-    speaker_id = Column(Integer, nullable=True, comment="音色ID")
+    speaker_id = Column(Integer, ForeignKey('audio_source.id'), nullable=True, comment="音色ID")
     tts_path = Column(String(500), nullable=True, comment="TTS音频路径")
-    bgm_id = Column(Integer, nullable=True, comment="BGM ID")
+    bgm_id = Column(Integer, ForeignKey('bgm_library.id'), nullable=True, comment="BGM ID")
     bgm_volume = Column(Float, default=0.3, comment="BGM音量")
     current_step = Column(Integer, default=0, comment="当前步骤(0-3)")
 
@@ -44,6 +44,9 @@ class VideoProject(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment="更新时间")
+
+    # NOTE: 时间字段使用 DateTime + datetime.utcnow，与 VideoSource/AudioSource/BGMItem 的
+    # TIMESTAMP + func.current_timestamp() 不一致。统一为同一种方案需要数据迁移，暂不修改。
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -78,7 +81,7 @@ class ClipPlanItem(Base):
     __tablename__ = "clip_plan_items"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    project_id = Column(Integer, nullable=False, comment="项目 ID")
+    project_id = Column(Integer, ForeignKey('video_projects.id'), nullable=False, comment="项目 ID")
     sequence = Column(Integer, default=0, comment="顺序")
     material_id = Column(Integer, nullable=True, comment="素材 ID")
     material_name = Column(String(255), nullable=True, comment="素材名称")

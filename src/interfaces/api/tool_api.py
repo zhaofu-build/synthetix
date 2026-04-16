@@ -5,6 +5,7 @@
 
 路由前缀: /api/tools
 """
+import os
 import logging
 from fastapi import APIRouter, UploadFile, File
 
@@ -21,11 +22,16 @@ router = APIRouter()
 @router.post("/upload/video", summary="上传视频文件")
 async def upload_video(file_stream: UploadFile = File(...)):
     """上传视频文件并获取视频信息"""
+    # 校验文件类型
+    ALLOWED_VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm", ".mpg", ".mpeg", ".3gp", ".ts"}
+    ext = os.path.splitext(file_stream.filename or "")[1].lower()
+    if ext not in ALLOWED_VIDEO_EXT:
+        return error_response(error="UploadError", message=f"不支持的视频格式: {ext}", code=400)
+
     try:
         file_info = await file_util.save_uploaded_file(file_stream, config.UPLOAD_DIR)
         video_info = use_ffmpeg.get_video_info(file_info["local_path"])
 
-        # 统一使用 snake_case，success_response 会自动转换为 camelCase
         return success_response(
             data={
                 "web_path": file_info["web_path"],
@@ -39,9 +45,23 @@ async def upload_video(file_stream: UploadFile = File(...)):
         return error_response(error="UploadError", message=str(e), code=500)
 
 
+# 允许的通用文件类型
+_ALLOWED_FILE_EXT = {
+    ".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm", ".mpg", ".mpeg", ".3gp", ".ts",
+    ".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".wma",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg",
+    ".srt", ".ass", ".vtt", ".txt", ".json",
+}
+
+
 @router.post("/upload/file", summary="上传通用文件")
 async def upload_file(file_stream: UploadFile = File(...)):
     """上传通用文件"""
+    # 校验文件类型
+    ext = os.path.splitext(file_stream.filename or "")[1].lower()
+    if ext not in _ALLOWED_FILE_EXT:
+        return error_response(error="UploadError", message=f"不支持的文件格式: {ext}", code=400)
+
     try:
         file_info = await file_util.save_uploaded_file(file_stream, config.UPLOAD_DIR)
 

@@ -85,7 +85,7 @@ async def llm_generate(request: LLMRequest):
         # 生成参数
         gen_config = request.generation or GenerationConfig()
 
-        result = client.llm_generate(
+        result = await client.llm_generate_async(
             messages=messages,
             model=request.model,
             temperature=gen_config.temperature,
@@ -120,9 +120,9 @@ async def llm_generate_stream(request: LLMRequest):
         # 生成参数
         gen_config = request.generation or GenerationConfig()
 
-        def generate():
+        async def generate():
             try:
-                for chunk in client.llm_generate_stream(
+                async for chunk in client.llm_generate_stream_async(
                     messages=messages,
                     model=request.model,
                     temperature=gen_config.temperature,
@@ -160,7 +160,7 @@ async def tts_generate(request: TTSRequest):
     try:
         client = get_client()
 
-        audio_data = client.tts_generate(
+        audio_data = await client.tts_generate_async(
             text=request.text,
             model=request.model,
             speaker=request.speaker,
@@ -206,7 +206,7 @@ async def tts_with_upload(
             audio_bytes = await ref_audio.read()
             ref_audio_data = base64.b64encode(audio_bytes).decode('utf-8')
 
-        audio_data = client.tts_generate(
+        audio_data = await client.tts_generate_async(
             text=text,
             speaker=speaker,
             ref_audio=ref_audio_data,
@@ -239,7 +239,7 @@ async def asr_transcribe(request: ASRRequest):
     try:
         client = get_client()
 
-        result = client.asr_transcribe(
+        result = await client.asr_transcribe_async(
             audio=request.audio,
             language=request.language,
             **(request.generation or {})
@@ -269,7 +269,7 @@ async def asr_with_upload(
         audio_bytes = await audio.read()
         audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
 
-        result = client.asr_transcribe(
+        result = await client.asr_transcribe_async(
             audio=audio_base64,
             language=language,
         )
@@ -293,7 +293,7 @@ async def vl_generate(request: VLRequest):
     try:
         client = get_client()
 
-        result = client.vl_generate(
+        result = await client.vl_generate_async(
             prompt=request.prompt,
             image=request.image,
             images=request.images,
@@ -318,9 +318,9 @@ async def vl_generate_stream(request: VLRequest):
     try:
         client = get_client()
 
-        def generate():
+        async def generate():
             try:
-                for chunk in client.vl_generate_stream(
+                async for chunk in client.vl_generate_stream_async(
                     prompt=request.prompt,
                     image=request.image,
                     images=request.images,
@@ -366,7 +366,7 @@ async def vl_with_upload(
             image_bytes = await image.read()
             image_data = base64.b64encode(image_bytes).decode('utf-8')
 
-        result = client.vl_generate(
+        result = await client.vl_generate_async(
             prompt=prompt,
             image=image_data,
         )
@@ -399,7 +399,7 @@ async def text_to_music(request: TextToMusicRequest):
     try:
         client = get_client()
 
-        result = client.text_to_music(
+        result = await client.text_to_music_async(
             prompt=request.prompt,
             duration=request.duration,
             style=request.style,

@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import sys
+import json
 import time
 from typing import Dict, List, Optional, Callable, Any
 from dataclasses import dataclass, field
@@ -302,9 +303,15 @@ def validate_videos_exist(params: Dict) -> Dict:
     if video_ids:
         with get_db_context() as db:
             repo = VideoRepository(db)
-            for vid in video_ids:
-                if not repo.exists(vid):
-                    raise ValueError(f"视频 {vid} 不存在")
+            # Batch check instead of one-by-one
+            existing_ids = set(
+                row[0] for row in db.query(repo.model.id)
+                .filter(repo.model.id.in_(video_ids))
+                .all()
+            )
+            missing = [vid for vid in video_ids if vid not in existing_ids]
+            if missing:
+                raise ValueError(f"视频不存在: {missing}")
     return params
 
 
@@ -694,7 +701,6 @@ async def tool_list_videos(**kwargs) -> Dict[str, Any]:
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.domain.entities.video_project import VideoProject
-    from sqlalchemy.orm import joinedload
 
     project_id = kwargs.get("project_id")
 
@@ -777,7 +783,7 @@ async def tool_get_video_description(video_id: int, **kwargs) -> Dict[str, Any]:
             if desc:
                 # 尝试解析 JSON segments 格式
                 try:
-                    obj = __import__("json").loads(desc)
+                    obj = json.loads(desc)
                     if isinstance(obj, dict) and "segments" in obj:
                         segs = obj["segments"]
                         lines = [f"- **{s.get('start', '?')}s-{s.get('end', '?')}s**: {s.get('desc', '')}" for s in segs]
@@ -1137,10 +1143,25 @@ async def tool_list_directory(
 ) -> Dict[str, Any]:
     """列出目录工具"""
     import os
+    from pathlib import Path as FilePath
     from src import config
 
     try:
         target = path or config.UPLOAD_DIR
+
+        # 防止目录穿越：只允许访问项目相关目录
+        allowed_dirs = [
+            FilePath(config.UPLOAD_DIR).resolve(),
+            FilePath(config.source_videos_dir).resolve() if hasattr(config, 'source_videos_dir') else None,
+            FilePath(config.source_audios_dir).resolve() if hasattr(config, 'source_audios_dir') else None,
+            FilePath("static").resolve(),
+        ]
+        allowed_dirs = [d for d in allowed_dirs if d is not None]
+
+        target_resolved = FilePath(target).resolve()
+        if not any(str(target_resolved).startswith(str(d)) for d in allowed_dirs):
+            return {"success": False, "error": f"不允许访问该目录: {target}"}
+
         if not os.path.isdir(target):
             return {"success": False, "error": f"目录不存在: {target}"}
 

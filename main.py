@@ -7,9 +7,11 @@ from contextlib import asynccontextmanager
 os.environ['HF_ENDPOINT'] = "https://hf-mirror.com"
 os.environ['HF_HOME'] = 'D:/hf-model'
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from src import log_config, config
 from src.infrastructure.db.alembic_manager import init_database_with_alembic
 from src.interfaces.api.svc_api import router as audio_api
@@ -106,9 +108,52 @@ app.add_middleware(
     allow_headers=["*"],  # 允许所有头部
 )
 
-# 配置静态文件服务
+# 配置静态文件目录
 os.makedirs(config.UPLOAD_DIR, exist_ok=True)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# ── 前端 SPA 挂载 ──────────────────────────────────────────────
+FRONTEND_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "synthetix-vue", "dist")
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _safe_file(base: str, rel_path: str):
+    """返回安全绝对路径，防止目录穿越；不在 base 内则返回 None"""
+    base_resolved = Path(base).resolve()
+    target = (base_resolved / rel_path).resolve()
+    if str(target).startswith(str(base_resolved)):
+        return str(target) if target.is_file() else None
+    return None
+
+
+@app.get("/")
+async def serve_frontend_index():
+    index = os.path.join(FRONTEND_DIST, "index.html")
+    if os.path.isfile(index):
+        return FileResponse(index)
+    from fastapi.responses import JSONResponse
+    return JSONResponse({"message": "前端未构建，请先执行: cd synthetix-vue && npm run build"}, status_code=404)
+
+
+@app.get("/{full_path:path}")
+async def serve_spa(full_path: str):
+    # 1) 后端静态文件 (/static/...)
+    if full_path.startswith("static/"):
+        fpath = _safe_file(_BASE_DIR, full_path)
+        if fpath:
+            return FileResponse(fpath)
+
+    # 2) 前端构建产物 (assets/..., favicon.ico 等)
+    fpath = _safe_file(FRONTEND_DIST, full_path)
+    if fpath:
+        return FileResponse(fpath)
+
+    # 3) SPA 回退 → index.html（客户端路由由 Vue Router 处理）
+    index = os.path.join(FRONTEND_DIST, "index.html")
+    if os.path.isfile(index):
+        return FileResponse(index)
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse({"detail": "Not Found"}, status_code=404)
 
 
 def run():
@@ -123,10 +168,10 @@ def run():
     base_url = f"http://127.0.0.1:{config.api_host}"
     # 同时记录到日志
     logger.info("API 服务访问地址:")
+    logger.info(f"  ├─ Web 界面:              {base_url}")
     logger.info(f"  ├─ API 文档 (Swagger UI): {base_url}/docs")
     logger.info(f"  ├─ API 文档 (ReDoc):      {base_url}/redoc")
-    logger.info(f"  ├─ OpenAPI Schema:        {base_url}/openapi.json")
-    logger.info(f"  └─ API 根地址:            {base_url}")
+    logger.info(f"  └─ OpenAPI Schema:        {base_url}/openapi.json")
     logger.info("=" * 60)
     logger.info("")
     # 使用 Alembic 初始化数据库

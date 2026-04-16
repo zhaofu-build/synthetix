@@ -13,7 +13,6 @@ from src.interfaces.api.schemas.video_schemas import (
 )
 from src.interfaces.api.schemas.audio_schemas import (
     FishSpeechTTSRequest,
-    SovitsTTSRequest,
     AudioSeparateRequest,
     AudioMergeRequest,
 )
@@ -33,7 +32,6 @@ __all__ = [
     "BatchCompressRequest",
     # Audio schemas
     "FishSpeechTTSRequest",
-    "SovitsTTSRequest",
     "AudioSeparateRequest",
     "AudioMergeRequest",
     # Common schemas

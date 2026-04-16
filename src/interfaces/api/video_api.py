@@ -7,6 +7,7 @@
 
 注意：路由顺序很重要！静态路由必须在动态路由（/{video_id}）之前定义。
 """
+import os
 import logging
 from typing import Optional
 from pathlib import Path
@@ -57,11 +58,18 @@ async def upload_video(
     service: VideoService = Depends(get_video_service)
 ):
     """上传视频素材"""
+    # 校验文件类型
+    ALLOWED_VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm", ".mpg", ".mpeg", ".3gp", ".ts"}
+    filename = file_stream.filename or "video.mp4"
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_VIDEO_EXT:
+        return error_response(error="UploadError", message=f"不支持的视频格式: {ext}，支持: {', '.join(sorted(ALLOWED_VIDEO_EXT))}", code=400)
+
     try:
         content = await file_stream.read()
         result = service.upload_video_file_from_bytes(
             file_content=content,
-            filename=file_stream.filename or "video.mp4"
+            filename=filename
         )
         return success_response(data={"id": result["id"]}, message="上传成功", code=201)
     except (ValueError, IOError) as e:

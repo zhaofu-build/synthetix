@@ -28,7 +28,10 @@ class AudioSource(Base, ToDictMixin):
     create_time = Column(TIMESTAMP, default=func.current_timestamp(), comment='创建时间')
     
     # 逻辑删除标志：0-未删除，1-已删除
-    del_flag = Column(SmallInteger, default=0, comment='逻辑删除 0:未删除 1:已删除')
+    del_flag = Column(SmallInteger, default=0, comment='逻辑删除 0:未删除 1:已删除', index=True)
+
+    # NOTE: 时间字段使用 TIMESTAMP + func.current_timestamp()，与 VideoProject/ClipPlanItem 的
+    # DateTime + datetime.utcnow 不一致。统一为同一种方案需要数据迁移，暂不修改。
     
     # 随机种子参数[1-100000]
     seed = Column(Integer, nullable=True, comment='随机种子参数[1-100000]')

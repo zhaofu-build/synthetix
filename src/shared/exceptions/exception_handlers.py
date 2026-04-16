@@ -6,6 +6,7 @@
 import logging
 import traceback
 import os
+import time
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import HTTPException as FastAPIHTTPException, RequestValidationError
@@ -46,7 +47,7 @@ def build_error_response(
         "success": False,
         "message": "服务器内部错误",
         "code": status_code,
-        "timestamp": int(__import__('time').time()),
+        "timestamp": int(time.time()),
     }
 
     if include_path:
@@ -93,7 +94,7 @@ async def http_exception_handler(request: Request, exc: FastAPIHTTPException):
         "code": exc.status_code,
         "error": "HTTPException",
         "path": str(request.url.path),
-        "timestamp": int(__import__('time').time()),
+        "timestamp": int(time.time()),
     }
 
     return JSONResponse(status_code=exc.status_code, content=response)
@@ -106,7 +107,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         import json
         body = await request.body()
         body_str = body.decode() if body else "empty"
-    except:
+    except Exception:
         body_str = "unable to read"
 
     errors = []
@@ -131,7 +132,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         "error": "ValidationError",
         "path": str(request.url.path),
         "details": {"errors": errors},
-        "timestamp": int(__import__('time').time()),
+        "timestamp": int(time.time()),
     }
 
     return JSONResponse(status_code=422, content=response)
@@ -181,7 +182,7 @@ async def not_found_exception_handler(request: Request, exc: Exception):
             "code": 404,
             "error": "NotFoundError",
             "path": str(request.url.path),
-            "timestamp": int(__import__('time').time()),
+            "timestamp": int(time.time()),
         }
     )
 

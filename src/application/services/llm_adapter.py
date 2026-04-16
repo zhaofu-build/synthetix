@@ -53,7 +53,7 @@ def generate_response(
         return response
     except Exception as e:
         logger.error(f"LLM 调用异常: {str(e)}")
-        return f"错误: {str(e)}"
+        raise RuntimeError(f"LLM 调用失败: {str(e)}") from e
 
 
 def generate_response_stream(
@@ -85,7 +85,7 @@ def generate_response_stream(
             yield chunk
     except Exception as e:
         logger.error(f"LLM 流式调用异常: {str(e)}")
-        yield f"错误: {str(e)}"
+        raise RuntimeError(f"LLM 流式调用失败: {str(e)}") from e
 
 
 async def generate_response_async(
@@ -116,7 +116,7 @@ async def generate_response_async(
         )
     except Exception as e:
         logger.error(f"LLM 异步调用异常: {str(e)}")
-        return f"错误: {str(e)}"
+        raise RuntimeError(f"LLM 异步调用失败: {str(e)}") from e
 
 
 async def generate_response_stream_async(
@@ -148,7 +148,7 @@ async def generate_response_stream_async(
             yield chunk
     except Exception as e:
         logger.error(f"LLM 异步流式调用异常: {str(e)}")
-        yield f"错误: {str(e)}"
+        raise RuntimeError(f"LLM 异步流式调用失败: {str(e)}") from e
 
 
 if __name__ == "__main__":

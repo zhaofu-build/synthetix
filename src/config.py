@@ -56,7 +56,7 @@ video_type = os.getenv('VIDEO_TYPE', 'pexels')
 video_api_keys = os.getenv('VIDEO_API_KEYS', '')
 
 # CORS配置 - 允许的来源，逗号分隔
-cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:9528,http://127.0.0.1:9528').split(',')
+cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:9528,http://127.0.0.1:9528,http://localhost:9527,http://127.0.0.1:9527').split(',')
 
 # 代理配置
 proxy = os.getenv('PROXY', '')

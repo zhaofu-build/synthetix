@@ -11,14 +11,14 @@ Synthetix 是一个 AI 视频剪辑平台，采用**统一编辑器**架构：�
 ## 运行应用
 
 ```bash
-# 启动 API (端口 9527)
+# 构建前端（首次或前端代码变更后）
+cd synthetix-vue && npx vite build
+
+# 启动后端（同时提供 API + 前端，单端口 9527）
 python main.py
 
-# 启动前端 (端口 9528)
+# 前端开发模式（可选，热更新，端口 9528）
 cd synthetix-vue && npm run dev
-
-# 构建前端
-cd synthetix-vue && npx vite build
 
 # lint
 cd synthetix-vue && npm run lint
@@ -27,8 +27,8 @@ cd synthetix-vue && npm run lint
 cd synthetix-vue && npm run format
 ```
 
-- API 文档: http://127.0.0.1:9527/docs
-- Web 界面: http://127.0.0.1:9528
+- Web 界面 + API 文档: http://127.0.0.1:9527 （`/docs` 为 Swagger UI）
+- 前端开发模式: http://127.0.0.1:9528（需同时运行后端）
 
 ## 数据库迁移
 
@@ -220,7 +220,7 @@ Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；
 - `analyze_video_vl` 从数据库读取 `video.duration` 传给 VL，约束片段时间戳不超出视频实际时长
 
 ### 已注册工具分类
-共 63 个工具，按类别：
+共 64 个工具，按类别：
 
 - **基础视频操作**: cut_video, merge_videos, add_subtitle, change_speed, compress_video, split_video, convert_to_gif, convert_format
 - **音频处理**: add_audio, extract_audio, mix_audio_to_video, separate_vocal, normalize_audio, equalize_audio, fade_audio, add_echo, denoise_audio, pitch_shift, reverse_audio
@@ -258,7 +258,8 @@ API_PORT=9527
 
 - **数据库**: SQLite (`src/db/synthetix.db`)，Alembic `render_as_batch=True` 兼容 SQLite ALTER TABLE
 - **FFmpeg**: 二进制文件在 `ffmpeg/` 目录，所有视频处理通过 `subprocess.run(['ffmpeg', ...])` 本地执行，零网络依赖
-- **静态文件**: 后端挂载 `/static` 目录，前端通过 `assetUrl(path)` 构建完整 URL
+- **静态文件**: 后端通过 `main.py` 的全捕获路由提供 `/static/` 文件和前端 SPA，前端通过 `assetUrl(path)` 构建完整 URL
+- **SPA 挂载**: `main.py` 将 `synthetix-vue/dist` 挂载到 FastAPI：`/` 和 `/{path:path}` 路由依次检查后端静态文件、前端构建产物，未命中则回退 `index.html`（Vue Router 客户端路由）
 - **VL 视频分析**: `qwen_vl_adapter.py` 中本地文件通过 `_file_to_data_url()` 转 base64 data URL 再发给 core-nexus-ai，不能直接传文件路径。`video_summary()` 接受 `duration` 参数，在 prompt 中约束片段时间戳不超过视频实际时长
 - **项目输出视频**: `VideoProject.output_videos` (JSON 数组) 存储渲染输出列表 `[{path, created_at}]`，支持多个输出
 - **el-tag type**: 合法值为 `success/warning/danger/info/primary`，不能传空字符串 `''`

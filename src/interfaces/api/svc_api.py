@@ -14,7 +14,6 @@ from src import config
 from src.shared.models.response import success_response, error_response
 from src.interfaces.api.schemas.audio_schemas import (
     FishSpeechTTSRequest,
-    SovitsTTSRequest,
     AudioSeparateRequest,
     AudioMergeRequest,
 )
@@ -178,30 +177,6 @@ async def fish_speech_tts(
     except Exception as e:
         logger.error(f"语音生成失败: {e}")
         return error_response(error="TTSError", message=f"语音生成失败: {str(e)}", code=500)
-
-
-@router.post("/tts/sovits-v4", summary="SoVITS V4 语音克隆")
-async def sovits_v4_tts(
-    req: SovitsTTSRequest,
-    service: AudioService = Depends(get_audio_service)
-):
-    """语音克隆（SoVITS V4）"""
-    try:
-        result = service.generate_sovits_tts(
-            text=req.text,
-            ref_wav_path=req.ref_wav_path,
-            prompt_text=req.prompt_text,
-            prompt_language=req.prompt_language,
-            text_language=req.text_language,
-            how_to_cut=req.how_to_cut,
-            top_k=req.top_k,
-            top_p=req.top_p,
-            temperature=req.temperature,
-            speed=req.speed,
-        )
-        return success_response(data=result, message="语音生成成功")
-    except ValueError as e:
-        return error_response(error="TTSError", message=str(e), code=500)
 
 
 # ==================== 音频处理 ====================

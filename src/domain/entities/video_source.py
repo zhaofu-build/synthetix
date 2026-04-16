@@ -16,7 +16,7 @@ class VideoSource(Base, ToDictMixin):
     id = Column(Integer, primary_key=True, autoincrement=True, comment='主键ID')
     
     # 视频名称
-    video_name = Column(Text, nullable=True, comment='视频名称')
+    video_name = Column(Text, nullable=True, comment='视频名称', index=True)
     
     # web路径
     web_path = Column(Text, nullable=True, comment='Web访问路径')
@@ -34,13 +34,16 @@ class VideoSource(Base, ToDictMixin):
     description = Column(Text, nullable=True, comment='视频描述')
     
     # 视频类型：0-未使用，1-使用中
-    video_type = Column(SmallInteger, default=0, comment='视频类型 0:未使用 1:使用中')
+    video_type = Column(SmallInteger, default=0, comment='视频类型 0:未使用 1:使用中', index=True)
     
     # 创建时间
     create_time = Column(TIMESTAMP, default=func.current_timestamp(), comment='创建时间')
     
     # 逻辑删除标志：0-未删除，1-已删除
-    del_flag = Column(SmallInteger, default=0, comment='逻辑删除 0:未删除 1:已删除')
-    
+    del_flag = Column(SmallInteger, default=0, comment='逻辑删除 0:未删除 1:已删除', index=True)
+
+    # NOTE: 时间字段使用 TIMESTAMP + func.current_timestamp()，与 VideoProject/ClipPlanItem 的
+    # DateTime + datetime.utcnow 不一致。统一为同一种方案需要数据迁移，暂不修改。
+
     def __repr__(self):
         return f"<VideoSource(id={self.id}, video_name='{self.video_name}', video_type={self.video_type})>"
