@@ -1,5 +1,7 @@
 import os
+import subprocess
 import asyncio
+import shutil
 import uvicorn
 import logging
 from contextlib import asynccontextmanager
@@ -156,14 +158,52 @@ async def serve_spa(full_path: str):
     return JSONResponse({"detail": "Not Found"}, status_code=404)
 
 
+def _build_frontend():
+    """启动时自动构建前端，失败不阻塞"""
+    frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "synthetix-vue")
+    if not os.path.isdir(frontend_dir):
+        logger.warning("前端目录不存在，跳过构建")
+        return
+
+    # 检查 npm 是否可用
+    npm_cmd = shutil.which("npm")
+    if npm_cmd is None:
+        logger.warning("npm 未安装，跳过前端构建")
+        return
+
+    try:
+        logger.info("正在自动构建前端...")
+        result = subprocess.run(
+            ["npm", "run", "build"],
+            cwd=frontend_dir,
+            shell=True,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+        )
+        if result.returncode == 0:
+            logger.info("前端构建完成")
+        else:
+            logger.warning(f"前端构建失败 (exit {result.returncode}): {result.stderr[-500:] if result.stderr else ''}")
+    except subprocess.TimeoutExpired:
+        logger.warning("前端构建超时 (300s)，跳过")
+    except Exception as e:
+        logger.warning(f"前端构建异常: {e}")
+
+
 def run():
     """启动 API 服务"""
     # 初始化日志配置
     log_config.log_run()
+
+    # 自动构建前端
+    _build_frontend()
+
     logger.info("")
     logger.info("=" * 60)
     logger.info('Synthetix API 服务启动')
-    
+
     # 打印访问地址（同时使用 print 和 logger 确保显示）
     base_url = f"http://127.0.0.1:{config.api_host}"
     # 同时记录到日志
