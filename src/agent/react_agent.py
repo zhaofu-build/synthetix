@@ -11,6 +11,8 @@ from typing import Dict, List, Optional, Any
 
 from src.agent.tool_registry import registry
 from src.agent.session_manager import DialogState, SessionStatus, get_session_manager
+from src.agent.project_memory import get_project_memory, extract_preferences_from_messages
+from src.agent.skill_loader import get_skills_prompt_section
 from src.application.services.llm_adapter import generate_response_async, select_model
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,7 @@ class ReActAgent:
     """基于 TAOR 循环的对话代理"""
 
     MAX_ITERATIONS = 5  # 最大循环次数，防止无限循环
+    DEEP_RESEARCH_STAGES = ["分析素材", "规划方案", "执行操作"]
 
     def __init__(self):
         self.sessions = get_session_manager()
@@ -226,10 +229,126 @@ class ReActAgent:
 
             state.add_message("assistant", final_reply)
             self.sessions.persist_session(state)
+
+            # 从本次对话中提取偏好并保存
+            if state.project_id:
+                try:
+                    new_prefs = await extract_preferences_from_messages(state.history[-10:])
+                    if new_prefs:
+                        memory = get_project_memory(state.project_id)
+                        for k, v in new_prefs.items():
+                            memory.set_preference(k, v)
+                except Exception:
+                    pass
+
             yield {"type": "done", "status": "completed", "session_id": state.session_id}
 
         except Exception as e:
             logger.error(f"[ReAct-Stream] 处理失败: {e}", exc_info=True)
+            yield {"type": "error", "message": str(e), "session_id": state.session_id}
+
+    async def process_deep_research(
+        self,
+        session_id: Optional[str],
+        user_input: str,
+        context: Optional[Dict] = None,
+    ):
+        """
+        深度研究模式：多阶段分析→规划→执行
+
+        每阶段独立运行 TAOR 循环，阶段间传递总结。
+        适用于复杂剪辑需求（如"做一个完整的短视频"）。
+        """
+        state = self.sessions.get_or_create_session(session_id)
+        state.add_message("user", user_input)
+
+        if context:
+            pid = context.get("project_id")
+            if pid:
+                state.project_id = int(pid)
+
+        yield {"type": "session", "session_id": state.session_id}
+        yield {"type": "deep_research", "stage": "start", "total_stages": len(self.DEEP_RESEARCH_STAGES)}
+
+        stage_summaries = []
+        messages = self._build_messages(state)
+
+        try:
+            for i, stage_name in enumerate(self.DEEP_RESEARCH_STAGES):
+                yield {
+                    "type": "deep_research",
+                    "stage": i + 1,
+                    "stage_name": stage_name,
+                    "total_stages": len(self.DEEP_RESEARCH_STAGES),
+                }
+
+                # 构造阶段提示
+                prev_context = ""
+                if stage_summaries:
+                    prev_context = "\n\n## 前序阶段总结\n" + "\n".join(
+                        f"### {name}\n{summary}"
+                        for name, summary in stage_summaries
+                    )
+
+                stage_prompt = (
+                    f"[阶段 {i+1}/{len(self.DEEP_RESEARCH_STAGES)}: {stage_name}]\n"
+                    f"用户需求: {user_input}\n"
+                    f"请专注于完成「{stage_name}」阶段的工作。"
+                    f"{prev_context}"
+                )
+
+                messages.append({"role": "user", "content": stage_prompt})
+
+                # 运行 TAOR 循环
+                stage_reply = ""
+                for iteration in range(self.MAX_ITERATIONS):
+                    yield {"type": "thinking", "iteration": iteration + 1, "stage": stage_name}
+
+                    model = select_model(messages, iteration=iteration)
+                    response_text = await generate_response_async(
+                        messages=messages, model_name=model, temperature=0.7, max_tokens=2048,
+                    )
+
+                    tool_calls = self._parse_tool_calls(response_text)
+                    if not tool_calls:
+                        stage_reply = self._strip_tool_call_hints(response_text)
+                        break
+
+                    # 执行工具
+                    tool_results = []
+                    for tc in tool_calls:
+                        yield {"type": "tool_start", "tool": tc["name"], "params": tc["params"], "stage": stage_name}
+                        result = await self._execute_tool(tc["name"], tc["params"], state)
+                        tool_results.append({"name": tc["name"], "params": tc["params"], "result": result})
+                        yield {"type": "tool_result", "tool": tc["name"], "success": result.get("success", True)}
+
+                    messages.append({"role": "assistant", "content": response_text})
+                    observation = self._format_observations(tool_results)
+                    messages.append({"role": "user", "content": observation})
+
+                if not stage_reply:
+                    stage_reply = response_text if response_text else "本阶段无输出"
+
+                stage_summaries.append((stage_name, stage_reply[:500]))
+                yield {"type": "stage_result", "stage": stage_name, "summary": stage_reply[:500]}
+
+            # 最终综合回复
+            final_prompt = (
+                f"所有阶段已完成。请基于以下总结，用自然语言向用户汇报最终结果。\n\n"
+                + "\n".join(f"## {n}\n{s}" for n, s in stage_summaries)
+            )
+            final_reply = await generate_response_async(
+                messages=[{"role": "user", "content": final_prompt}],
+                temperature=0.7, max_tokens=2048,
+            )
+
+            state.add_message("assistant", final_reply)
+            self.sessions.persist_session(state)
+            yield {"type": "reply", "content": final_reply}
+            yield {"type": "done", "status": "completed", "session_id": state.session_id}
+
+        except Exception as e:
+            logger.error(f"[DeepResearch] 失败: {e}", exc_info=True)
             yield {"type": "error", "message": str(e), "session_id": state.session_id}
 
     async def _taor_loop(self, state: DialogState, user_input: str) -> str:
@@ -305,6 +424,42 @@ class ReActAgent:
                 pass
 
         system_prompt = build_system_prompt(tools_desc, state.project_id, project_name)
+
+        # 注入项目偏好记忆
+        if state.project_id:
+            try:
+                memory = get_project_memory(state.project_id)
+                pref_summary = memory.get_preferences_summary()
+                if pref_summary:
+                    system_prompt += f"\n\n## 用户偏好（基于历史对话自动记录）\n\n{pref_summary}"
+            except Exception:
+                pass
+
+        # 注入技能描述
+        try:
+            skills_section = get_skills_prompt_section()
+            if skills_section:
+                system_prompt += f"\n\n{skills_section}"
+        except Exception:
+            pass
+
+        # 注入扩展提示词
+        try:
+            from src.agent.extension_loader import get_extensions_prompt_section
+            ext_section = get_extensions_prompt_section()
+            if ext_section:
+                system_prompt += f"\n\n{ext_section}"
+        except Exception:
+            pass
+
+        # 注入 MCP 外部工具描述
+        try:
+            from src.agent.mcp_client import mcp_client
+            mcp_desc = mcp_client.get_tools_description()
+            if mcp_desc:
+                system_prompt += f"\n\n{mcp_desc}"
+        except Exception:
+            pass
 
         messages = [{"role": "system", "content": system_prompt}]
 

@@ -3202,3 +3202,189 @@ async def tool_reverse_audio(video_id: int, **kwargs) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"音频倒放失败: {e}")
         return {"success": False, "error": str(e)}
+
+
+# ==================== 多 Agent 协作工具 ====================
+
+@registry.register(
+    name="plan_clip",
+    description="调用规划 Agent 制定专业剪辑方案（分镜、音频、时长规划）",
+    parameters={
+        "requirement": {"type": "string", "description": "剪辑需求描述"},
+    },
+    examples=["帮我规划一个30秒的产品宣传视频方案"],
+    permission="read_only",
+)
+async def tool_plan_clip(requirement: str, **kwargs) -> Dict[str, Any]:
+    """调用规划子 Agent"""
+    from src.agent.multi_agent import run_sub_agent, AgentRole
+    result = await run_sub_agent(AgentRole.PLANNER, task=requirement, project_id=kwargs.get("project_id"))
+    return {"success": True, "plan": result}
+
+
+@registry.register(
+    name="review_result",
+    description="调用审查 Agent 检查剪辑结果质量（技术、连贯性、同步、观感）",
+    parameters={
+        "content": {"type": "string", "description": "要审查的内容描述或结果"},
+        "original_requirement": {"type": "string", "description": "原始需求（可选）"},
+    },
+    examples=["审查一下刚才的剪辑结果"],
+    permission="read_only",
+)
+async def tool_review_result(content: str, original_requirement: str = "", **kwargs) -> Dict[str, Any]:
+    """调用审查子 Agent"""
+    from src.agent.multi_agent import run_sub_agent, AgentRole
+    result = await run_sub_agent(
+        AgentRole.REVIEWER, task=content,
+        context=f"原始需求: {original_requirement}" if original_requirement else "",
+        project_id=kwargs.get("project_id"),
+    )
+    return {"success": True, "review": result}
+
+
+# ==================== 知识库 RAG 工具 ====================
+
+@registry.register(
+    name="knowledge_search",
+    description="搜索项目知识库，查找相关的素材分析、文档记录等",
+    parameters={
+        "query": {"type": "string", "description": "搜索关键词"},
+        "top_k": {"type": "integer", "description": "返回结果数量（默认5）"},
+    },
+    examples=["搜索关于海边素材的分析记录"],
+    permission="read_only",
+)
+async def tool_knowledge_search(query: str, top_k: int = 5, **kwargs) -> Dict[str, Any]:
+    """搜索知识库"""
+    from src.agent.knowledge_base import get_knowledge_base
+    pid = kwargs.get("project_id")
+    if not pid:
+        return {"success": False, "error": "缺少 project_id"}
+    kb = get_knowledge_base(pid)
+    results = kb.search(query, top_k)
+    return {"success": True, "results": results, "count": len(results)}
+
+
+@registry.register(
+    name="knowledge_add",
+    description="向项目知识库添加文档记录（素材分析结果、备注等）",
+    parameters={
+        "content": {"type": "string", "description": "文档内容"},
+        "source": {"type": "string", "description": "来源说明（可选）"},
+        "tags": {"type": "array", "description": "标签（可选）", "items": {"type": "string"}},
+    },
+    examples=["记录一下这个视频的分析结果"],
+)
+async def tool_knowledge_add(content: str, source: str = "", tags: list = None, **kwargs) -> Dict[str, Any]:
+    """添加文档到知识库"""
+    from src.agent.knowledge_base import get_knowledge_base
+    pid = kwargs.get("project_id")
+    if not pid:
+        return {"success": False, "error": "缺少 project_id"}
+    kb = get_knowledge_base(pid)
+    kb.add(content, source, tags)
+    return {"success": True, "message": "已添加到知识库"}
+
+
+# ==================== CDP 浏览器自动化工具 ====================
+
+@registry.register(
+    name="browser_navigate",
+    description="在浏览器中打开指定 URL（需要 Chrome 开启远程调试端口）。可用于搜索素材、浏览网页。",
+    parameters={
+        "url": {"type": "string", "description": "要打开的网页 URL"},
+        "wait_ms": {"type": "integer", "description": "等待页面加载时间（毫秒），默认 2000"},
+    },
+    examples=[
+        "帮我打开 Pexels 搜索猫咪视频",
+        "在浏览器里打开这个网页",
+    ],
+    permission="read_only",
+)
+async def tool_browser_navigate(url: str, wait_ms: int = 2000, **kwargs) -> Dict[str, Any]:
+    """浏览器导航"""
+    from src.shared.utils.cdp_browser import get_cdp_browser
+    try:
+        browser = get_cdp_browser()
+        return await browser.navigate(url, wait_ms)
+    except Exception as e:
+        return {"success": False, "error": f"浏览器操作失败: {e}。请确保 Chrome 以 --remote-debugging-port=9222 启动。"}
+
+
+@registry.register(
+    name="browser_screenshot",
+    description="截取当前浏览器页面截图。可用于查看网页内容、确认页面状态。",
+    parameters={
+        "save_path": {"type": "string", "description": "截图保存路径（可选，默认保存到 static/ 目录）"},
+        "full_page": {"type": "boolean", "description": "是否截取完整页面，默认 false"},
+    },
+    examples=["截个图看看当前页面"],
+    permission="read_only",
+)
+async def tool_browser_screenshot(save_path: str = None, full_page: bool = False, **kwargs) -> Dict[str, Any]:
+    """浏览器截图"""
+    from src.shared.utils.cdp_browser import get_cdp_browser
+    from src import config
+    try:
+        browser = get_cdp_browser()
+        if not save_path:
+            import time
+            import os
+            save_path = os.path.join(config.UPLOAD_DIR, f"browser_screenshot_{int(time.time())}.png")
+        return await browser.screenshot(save_path, full_page)
+    except Exception as e:
+        return {"success": False, "error": f"截图失败: {e}"}
+
+
+@registry.register(
+    name="browser_get_content",
+    description="获取当前浏览器页面的文本内容。可用于提取网页信息、搜索结果。",
+    parameters={},
+    examples=["读取当前页面内容", "提取网页文字"],
+    permission="read_only",
+)
+async def tool_browser_get_content(**kwargs) -> Dict[str, Any]:
+    """获取页面内容"""
+    from src.shared.utils.cdp_browser import get_cdp_browser
+    try:
+        browser = get_cdp_browser()
+        return await browser.get_content()
+    except Exception as e:
+        return {"success": False, "error": f"获取内容失败: {e}"}
+
+
+@registry.register(
+    name="browser_get_links",
+    description="提取当前浏览器页面所有链接。可用于查找下载资源、相关页面。",
+    parameters={},
+    examples=["列出页面上的所有链接"],
+    permission="read_only",
+)
+async def tool_browser_get_links(**kwargs) -> Dict[str, Any]:
+    """获取页面链接"""
+    from src.shared.utils.cdp_browser import get_cdp_browser
+    try:
+        browser = get_cdp_browser()
+        return await browser.get_page_links()
+    except Exception as e:
+        return {"success": False, "error": f"获取链接失败: {e}"}
+
+
+@registry.register(
+    name="browser_execute_js",
+    description="在浏览器页面中执行 JavaScript 代码。高级操作，可用于自定义页面交互。",
+    parameters={
+        "expression": {"type": "string", "description": "要执行的 JavaScript 代码"},
+    },
+    examples=["在页面上执行一段 JS"],
+    permission="modify",
+)
+async def tool_browser_execute_js(expression: str, **kwargs) -> Dict[str, Any]:
+    """执行 JS"""
+    from src.shared.utils.cdp_browser import get_cdp_browser
+    try:
+        browser = get_cdp_browser()
+        return await browser.execute_js(expression)
+    except Exception as e:
+        return {"success": False, "error": f"JS 执行失败: {e}"}

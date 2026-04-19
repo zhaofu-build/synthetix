@@ -43,6 +43,14 @@ class ExecuteRequest(BaseModel):
     params: Dict[str, Any]
 
 
+class DeepResearchRequest(BaseModel):
+    """深度研究请求"""
+    session_id: Optional[str] = None
+    project_id: Optional[int] = None
+    message: str
+    context: Optional[Dict[str, Any]] = None
+
+
 # ==================== 对话接口 ====================
 
 @router.post("/chat", summary="处理对话消息")
@@ -109,6 +117,35 @@ async def chat_stream(request: ChatRequest):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
         }
+    )
+
+
+# ==================== 深度研究接口 ====================
+
+@router.post("/deep-research", summary="深度研究模式")
+async def deep_research(request: DeepResearchRequest):
+    """
+    深度研究模式（SSE）— 多阶段分析→规划→执行
+
+    适用于复杂剪辑需求，自动分阶段处理。
+    """
+    async def event_generator():
+        try:
+            agent = get_react_agent()
+            async for event in agent.process_deep_research(
+                session_id=request.session_id,
+                user_input=request.message,
+                context=request.context,
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
 
 

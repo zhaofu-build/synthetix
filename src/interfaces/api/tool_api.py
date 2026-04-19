@@ -14,6 +14,7 @@ from src.application.services import use_ffmpeg
 from src.shared.utils import file_util
 from src.shared.models.base import BaseReq
 from src.shared.models.response import success_response, error_response
+from src.shared.utils.config_manager import get as cfg_get, get_all as cfg_get_all, set_value as cfg_set, reload_config as cfg_reload
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -79,18 +80,25 @@ async def upload_file(file_stream: UploadFile = File(...)):
 
 @router.get("/config", summary="获取配置")
 async def get_config():
-    """获取系统配置"""
-    config_info = file_util.load_config()
+    """获取系统配置（合并 default.json + settings.json）"""
+    config_info = cfg_get_all()
     return success_response(data=config_info, message="获取配置成功")
 
 
 @router.patch("/config", summary="更新配置")
 async def update_config(req: BaseReq):
-    """更新系统配置"""
+    """更新系统配置并持久化到 settings.json"""
     config_data = req.dict(exclude_unset=True)
     for key, value in config_data.items():
-        file_util.update_value(key, value)
+        cfg_set(key, value)
     return success_response(data=True, message="保存配置成功")
+
+
+@router.post("/config/reload", summary="热更新配置")
+async def reload_config():
+    """重新加载配置文件（热更新，无需重启）"""
+    cfg_reload()
+    return success_response(data=cfg_get_all(), message="配置已重新加载")
 
 
 @router.get("/logs", summary="获取日志")
