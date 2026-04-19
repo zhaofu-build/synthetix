@@ -750,7 +750,7 @@ def compress_video_h265(
         else:
             logger.error("压缩成功但输出文件不存在")
             return None
-    except subprocess.CalledProcessError as e:
+    except RuntimeError as e:
         # GPU失败自动回退到CPU
         if use_gpu and accelerator != 'cpu':
             logger.warning("GPU加速失败, 尝试CPU编码...")
@@ -758,7 +758,7 @@ def compress_video_h265(
                 input_path, output_path, crf, max_bitrate,
                 audio_bitrate, preset, use_gpu=False
             )
-        logger.error(f"压缩失败! 错误信息:\n{e.stderr}")
+        logger.error(f"压缩失败! 错误信息:\n{e}")
         return None
     except Exception as e:
         logger.error(f"压缩过程中发生异常: {e}")

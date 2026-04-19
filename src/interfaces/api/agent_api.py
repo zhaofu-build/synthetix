@@ -10,7 +10,6 @@ from typing import Optional, List, Dict, Any
 import json
 import asyncio
 
-from src.agent import VideoDialogAgent, get_video_agent
 from src.agent.react_agent import get_react_agent
 from src.shared.models.response import success_response, error_response
 
