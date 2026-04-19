@@ -58,7 +58,7 @@ src/
 │   ├── session_manager.py        # 会话管理（内存缓存 + DB 双写）
 │   ├── mcp_client.py             # MCP 协议客户端（动态接入外部工具服务器）
 │   ├── extension_loader.py       # 扩展/插件加载器（扫描 extensions/ 目录）
-│   ├── skill_loader.py           # YAML 技能加载器（扫描 skills/ 目录）
+│   ├── skill_loader.py           # Markdown 技能加载器（扫描 skills/ 目录的 .md 文件）
 │   ├── project_memory.py         # 项目级用户偏好记忆
 │   ├── knowledge_base.py         # BM25 知识库（轻量 RAG）
 │   ├── multi_agent.py            # 多 Agent 协作（Planner→Executor→Reviewer）
@@ -132,7 +132,7 @@ synthetix-vue/                    # 前端 Vue 3 + Vite + Pinia + Element Plus
 extensions/                       # 扩展/插件目录
 └── subtitle_style/               # 示例：字幕风格预设扩展
 
-skills/                           # YAML 技能定义目录
+skills/                           # Markdown 技能定义目录
 config/                           # 分层配置（default.json + settings.json）
 ```
 
@@ -179,7 +179,7 @@ FastAPI 静态路由必须在动态路由（`/{id}`）之前定义，否则 `"bg
 **系统提示词注入链**（`_build_messages()` 按顺序拼接）：
 1. 基础系统提示词（角色 + 工具描述 + 规则）
 2. 项目偏好记忆（`project_memory.py` 提取的历史偏好）
-3. 技能描述（`skill_loader.py` 加载的 YAML 技能）
+3. 技能描述（`skill_loader.py` 加载的 Markdown 技能）
 4. 扩展提示词（`extension_loader.py` 加载的扩展声明）
 5. MCP 外部工具描述（`mcp_client.py` 发现的远程工具）
 
