@@ -6,6 +6,7 @@
 """
 import json
 import logging
+import sys
 import importlib
 from pathlib import Path
 from typing import Dict, List, Any
@@ -13,7 +14,7 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-EXTENSIONS_DIR = Path(__file__).parent.parent.parent / "extensions"
+EXTENSIONS_DIR = Path(__file__).parent.parent / "extensions"
 
 
 @dataclass
@@ -69,6 +70,9 @@ def load_extensions() -> List[Extension]:
 
 def register_extension_tools():
     """注册所有已启用扩展的工具"""
+    ext_parent = str(EXTENSIONS_DIR.parent)
+    if ext_parent not in sys.path:
+        sys.path.insert(0, ext_parent)
     for ext in _extensions.values():
         if not ext.enabled or ext.tools_registered or not ext.entry:
             continue

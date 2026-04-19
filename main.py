@@ -212,76 +212,87 @@ async def serve_spa(full_path: str):
     return JSONResponse({"detail": "Not Found"}, status_code=404)
 
 
-def _build_frontend():
-    """启动时自动构建前端，失败不阻塞"""
-    frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "synthetix-vue")
-    if not os.path.isdir(frontend_dir):
-        logger.warning("前端目录不存在，跳过构建")
+def _start_tauri():
+    """启动 Tauri 桌面窗口"""
+    tauri_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "synthetix-tauri")
+    if not os.path.isdir(tauri_dir):
+        logger.warning("synthetix-tauri 目录不存在，跳过桌面窗口启动")
         return
 
-    # 检查 npm 是否可用
-    npm_cmd = shutil.which("npm")
-    if npm_cmd is None:
-        logger.warning("npm 未安装，跳过前端构建")
+    npx_cmd = shutil.which("npx") or shutil.which("npx.cmd")
+    if npx_cmd is None:
+        logger.warning("npx 未安装，跳过桌面窗口启动")
         return
 
     try:
-        logger.info("正在自动构建前端...")
-        result = subprocess.run(
-            ["npm", "run", "build"],
-            cwd=frontend_dir,
+        logger.info("正在启动 Tauri 桌面窗口...")
+        subprocess.Popen(
+            f'"{npx_cmd}" tauri dev',
+            cwd=os.path.dirname(os.path.abspath(__file__)),
             shell=True,
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=300,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        if result.returncode == 0:
-            logger.info("前端构建完成")
-        else:
-            logger.warning(f"前端构建失败 (exit {result.returncode}): {result.stderr[-500:] if result.stderr else ''}")
-    except subprocess.TimeoutExpired:
-        logger.warning("前端构建超时 (300s)，跳过")
+        logger.info("Tauri 桌面窗口启动中...")
     except Exception as e:
-        logger.warning(f"前端构建异常: {e}")
+        logger.warning(f"Tauri 启动异常: {e}")
 
 
 def run():
-    """启动 API 服务"""
-    # 初始化日志配置
+    """启动桌面应用（后端 API + Tauri 窗口）"""
+    import threading
+
     log_config.log_run()
 
-    # 自动构建前端
-    _build_frontend()
-
     logger.info("")
     logger.info("=" * 60)
-    logger.info('Synthetix API 服务启动')
+    logger.info('Synthetix 桌面应用启动')
 
-    # 打印访问地址（同时使用 print 和 logger 确保显示）
-    base_url = f"http://127.0.0.1:{config.api_host}"
-    # 同时记录到日志
-    logger.info("API 服务访问地址:")
-    logger.info(f"  ├─ Web 界面:              {base_url}")
-    logger.info(f"  ├─ API 文档 (Swagger UI): {base_url}/docs")
-    logger.info(f"  ├─ API 文档 (ReDoc):      {base_url}/redoc")
-    logger.info(f"  └─ OpenAPI Schema:        {base_url}/openapi.json")
-    logger.info("=" * 60)
-    logger.info("")
-    # 使用 Alembic 初始化数据库
+    # 初始化数据库
     try:
         init_database_with_alembic()
     except Exception as e:
         logging.error(f"数据库初始化失败: {str(e)}", exc_info=True)
         raise
-    # 启动服务
-    uvicorn.run(
-        app='main:app',
-        host="127.0.0.1",
-        port=config.api_host,
-        reload=True,
-        log_config=None  # 使用自定义日志配置
-    )
+
+    # 后台线程启动 uvicorn API 服务
+    def _run_api():
+        uvicorn.run(
+            app='main:app',
+            host="127.0.0.1",
+            port=config.api_host,
+            log_config=None,
+        )
+
+    api_thread = threading.Thread(target=_run_api, daemon=True)
+    api_thread.start()
+    logger.info(f"API 后端已启动: http://127.0.0.1:{config.api_host}")
+
+    # 前台运行 Tauri 桌面窗口
+    npx_cmd = shutil.which("npx") or shutil.which("npx.cmd")
+    if npx_cmd:
+        # 确保 cargo 在 PATH 中
+        cargo_dir = os.path.expanduser("~/.cargo/bin")
+        if os.path.isdir(cargo_dir) and cargo_dir not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = cargo_dir + os.pathsep + os.environ.get("PATH", "")
+        logger.info("正在启动 Tauri 桌面窗口...")
+        try:
+            subprocess.run(
+                f'"{npx_cmd}" tauri dev',
+                cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), "synthetix-tauri"),
+                shell=True,
+            )
+        except KeyboardInterrupt:
+            logger.info("用户中断，正在关闭...")
+    else:
+        logger.warning("npx 未安装，回退到 Web 模式")
+        uvicorn.run(
+            app='main:app',
+            host="127.0.0.1",
+            port=config.api_host,
+            reload=True,
+            log_config=None,
+        )
 
 
 if __name__ == '__main__':

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-SKILLS_DIR = Path(__file__).parent.parent.parent / "skills"
+SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
 
 @dataclass

@@ -4,31 +4,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-Synthetix 是一个 AI 视频剪辑平台，采用**统一编辑器**架构：左侧工作区（剪辑方案/音频）+ 中间 AI 对话栏 + 右侧（素材库 + 视频预览）。左右两侧支持折叠。顶部菜单栏提供文件操作、项目名称编辑和工具弹窗。旧的两个独立页面（AIClip、VideoStitching）保留路由做向后兼容。
+Synthetix 是一个 AI 视频剪辑平台，采用 **Tauri 2.0 桌面应用**架构。前端 Vue 3 嵌入 Tauri 窗口，后端 FastAPI 作为本地 API 服务（端口 9527）+ sidecar 打包。UI 采用**统一编辑器**：左侧工作区（剪辑方案/音频）+ 中间 AI 对话栏 + 右侧（素材库 + 视频预览），左右可折叠。顶部菜单栏提供文件操作、项目名称编辑和工具弹窗。
 
 后端通过 **core-nexus-ai** 统一推理框架调用 LLM、TTS、ASR、VL 等 AI 服务。
 
 ## 运行应用
 
 ```bash
-# 构建前端（首次或前端代码变更后）
-cd synthetix-vue && npx vite build
-
-# 启动后端（同时提供 API + 前端，单端口 9527）
+# 桌面模式（一键启动后端 + Tauri 窗口）
 python main.py
 
-# 前端开发模式（可选，热更新，端口 9528）
+# 前端开发模式（可选，热更新，端口 9528，需同时运行后端）
 cd synthetix-vue && npm run dev
 
-# lint
-cd synthetix-vue && npm run lint
-
-# 格式化
-cd synthetix-vue && npm run format
+# Tauri 生产构建
+python build_backend.py    # PyInstaller 打包 Python 后端为 exe
+npx tauri build            # 生成 .msi 和 .exe 安装包（需在项目根目录运行）
 ```
 
-- Web 界面 + API 文档: http://127.0.0.1:9527 （`/docs` 为 Swagger UI）
+`python main.py` 启动流程：后台线程启动 uvicorn API → 前台运行 `npx tauri dev`（自动构建前端 + 打开桌面窗口）。若 npx 不可用则回退到纯 Web 模式。
+
+- API 文档: http://127.0.0.1:9527/docs （Swagger UI）
 - 前端开发模式: http://127.0.0.1:9528（需同时运行后端）
+
+## 前端开发
+
+```bash
+cd synthetix-vue
+npm run lint       # lint
+npm run format     # 格式化
+npm run build      # 构建到 dist/
+```
 
 ## 数据库迁移
 
@@ -57,82 +63,34 @@ src/
 │   ├── tool_registry.py          # @registry.register() 注册工具（含 Pydantic 校验、Hook、权限）
 │   ├── session_manager.py        # 会话管理（内存缓存 + DB 双写）
 │   ├── mcp_client.py             # MCP 协议客户端（动态接入外部工具服务器）
-│   ├── extension_loader.py       # 扩展/插件加载器（扫描 extensions/ 目录）
-│   ├── skill_loader.py           # Markdown 技能加载器（扫描 skills/ 目录的 .md 文件）
+│   ├── extension_loader.py       # 扩展/插件加载器（扫描 src/extensions/ 目录）
+│   ├── skill_loader.py           # Markdown 技能加载器（扫描 src/skills/ 目录的 .md 文件）
 │   ├── project_memory.py         # 项目级用户偏好记忆
 │   ├── knowledge_base.py         # BM25 知识库（轻量 RAG）
 │   ├── multi_agent.py            # 多 Agent 协作（Planner→Executor→Reviewer）
 │   └── prompts.py                # LLM 提示词模板
 │
+├── extensions/                   # 扩展/插件目录
+│   └── subtitle_style/           # 示例：字幕风格预设扩展
+│
+├── skills/                       # Markdown 技能定义目录
+│
+├── scripts/                      # 工具脚本（migrate_imports, update_imports）
+│
 ├── domain/entities/              # SQLAlchemy 实体
-│   ├── video_source.py           # 视频素材
-│   ├── audio_source.py           # 音频素材（音色）
-│   ├── video_project.py          # 视频项目 + ClipPlanItem
-│   ├── bgm_item.py               # BGM 素材
-│   └── dialog_session.py         # 对话会话持久化
-│
 ├── application/services/         # 业务服务
-│   ├── video_service.py          # 视频处理服务
-│   ├── audio_service.py          # 音频处理服务
-│   ├── clip_planner.py           # AI 剪辑方案规划
-│   ├── render_service.py         # 视频渲染（FFmpeg）
-│   ├── llm_adapter.py           # LLM 调用封装（同步 + 真异步 + 快慢双脑路由）
-│   ├── ffmpeg_adapter.py         # FFmpeg 命令封装（所有视频处理走 subprocess.run）
-│   ├── creative_service.py       # 创意内容生成
-│   └── qwen_vl_adapter.py        # VL 视频理解（本地文件转 base64 data URL）
-│
 ├── interfaces/api/               # FastAPI 路由
-│   ├── agent_api.py              # /api/agent（对话、SSE 流式、深度研究、工具执行）
-│   ├── project_api.py            # /api/projects（CRUD、时间线、方案、渲染、BGM）
-│   ├── video_api.py              # /api/videos（CRUD、处理、转录）
-│   ├── audio_api.py (svc_api.py) # /api/audios（音色、TTS、分离、合并）
-│   ├── core_nexus_api.py         # /api/nexus（AI 服务代理：LLM/TTS/ASR/VL/音乐）
-│   ├── tool_api.py               # /api/tools（上传、配置管理、日志）
-│   ├── task_api.py               # /api/tasks（任务中心 CRUD）
-│   ├── mcp_api.py                # /api/mcp（MCP Server 注册/调用）
-│   ├── extension_api.py          # /api/extensions（扩展管理）
-│   ├── llm_clip_api.py           # /api/ai（关键词素材、转场、提示词优化）
-│   └── ws_api.py                 # WebSocket（/ws, /ws/render, /ws/system）
-│
-├── shared/
-│   ├── constants.py              # 集中常量（文件大小、分页、视频参数、Agent 配置、工具权限）
-│   ├── models/response.py        # success_response(to_camel=True) 自动转换
-│   ├── models/timeline.py        # Timeline/ClipPlan 数据结构
-│   └── utils/
-│       ├── core_nexus_client.py  # core-nexus-ai 统一客户端（同步 + async）
-│       ├── cdp_browser.py        # Chrome DevTools Protocol 浏览器自动化
-│       ├── config_manager.py     # 分层配置管理（default.json + settings.json）
-│       ├── string_util.py        # 通用工具（JSON 解析、语言检测、参数清洗）
-│       └── file_util.py          # 文件操作工具
-│
-└── infrastructure/
-    ├── db/                       # 数据库会话、Alembic
-    └── repositories/             # Repository 数据访问层
+├── shared/                       # 常量、模型、工具函数
+└── infrastructure/               # 数据库会话、Alembic、Repository
 
 synthetix-vue/                    # 前端 Vue 3 + Vite + Pinia + Element Plus
-├── src/api/
-│   ├── request.js                # axios 实例（自动提取 data.data）
-│   ├── utils/request.js          # fetch 封装（assetUrl, API_HOST）
-│   └── modules/                  # API 模块（video, audio, ai, project, system）
-├── src/store/modules/
-│   ├── system.js                 # 主题、系统配置
-│   └── project.js                # 项目 CRUD、防抖自动保存、流式对话、素材/BGM/音色管理
-├── src/locales/                  # vue-i18n 国际化（zh-CN, en-US）
-├── src/layouts/MainLayout.vue    # 顶部菜单栏（文件/工具/设置 + 项目名称编辑），工具以 el-dialog 弹窗打开
-├── src/components/editor/        # 统一编辑器模块
-│   ├── UnifiedEditor.vue         # 主页面（三区域 Grid: 工作区 | AI对话 | 右侧栏，左右可折叠）
-│   ├── ChatSidebar.vue           # AI 对话栏（SSE 流式渲染）
-│   ├── WorkspacePanel.vue        # 工作区（上方剪辑方案 2/3 + 下方音频 1/3，可向左折叠）
-│   ├── MaterialsPanel.vue        # 素材库（项目素材 + 素材管理/编辑弹窗）
-│   └── PreviewPanel.vue          # 视频预览（支持多个输出视频）+ 渲染导出
-└── src/utils/
-    ├── sanitize.js               # Markdown 富文本渲染（表格、Mermaid、引用等）
-    └── request.js                # API_HOST 单一来源（读 VITE_API_BASE_URL 或默认 9527）
+synthetix-tauri/                  # Tauri 2.0 桌面应用（Rust）
+├── src/main.rs, lib.rs           # Rust 入口（sidecar 启动）
+├── tauri.conf.json               # Tauri 配置（窗口、构建、sidecar）
+├── capabilities/                 # 权限声明
+├── icons/                        # 应用图标
+└── binaries/                     # sidecar 放置目录（PyInstaller 输出）
 
-extensions/                       # 扩展/插件目录
-└── subtitle_style/               # 示例：字幕风格预设扩展
-
-skills/                           # Markdown 技能定义目录
 config/                           # 分层配置（default.json + settings.json）
 ```
 
@@ -157,6 +115,26 @@ FastAPI 静态路由必须在动态路由（`/{id}`）之前定义，否则 `"bg
 - `API_HOST` 单一来源：`synthetix-vue/src/utils/request.js`（读 `VITE_API_BASE_URL` 环境变量或默认 `http://127.0.0.1:9527`）
 - `src/api/request.js`（axios）：API 模块使用，拦截器自动提取 `data.data`，业务错误弹 ElMessage
 - `src/utils/request.js`（fetch）：导出 `assetUrl`、`API_HOST`，部分组件直接使用
+
+## Tauri 桌面应用
+
+### 开发模式
+`python main.py` 一键启动：uvicorn 后台线程 + `npx tauri dev` 前台进程。
+
+### Sidecar（Python 后端打包）
+- `build_backend.py` 用 PyInstaller 将 `main.py` 打包为 `synthetix-tauri/binaries/backend-x86_64-pc-windows-msvc.exe`
+- Tauri 启动时通过 `tauri_plugin_shell` 拉起 sidecar
+- 开发阶段 sidecar 不可用时跳过，依赖后台线程的 uvicorn
+
+### 关键文件
+- `synthetix-tauri/tauri.conf.json` — `frontendDist: ../synthetix-vue/dist`，`beforeDevCommand` 自动构建前端
+- `synthetix-tauri/src/lib.rs` — sidecar 启动逻辑，失败不阻塞
+- `synthetix-tauri/capabilities/default.json` — shell/process 权限
+
+### 前置依赖
+- Rust (rustup) — `winget install Rustlang.Rustup`
+- Node.js — 已有
+- Cargo PATH — `main.py` 自动添加 `~/.cargo/bin`
 
 ## 对话式 Agent 架构
 
@@ -257,9 +235,10 @@ Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；
 - `analyze_video_vl` 从数据库读取 `video.duration` 传给 VL，约束片段时间戳不超出视频实际时长
 
 ### 扩展/插件系统
-- 扩展放在 `extensions/` 目录，每个扩展一个子目录，包含 `manifest.json` 和 Python 模块
-- `manifest.json` 声明名称、版本、入口模块、系统提示词
+- 扩展放在 `src/extensions/` 目录，每个扩展一个子目录，包含 `manifest.json` 和 Python 模块
+- `manifest.json` 声明名称、版本、入口模块（如 `extensions.subtitle_style.main`）、系统提示词
 - 入口模块可定义 `register_tools()` 函数注册自定义工具到 tool_registry
+- `extension_loader.py` 自动将 `src/` 加入 `sys.path` 以支持模块导入
 - 应用启动时自动加载（`lifespan()`），API 支持热重载
 
 ### MCP 协议
@@ -295,7 +274,7 @@ Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；
 ```env
 CORE_NEXUS_BASE_URL=http://your-core-nexus-server:port
 LLM_KEY=your_api_key
-CORS_ORIGINS=http://localhost:9528
+CORS_ORIGINS=*
 API_PORT=9527
 FAST_MODEL=              # 快速模型名（可选，不配则统一用主模型）
 SLOW_MODEL=              # 主模型名（可选）

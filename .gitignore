@@ -52,6 +52,14 @@ static/source_videos/*
 static/source_bgm/*
 static/source_timbre/*
 
+# Tauri
+src-tauri/
+synthetix-tauri/target/
+synthetix-tauri/binaries/*.exe
+synthetix-tauri/binaries/*.placeholder
+build_pyinstaller/
+synthetix-vue/app-icon.png
+
 # 系统文件
 .DS_Store
 Thumbs.db
