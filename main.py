@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from src import log_config, config
 from src.infrastructure.db.alembic_manager import init_database_with_alembic
 from src.interfaces.api.svc_api import router as audio_api
@@ -23,6 +23,7 @@ from src.interfaces.api.llm_clip_api import router as ai_api
 from src.interfaces.api.core_nexus_api import router as core_nexus_api
 from src.interfaces.api.agent_api import router as agent_api
 from src.interfaces.api.project_api import router as project_api
+from src.interfaces.api.task_api import router as task_api
 
 from src.shared.utils import file_util
 
@@ -98,6 +99,7 @@ app.include_router(ai_api, prefix="/api/ai", tags=["AI服务"])
 app.include_router(core_nexus_api, prefix="/api/nexus", tags=["Core-Nexus-AI"])
 app.include_router(agent_api, prefix="/api/agent", tags=["对话Agent"])
 app.include_router(project_api, prefix="/api/projects", tags=["视频项目"])
+app.include_router(task_api, prefix="/api/tasks", tags=["任务管理"])
 # app.include_router(video_generation_api, tags=["视频生成"])
 
 # ⚠️ 重要：CORS 中间件必须在其他中间件之前添加
@@ -132,8 +134,46 @@ async def serve_frontend_index():
     index = os.path.join(FRONTEND_DIST, "index.html")
     if os.path.isfile(index):
         return FileResponse(index)
-    from fastapi.responses import JSONResponse
     return JSONResponse({"message": "前端未构建，请先执行: cd synthetix-vue && npm run build"}, status_code=404)
+
+
+@app.get("/health")
+async def health_check():
+    checks = {"status": "ok", "version": "1.0.0"}
+
+    # 数据库检查
+    try:
+        from src.infrastructure.db.session import get_db_context
+        from sqlalchemy import text
+        with get_db_context() as db:
+            db.execute(text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception as e:
+        checks["database"] = f"error: {e}"
+
+    # ffmpeg 检查
+    checks["ffmpeg"] = "ok" if shutil.which("ffmpeg") else "unavailable"
+
+    # Core-Nexus 检查
+    try:
+        from src.shared.utils.core_nexus_client import get_client
+        client = get_client()
+        checks["core_nexus"] = "configured" if client.base_url else "not_configured"
+    except Exception:
+        checks["core_nexus"] = "error"
+
+    # 会话统计
+    try:
+        from src.agent.session_manager import get_session_manager
+        manager = get_session_manager()
+        checks["active_sessions"] = len(manager.get_active_sessions())
+    except Exception:
+        checks["active_sessions"] = 0
+
+    if any(v.startswith("error") if isinstance(v, str) else False for v in checks.values()):
+        checks["status"] = "degraded"
+
+    return checks
 
 
 @app.get("/{full_path:path}")

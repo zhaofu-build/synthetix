@@ -185,6 +185,7 @@ class Tool:
     param_model: Optional[type] = None
     before_execute: Optional[Callable] = None
     after_execute: Optional[Callable] = None
+    permission: str = "modify"  # read_only / modify / destructive
 
     def __post_init__(self):
         if self.examples is None:
@@ -213,7 +214,8 @@ class ToolRegistry:
         examples: List[str] = None,
         param_model: Optional[type] = None,
         before_execute: Optional[Callable] = None,
-        after_execute: Optional[Callable] = None
+        after_execute: Optional[Callable] = None,
+        permission: str = "modify"
     ) -> Callable:
         """
         注册工具装饰器
@@ -239,7 +241,8 @@ class ToolRegistry:
                 examples=examples or [],
                 param_model=param_model,
                 before_execute=before_execute,
-                after_execute=after_execute
+                after_execute=after_execute,
+                permission=permission
             )
             logger.info(f"注册工具: {name}")
             return func
@@ -604,7 +607,8 @@ async def tool_smart_clip(
     },
     examples=["分析这个视频", "看看视频里有什么"],
     param_model=AnalyzeVideoParams,
-    before_execute=validate_video_exists
+    before_execute=validate_video_exists,
+    permission="read_only"
 )
 async def tool_analyze_video(
     video_id: int,
@@ -694,7 +698,8 @@ async def tool_generate_tts(
     name="list_videos",
     description="列出可用的视频素材",
     parameters={},
-    examples=["有什么素材", "查看素材库"]
+    examples=["有什么素材", "查看素材库"],
+    permission="read_only"
 )
 async def tool_list_videos(**kwargs) -> Dict[str, Any]:
     """列出视频工具，支持按项目筛选"""
@@ -764,6 +769,7 @@ async def tool_list_videos(**kwargs) -> Dict[str, Any]:
         "video_id": {"type": "integer", "description": "视频素材 ID"},
     },
     examples=["第一个视频的描述", "这个视频讲了什么", "查看描述"],
+    permission="read_only"
 )
 async def tool_get_video_description(video_id: int, **kwargs) -> Dict[str, Any]:
     """查询视频素材的描述信息"""
@@ -833,7 +839,8 @@ async def tool_get_video_description(video_id: int, **kwargs) -> Dict[str, Any]:
         "keywords": {"type": "string", "description": "搜索关键词"},
     },
     examples=["下载一些海边素材", "搜索城市夜景"],
-    param_model=SearchMaterialParams
+    param_model=SearchMaterialParams,
+    permission="read_only"
 )
 async def tool_search_material(
     keywords: str,
@@ -871,7 +878,8 @@ async def tool_search_material(
     },
     examples=["帮我提取这个视频的字幕", "识别视频中的语音", "生成字幕文件"],
     param_model=TranscribeVideoParams,
-    before_execute=validate_video_exists
+    before_execute=validate_video_exists,
+    permission="read_only"
 )
 async def tool_transcribe_video(
     video_id: int,
@@ -916,7 +924,8 @@ async def tool_transcribe_video(
     },
     examples=["这个视频讲了什么", "分析视频内容和风格", "详细描述一下这个视频"],
     param_model=AnalyzeVideoVlParams,
-    before_execute=validate_video_exists
+    before_execute=validate_video_exists,
+    permission="read_only"
 )
 async def tool_analyze_video_vl(
     video_id: int,
@@ -1109,7 +1118,8 @@ async def tool_download_video(
     name="get_current_time",
     description="获取当前日期和时间",
     parameters={},
-    examples=["现在几点了", "今天几号", "当前时间"]
+    examples=["现在几点了", "今天几号", "当前时间"],
+    permission="read_only"
 )
 async def tool_get_current_time(**kwargs) -> Dict[str, Any]:
     """查询当前时间"""
@@ -1134,7 +1144,8 @@ async def tool_get_current_time(**kwargs) -> Dict[str, Any]:
         "path": {"type": "string", "description": "目录路径（默认素材目录）"},
         "pattern": {"type": "string", "description": "文件名过滤（可选）"},
     },
-    examples=["看看素材目录里有什么", "列出 uploads 文件夹的内容"]
+    examples=["看看素材目录里有什么", "列出 uploads 文件夹的内容"],
+    permission="read_only"
 )
 async def tool_list_directory(
     path: str = None,
@@ -1197,7 +1208,8 @@ async def tool_list_directory(
         "file_type": {"type": "string", "description": "文件类型: video/audio/image/all"},
     },
     examples=["找一下海边的视频", "搜索 mp3 文件"],
-    param_model=SearchFilesParams
+    param_model=SearchFilesParams,
+    permission="read_only"
 )
 async def tool_search_files(
     keywords: str,
@@ -1596,7 +1608,8 @@ async def tool_mix_audio_to_video(
         "video_id": {"type": "integer", "description": "视频 ID"},
     },
     examples=["查看视频详情", "这个视频是什么编码"],
-    before_execute=validate_video_exists
+    before_execute=validate_video_exists,
+    permission="read_only"
 )
 async def tool_get_video_detail(video_id: int, **kwargs) -> Dict[str, Any]:
     """获取视频详情"""
@@ -1684,7 +1697,8 @@ async def tool_split_video(video_id: int, interval: int = 10, **kwargs) -> Dict[
     name="list_audios",
     description="列出可用的音色/语音列表",
     parameters={},
-    examples=["有哪些音色", "列出可用的声音"]
+    examples=["有哪些音色", "列出可用的声音"],
+    permission="read_only"
 )
 async def tool_list_audios(**kwargs) -> Dict[str, Any]:
     """列出音色工具"""
@@ -1751,7 +1765,8 @@ async def tool_set_cover(video_id: int, cover_image: str, **kwargs) -> Dict[str,
     name="get_system_info",
     description="获取系统信息（GPU、磁盘空间、系统类型）",
     parameters={},
-    examples=["系统信息", "有 GPU 吗", "磁盘还剩多少"]
+    examples=["系统信息", "有 GPU 吗", "磁盘还剩多少"],
+    permission="read_only"
 )
 async def tool_get_system_info(**kwargs) -> Dict[str, Any]:
     """获取系统信息"""
@@ -1825,6 +1840,7 @@ async def tool_open_folder(path: str = None, **kwargs) -> Dict[str, Any]:
         "video_id": {"type": "integer", "description": "视频 ID"},
     },
     examples=["删除这个素材", "清理视频"],
+    permission="destructive"
 )
 async def tool_delete_material(video_id: int, **kwargs) -> Dict[str, Any]:
     """删除素材工具"""
@@ -1847,6 +1863,7 @@ async def tool_delete_material(video_id: int, **kwargs) -> Dict[str, Any]:
         "text": {"type": "string", "description": "要检测的文本"},
     },
     examples=["这段话是什么语言", "检测语种"],
+    permission="read_only"
 )
 async def tool_detect_language(text: str, **kwargs) -> Dict[str, Any]:
     """语言检测工具"""
@@ -1868,6 +1885,7 @@ async def tool_detect_language(text: str, **kwargs) -> Dict[str, Any]:
         "duration": {"type": "number", "description": "视频时长（秒）"},
     },
     examples=["推荐背景音乐", "适合什么 BGM"],
+    permission="read_only"
 )
 async def tool_suggest_music(mood: str, duration: float = 30.0, **kwargs) -> Dict[str, Any]:
     """推荐音乐工具"""
@@ -1896,6 +1914,7 @@ async def tool_suggest_music(mood: str, duration: float = 30.0, **kwargs) -> Dic
         "prompt_type": {"type": "integer", "description": "类型: 1=文生图, 2=图生图, 3=文生视频"},
     },
     examples=["优化一下提示词", "帮我把描述优化成 AI 绘画提示"],
+    permission="read_only"
 )
 async def tool_optimize_prompt(prompt: str, prompt_type: int = 1, **kwargs) -> Dict[str, Any]:
     """优化提示词工具"""
@@ -1924,6 +1943,7 @@ async def tool_optimize_prompt(prompt: str, prompt_type: int = 1, **kwargs) -> D
         "video_type": {"type": "string", "description": "视频类型（可选）"},
     },
     examples=["随机选一个素材", "挑个视频"],
+    permission="read_only"
 )
 async def tool_random_video(video_type: str = None, **kwargs) -> Dict[str, Any]:
     """随机视频工具"""
@@ -2060,6 +2080,7 @@ async def tool_srt_to_ass(
         "direction": {"type": "string", "description": "转换方向: to_hms（秒→时分秒）/ to_seconds（时分秒→秒）"},
     },
     examples=["300秒是多少时间", "01:30:00 是多少秒"],
+    permission="read_only"
 )
 async def tool_time_convert(value: str, direction: str = "to_hms", **kwargs) -> Dict[str, Any]:
     """时间转换工具"""
@@ -2085,6 +2106,7 @@ async def tool_time_convert(value: str, direction: str = "to_hms", **kwargs) -> 
         "task_id": {"type": "string", "description": "任务 ID"},
     },
     examples=["查看任务进度", "任务执行到哪了"],
+    permission="read_only"
 )
 async def tool_task_status(task_id: str, **kwargs) -> Dict[str, Any]:
     """任务状态工具"""
@@ -2697,7 +2719,8 @@ async def tool_stabilize_video(video_id: int, smoothing: int = 10, **kwargs) -> 
         "threshold": {"type": "number", "description": "场景变化阈值 (0.0~1.0，默认0.4)"},
     },
     examples=["检测场景切换", "找出视频中的转场点"],
-    before_execute=validate_video_exists
+    before_execute=validate_video_exists,
+    permission="read_only"
 )
 async def tool_scene_detect(video_id: int, threshold: float = 0.4, **kwargs) -> Dict[str, Any]:
     """场景检测"""

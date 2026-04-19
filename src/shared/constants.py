@@ -191,3 +191,10 @@ class AgentConfig:
     SESSION_DB_TTL = 86400          # DB 中会话保留时长（秒），24 小时
     MAX_ACTION_RETRIES = 2          # 工具执行最大重试次数
     MAX_LLM_PARSE_RETRIES = 1       # LLM JSON 解析最大重试次数
+
+
+class ToolPermission:
+    """工具权限级别"""
+    READ_ONLY = "read_only"      # 只读查询，自动执行
+    MODIFICATION = "modify"      # 修改操作，建议确认
+    DESTRUCTIVE = "destructive"  # 破坏性操作（删除等），必须确认

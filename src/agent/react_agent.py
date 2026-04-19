@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Any
 
 from src.agent.tool_registry import registry
 from src.agent.session_manager import DialogState, SessionStatus, get_session_manager
-from src.application.services.llm_adapter import generate_response_async
+from src.application.services.llm_adapter import generate_response_async, select_model
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +125,113 @@ class ReActAgent:
                 "session_id": state.session_id,
             }
 
+    async def process_message_stream(
+        self,
+        session_id: Optional[str],
+        user_input: str,
+        context: Optional[Dict] = None,
+    ):
+        """
+        流式处理用户消息，逐步 yield SSE 事件字典。
+
+        事件类型:
+        - session: 会话信息
+        - thinking: AI 思考中
+        - tool_start: 工具开始执行
+        - tool_result: 工具执行结果
+        - reply: 最终回复（可能多次追加）
+        - done: 处理完成
+        - error: 处理出错
+        """
+        state = self.sessions.get_or_create_session(session_id)
+        state.add_message("user", user_input)
+
+        if context:
+            pid = context.get("project_id")
+            if pid:
+                state.project_id = int(pid)
+
+        yield {"type": "session", "session_id": state.session_id}
+        logger.info(f"[ReAct-Stream] 用户输入: '{user_input}', project_id={state.project_id}")
+
+        try:
+            messages = self._build_messages(state)
+            final_reply = ""
+
+            for iteration in range(self.MAX_ITERATIONS):
+                yield {"type": "thinking", "iteration": iteration + 1}
+
+                model = select_model(messages, iteration=iteration)
+                response_text = await generate_response_async(
+                    messages=messages,
+                    model_name=model,
+                    temperature=0.7,
+                    max_tokens=2048,
+                )
+
+                tool_calls = self._parse_tool_calls(response_text)
+
+                if not tool_calls:
+                    final_reply = self._strip_tool_call_hints(response_text)
+                    yield {"type": "reply", "content": final_reply}
+                    break
+
+                # 逐个执行工具并推送状态
+                tool_results = []
+                for tc in tool_calls:
+                    tool_name = tc["name"]
+                    tool_params = tc["params"]
+
+                    # 检查工具权限
+                    tool = registry.get_tool(tool_name)
+                    perm = tool.permission if tool else "modify"
+
+                    yield {
+                        "type": "tool_start",
+                        "tool": tool_name,
+                        "params": tool_params,
+                        "permission": perm,
+                    }
+
+                    result = await self._execute_tool(tool_name, tool_params, state)
+                    tool_results.append({
+                        "name": tool_name,
+                        "params": tool_params,
+                        "result": result,
+                    })
+
+                    if tool_name == "list_videos" and result.get("videos"):
+                        state.last_video_list = result["videos"]
+
+                    # 截断结果用于推送
+                    result_preview = json.dumps(result, ensure_ascii=False, default=str)
+                    if len(result_preview) > 500:
+                        result_preview = result_preview[:500] + "...(已截断)"
+
+                    yield {
+                        "type": "tool_result",
+                        "tool": tool_name,
+                        "success": result.get("success", True),
+                        "preview": result_preview,
+                    }
+
+                # Observe
+                messages.append({"role": "assistant", "content": response_text})
+                observation = self._format_observations(tool_results)
+                messages.append({"role": "user", "content": observation})
+            else:
+                # 超过最大循环次数
+                final_reply = response_text if response_text else "处理超时，请简化您的问题后重试。"
+                yield {"type": "reply", "content": final_reply}
+
+            state.add_message("assistant", final_reply)
+            self.sessions.persist_session(state)
+            yield {"type": "done", "status": "completed", "session_id": state.session_id}
+
+        except Exception as e:
+            logger.error(f"[ReAct-Stream] 处理失败: {e}", exc_info=True)
+            yield {"type": "error", "message": str(e), "session_id": state.session_id}
+
     async def _taor_loop(self, state: DialogState, user_input: str) -> str:
         """
         TAOR 主循环: Think → Act → Observe → Repeat
@@ -139,9 +246,11 @@ class ReActAgent:
         for iteration in range(self.MAX_ITERATIONS):
             logger.info(f"[ReAct] 第{iteration+1}轮循环")
 
-            # Think: 调用 LLM
+            # Think: 调用 LLM（快慢双脑路由）
+            model = select_model(messages, iteration=iteration)
             response_text = await generate_response_async(
                 messages=messages,
+                model_name=model,
                 temperature=0.7,
                 max_tokens=2048,
             )

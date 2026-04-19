@@ -8,8 +8,36 @@ import logging
 from typing import Optional, List, Dict, AsyncGenerator
 
 from src.shared.utils.core_nexus_client import get_client
+from src import config
 
 logger = logging.getLogger(__name__)
+
+
+def select_model(messages: List[Dict[str, str]], force_model: str = None, iteration: int = 0) -> str:
+    """根据消息复杂度选择快/慢模型
+
+    Args:
+        messages: 对话消息列表
+        force_model: 强制使用的模型名
+        iteration: TAOR 循环轮次（>0 时始终用主模型）
+    """
+    if force_model:
+        return force_model
+    if not config.FAST_MODEL:
+        return config.SLOW_MODEL
+    # 后续轮次始终用主模型（工具调用结果需要更强理解能力）
+    if iteration > 0:
+        return config.SLOW_MODEL
+
+    last_msg = messages[-1]["content"] if messages else ""
+    recent = str([m.get("content", "") for m in messages[-3:]])
+    has_tools = "<tool_call" in recent
+
+    if len(last_msg) < config.FAST_MODEL_THRESHOLD and not has_tools:
+        logger.info(f"[ModelRouter] 使用快速模型: {config.FAST_MODEL}")
+        return config.FAST_MODEL
+
+    return config.SLOW_MODEL
 
 
 def generate_response(

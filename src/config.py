@@ -48,6 +48,11 @@ llm_model = os.getenv('LLM_MODEL', 'deepseek')
 model_name = os.getenv('MODEL_NAME', 'deepseek-chat')
 llm_key = os.getenv('LLM_KEY', '')
 
+# 快慢双脑模型路由
+FAST_MODEL = os.getenv('FAST_MODEL', '')       # 快速模型名（如 deepseek-chat），为空则不启用
+SLOW_MODEL = os.getenv('SLOW_MODEL', model_name)  # 主模型名，默认使用 MODEL_NAME
+FAST_MODEL_THRESHOLD = int(os.getenv('FAST_MODEL_THRESHOLD', '100'))  # 快速模型阈值（字符数）
+
 # core-nexus-ai 配置
 CORE_NEXUS_BASE_URL = os.getenv('CORE_NEXUS_BASE_URL', '')
 

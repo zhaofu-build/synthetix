@@ -1,0 +1,11 @@
+services:
+  synthetix:
+    build: .
+    ports:
+      - "9527:9527"
+    env_file:
+      - .env
+    volumes:
+      - ./src/db:/app/src/db
+      - ./static:/app/static
+    restart: unless-stopped

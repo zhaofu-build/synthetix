@@ -79,9 +79,9 @@ async def chat(request: ChatRequest):
 @router.post("/chat/stream", summary="流式对话")
 async def chat_stream(request: ChatRequest):
     """
-    流式对话（SSE）
+    流式对话（SSE）— 逐步推送 AI 思考、工具执行和回复
 
-    返回 Server-Sent Events 流式响应
+    事件类型: session, thinking, tool_start, tool_result, reply, done, error
 
     Args:
         request: 对话请求
@@ -89,30 +89,21 @@ async def chat_stream(request: ChatRequest):
     Returns:
         SSE 流
     """
-    async def generate():
+    async def event_generator():
         try:
             agent = get_react_agent()
-
-            # 先发送处理中状态
-            yield f"data: {json.dumps({'status': 'processing'}, ensure_ascii=False)}\n\n"
-
-            # 处理消息
-            result = await agent.process_message(
+            async for event in agent.process_message_stream(
                 session_id=request.session_id,
                 user_input=request.message,
                 context=request.context
-            )
-
-            # 流式发送响应
-            yield f"data: {json.dumps(result, ensure_ascii=False)}\n\n"
-
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
-
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
-        generate(),
+        event_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
