@@ -1,6 +1,6 @@
 # Synthetix
 
-AI 视频剪辑平台，通过 AI 能力简化视频创作流程。
+AI 视频剪辑桌面平台，基于 Tauri 2.0 + Vue 3 + FastAPI，通过 AI 能力简化视频创作流程。
 
 ## 功能特性
 
@@ -32,7 +32,7 @@ AI 视频剪辑平台，通过 AI 能力简化视频创作流程。
 ### 扩展性
 - **扩展/插件** — 自定义扩展注入工具和系统提示词
 - **MCP 协议** — 动态接入外部工具服务器
-- **技能系统** — YAML 定义可复用技能
+- **技能系统** — Markdown 定义可复用技能
 - **知识库** — 项目级 BM25 搜索，记录分析结果和备注
 - **浏览器自动化** — CDP 协议控制浏览器搜索素材
 
@@ -40,6 +40,7 @@ AI 视频剪辑平台，通过 AI 能力简化视频创作流程。
 
 | 层 | 技术 |
 |----|------|
+| 桌面壳 | Tauri 2.0 (Rust) |
 | 后端 | Python 3.11, FastAPI, SQLAlchemy, Alembic, FFmpeg |
 | 前端 | Vue 3, Vite, Pinia, Element Plus, Vue Router, vue-i18n |
 | AI 服务 | core-nexus-ai（LLM, TTS, ASR, VL, 音乐生成） |
@@ -51,8 +52,17 @@ AI 视频剪辑平台，通过 AI 能力简化视频创作流程。
 ### 1. 安装依赖
 
 ```bash
+# Python 依赖
 pip install -r requirements.txt
+
+# 前端依赖
 cd synthetix-vue && npm install
+
+# Tauri CLI（桌面应用构建）
+cd synthetix-tauri && npm install
+
+# Rust（Tauri 必需）
+winget install Rustlang.Rustup
 ```
 
 ### 2. 安装 FFmpeg
@@ -66,16 +76,17 @@ cd synthetix-vue && npm install
 ```env
 CORE_NEXUS_BASE_URL=http://your-core-nexus-server:port
 LLM_KEY=your_api_key
-CORS_ORIGINS=http://localhost:9528
+CORS_ORIGINS=*
 ```
 
 可选配置：
 
 ```env
-FAST_MODEL=                 # 快速模型（短文本/简单查询）
-SLOW_MODEL=                 # 主模型（复杂任务，默认）
-FAST_MODEL_THRESHOLD=100    # 快模型消息长度阈值
-CHROME_CDP_URL=             # CDP 浏览器地址（浏览器自动化）
+API_PORT=9527                  # API 端口
+FAST_MODEL=                    # 快速模型（短文本/简单查询）
+SLOW_MODEL=                    # 主模型（复杂任务，默认）
+FAST_MODEL_THRESHOLD=100       # 快模型消息长度阈值
+CHROME_CDP_URL=                # CDP 浏览器地址（浏览器自动化）
 ```
 
 ### 4. 初始化数据库
@@ -87,18 +98,24 @@ alembic upgrade head
 ### 5. 启动
 
 ```bash
-# 构建前端 + 启动后端（单端口 9527，自动提供前端）
+# 桌面模式（一键启动后端 API + Tauri 窗口）
 python main.py
 
-# 或分别启动：
-# 后端：python main.py
-# 前端开发模式（热更新，端口 9528）：cd synthetix-vue && npm run dev
+# 或前端开发模式（热更新，端口 9528，需同时运行后端）
+cd synthetix-vue && npm run dev
 ```
 
-- Web 界面 + API 文档：http://127.0.0.1:9527
 - Swagger UI：http://127.0.0.1:9527/docs
 - 健康检查：http://127.0.0.1:9527/health
 - 前端开发模式：http://127.0.0.1:9528
+
+### 桌面应用打包
+
+```bash
+python build_backend.py    # PyInstaller 打包 Python 后端为 exe
+cd synthetix-tauri         # 生成 .msi 和 .exe 安装包
+npx tauri build
+```
 
 ## Docker 部署
 
@@ -117,27 +134,34 @@ src/
 │   ├── tool_registry.py          #   73 个工具注册（Pydantic 校验 + Hook + 权限）
 │   ├── session_manager.py        #   会话管理（内存 + DB 双写）
 │   ├── mcp_client.py             #   MCP 协议客户端
-│   ├── extension_loader.py       #   扩展/插件加载
-│   ├── skill_loader.py           #   YAML 技能加载
+│   ├── extension_loader.py       #   扩展/插件加载（扫描 src/extensions/）
+│   ├── skill_loader.py           #   Markdown 技能加载（扫描 src/skills/）
 │   ├── project_memory.py         #   项目级偏好记忆
 │   ├── knowledge_base.py         #   BM25 知识库
 │   └── multi_agent.py            #   多 Agent 协作（Plan→Execute→Review）
+├── extensions/                   # 扩展/插件（示例：字幕风格预设）
+├── skills/                       # Markdown 技能定义
+├── scripts/                      # 工具脚本
 ├── domain/entities/              # SQLAlchemy 数据模型
 ├── application/services/         # 业务逻辑（视频/音频处理、LLM、FFmpeg、渲染）
 ├── interfaces/api/               # FastAPI 路由（11 个模块）
 ├── shared/                       # 公共模型、工具类、core-nexus 客户端、CDP 浏览器
 └── infrastructure/               # 数据库会话、Repository 层
 
-synthetix-vue/src/
+synthetix-vue/src/                # 前端 Vue 3 + Vite + Pinia + Element Plus
 ├── api/modules/                  # 后端 API 调用模块
 ├── store/modules/                # Pinia 状态管理
 ├── components/editor/            # 统一编辑器组件
 ├── locales/                      # 国际化（zh-CN, en-US）
-├── layouts/                      # 布局
 └── utils/                        # Markdown 渲染、API 封装
 
-extensions/                       # 扩展/插件（示例：字幕风格预设）
-skills/                           # YAML 技能定义
+synthetix-tauri/                  # Tauri 2.0 桌面应用（Rust）
+├── src/main.rs, lib.rs           # Rust 入口（sidecar 启动）
+├── tauri.conf.json               # Tauri 配置
+├── capabilities/                 # 权限声明
+├── binaries/                     # sidecar 放置目录
+└── icons/                        # 应用图标
+
 config/                           # 分层配置（default.json + settings.json）
 ```
 

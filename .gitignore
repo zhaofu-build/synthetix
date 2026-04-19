@@ -57,6 +57,7 @@ src-tauri/
 synthetix-tauri/target/
 synthetix-tauri/binaries/*.exe
 synthetix-tauri/binaries/*.placeholder
+synthetix-tauri/node_modules/
 build_pyinstaller/
 synthetix-vue/app-icon.png
 
