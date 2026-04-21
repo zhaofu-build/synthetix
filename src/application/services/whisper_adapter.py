@@ -11,6 +11,7 @@ from typing import Optional
 os.environ["translators_default_region"] = "EN"
 
 from src.shared.utils.core_nexus_client import get_client
+from src.shared.utils.config_manager import get as cfg_get
 from src.application.services import translation_adapter as use_translation
 
 logger = logging.getLogger(__name__)
@@ -44,9 +45,11 @@ def transcribe(
 
     try:
         client = get_client()
+        asr_model = cfg_get("core_nexus.asr_model") or None
         result = client.asr_transcribe(
             audio=audio_path,
-            language=subtitle_language
+            language=subtitle_language,
+            model=asr_model
         )
 
         text = result.get('text', '')

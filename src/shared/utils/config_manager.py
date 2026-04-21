@@ -11,7 +11,7 @@ from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_DIR = Path(__file__).parent.parent.parent / "config"
+_CONFIG_DIR = Path(__file__).parent.parent.parent.parent / "config"
 _DEFAULT_FILE = _CONFIG_DIR / "default.json"
 _SETTINGS_FILE = _CONFIG_DIR / "settings.json"
 

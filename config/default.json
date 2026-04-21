@@ -11,6 +11,14 @@
     "temperature": 0.7,
     "max_tokens": 2048
   },
+  "core_nexus": {
+    "base_url": "http://127.0.0.1:9666",
+    "llm_model": "",
+    "tts_model": "",
+    "asr_model": "",
+    "vl_model": "",
+    "music_model": ""
+  },
   "agent": {
     "max_iterations": 5,
     "max_history": 50,

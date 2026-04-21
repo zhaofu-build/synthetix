@@ -5,14 +5,17 @@ Core-Nexus-AI 代理 API
 """
 import logging
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 import json
 import base64
+import httpx
 
 from src.shared.utils.core_nexus_client import get_client
 from src.shared.models.response import success_response, error_response
+from src.shared.utils.config_manager import get as cfg_get
+from src import config
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -60,6 +63,56 @@ class VLRequest(BaseModel):
     images: Optional[List[str]] = None
     messages: Optional[List[Dict[str, Any]]] = None
     generation: Optional[Dict[str, Any]] = None
+
+
+# ==================== 模型列表接口 ====================
+
+@router.get("/models", summary="获取可用模型列表")
+async def list_models(
+    task_type: Optional[str] = Query(default=None, description="任务类型: LLM/TTS/ASR/VL/TEXT_TO_MUSIC"),
+    base_url: Optional[str] = Query(default=None, description="服务地址（可选，未传则用已保存配置）"),
+):
+    """代理 core-nexus-ai 的 /api/models 接口"""
+    url = base_url or cfg_get("core_nexus.base_url") or config.CORE_NEXUS_BASE_URL
+    if not url:
+        return success_response(data=[], message="CORE_NEXUS_BASE_URL 未配置")
+    url = url.strip().rstrip('/')
+
+    try:
+        params = {}
+        if task_type:
+            params["task_type"] = task_type
+
+        async with httpx.AsyncClient(timeout=10.0) as http_client:
+            resp = await http_client.get(f"{url}/api/models", params=params)
+            resp.raise_for_status()
+            data = resp.json()
+
+        return success_response(data=data, to_camel=False)
+    except Exception as e:
+        logger.error(f"获取模型列表失败: {e}")
+        return error_response(error="ModelListError", message=str(e), code=500)
+
+
+class TestConnectionRequest(BaseModel):
+    """测试连接请求"""
+    base_url: str
+
+
+@router.post("/test-connection", summary="测试 core-nexus-ai 连接")
+async def test_connection(req: TestConnectionRequest):
+    """测试 core-nexus-ai 连接是否正常"""
+    base_url = req.base_url.strip().rstrip('/')
+    if not base_url:
+        return error_response(error="ConfigError", message="请输入服务地址", code=400)
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http_client:
+            resp = await http_client.get(f"{base_url}/health")
+            resp.raise_for_status()
+        return success_response(data={"status": "ok"}, message="连接成功")
+    except Exception as e:
+        return error_response(error="ConnectionError", message=f"连接失败: {e}", code=500)
 
 
 # ==================== LLM 接口 ====================

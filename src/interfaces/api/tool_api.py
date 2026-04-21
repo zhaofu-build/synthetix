@@ -7,12 +7,12 @@
 """
 import os
 import logging
+from typing import Dict, Any
 from fastapi import APIRouter, UploadFile, File
 
 from src import config
 from src.application.services import use_ffmpeg
 from src.shared.utils import file_util
-from src.shared.models.base import BaseReq
 from src.shared.models.response import success_response, error_response
 from src.shared.utils.config_manager import get as cfg_get, get_all as cfg_get_all, set_value as cfg_set, reload_config as cfg_reload
 
@@ -86,11 +86,22 @@ async def get_config():
 
 
 @router.patch("/config", summary="更新配置")
-async def update_config(req: BaseReq):
+async def update_config(req: Dict[str, Any]):
     """更新系统配置并持久化到 settings.json"""
-    config_data = req.dict(exclude_unset=True)
+    config_data = req
     for key, value in config_data.items():
+        if key.startswith('_'):
+            continue
         cfg_set(key, value)
+
+    # 当 core_nexus.base_url 变更时，同步更新运行时配置和客户端
+    if "core_nexus.base_url" in config_data:
+        new_url = config_data["core_nexus.base_url"]
+        if new_url:
+            config.CORE_NEXUS_BASE_URL = new_url
+        from src.shared.utils.core_nexus_client import reset_client
+        reset_client()
+
     return success_response(data=True, message="保存配置成功")
 
 

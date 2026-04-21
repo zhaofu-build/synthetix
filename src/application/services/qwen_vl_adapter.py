@@ -7,6 +7,7 @@ import logging
 from typing import Optional
 
 from src.shared.utils.core_nexus_client import get_client
+from src.shared.utils.config_manager import get as cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ def image_summary(tmp_path: str, prompt: Optional[str] = None) -> str:
 
     try:
         client = get_client()
+        vl_model = cfg_get("core_nexus.vl_model") or None
         # 本地文件路径转为 data URL
         if tmp_path and not tmp_path.startswith(("http://", "https://", "data:")):
             image_data = _file_to_data_url(tmp_path)
@@ -36,7 +38,8 @@ def image_summary(tmp_path: str, prompt: Optional[str] = None) -> str:
             image_data = tmp_path
         response = client.vl_generate(
             prompt=prompt,
-            image=image_data
+            image=image_data,
+            model=vl_model
         )
         logger.info(f"✅ 图片理解完成")
         return response
@@ -96,10 +99,12 @@ def video_summary(tmp_path: str, prompt: Optional[str] = None, duration: Optiona
 
     try:
         client = get_client()
+        vl_model = cfg_get("core_nexus.vl_model") or None
         video_data = _file_to_data_url(tmp_path)
         response = client.vl_generate(
             prompt=prompt,
-            video=video_data
+            video=video_data,
+            model=vl_model
         )
         logger.info(f"✅ 视频理解完成")
         return response
@@ -123,6 +128,7 @@ def generate_summary(messages: list) -> str:
 
     try:
         client = get_client()
+        vl_model = cfg_get("core_nexus.vl_model") or None
 
         # 从消息中提取 prompt 和图片
         prompt = ""
@@ -148,7 +154,8 @@ def generate_summary(messages: list) -> str:
         response = client.vl_generate(
             prompt=prompt,
             images=images if images else None,
-            messages=messages
+            messages=messages,
+            model=vl_model
         )
         return response
 

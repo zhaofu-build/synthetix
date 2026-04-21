@@ -28,7 +28,10 @@ class CoreNexusClient:
             base_url: API 基础地址，默认从配置读取
             timeout: 请求超时时间（秒）
         """
-        self.base_url = (base_url or config.CORE_NEXUS_BASE_URL).rstrip('/')
+        raw = (base_url or config.CORE_NEXUS_BASE_URL).strip()
+        if raw and not raw.startswith(('http://', 'https://')):
+            raw = f'http://{raw}'
+        self.base_url = raw.rstrip('/')
         self.timeout = timeout
 
         if not self.base_url:
@@ -349,6 +352,7 @@ class CoreNexusClient:
         self,
         audio: str,
         language: Optional[str] = None,
+        model: Optional[str] = None,
         **generation_params
     ) -> Dict[str, Any]:
         """ASR 语音识别"""
@@ -357,6 +361,8 @@ class CoreNexusClient:
         payload = {"audio": audio_data}
         if language:
             payload["language"] = language
+        if model:
+            payload["model"] = model
         if generation_params:
             payload["generation"] = generation_params
 
@@ -367,6 +373,7 @@ class CoreNexusClient:
         self,
         audio: str,
         language: Optional[str] = None,
+        model: Optional[str] = None,
         **generation_params
     ) -> Dict[str, Any]:
         """ASR 异步语音识别"""
@@ -375,6 +382,8 @@ class CoreNexusClient:
         payload = {"audio": audio_data}
         if language:
             payload["language"] = language
+        if model:
+            payload["model"] = model
         if generation_params:
             payload["generation"] = generation_params
 
@@ -499,6 +508,7 @@ class CoreNexusClient:
         video: Optional[str] = None,
         videos: Optional[List[str]] = None,
         messages: Optional[List[Dict]] = None,
+        model: Optional[str] = None,
         **generation_params
     ) -> str:
         """VL 视觉语言理解"""
@@ -514,6 +524,11 @@ class CoreNexusClient:
             payload["videos"] = videos
         if messages:
             payload["messages"] = messages
+        if model:
+            payload["model"] = model
+        if generation_params:
+            payload["generation"] = generation_params
+            payload["messages"] = messages
         if generation_params:
             payload["generation"] = generation_params
 
@@ -528,6 +543,7 @@ class CoreNexusClient:
         video: Optional[str] = None,
         videos: Optional[List[str]] = None,
         messages: Optional[List[Dict]] = None,
+        model: Optional[str] = None,
         **generation_params
     ) -> str:
         """VL 异步视觉语言理解"""
@@ -543,6 +559,8 @@ class CoreNexusClient:
             payload["videos"] = videos
         if messages:
             payload["messages"] = messages
+        if model:
+            payload["model"] = model
         if generation_params:
             payload["generation"] = generation_params
 
@@ -557,6 +575,7 @@ class CoreNexusClient:
         video: Optional[str] = None,
         videos: Optional[List[str]] = None,
         messages: Optional[List[Dict]] = None,
+        model: Optional[str] = None,
         **generation_params
     ) -> Generator[str, None, None]:
         """VL 流式视觉语言理解"""
@@ -572,6 +591,8 @@ class CoreNexusClient:
             payload["videos"] = videos
         if messages:
             payload["messages"] = messages
+        if model:
+            payload["model"] = model
         if generation_params:
             payload["generation"] = generation_params
 
@@ -587,6 +608,7 @@ class CoreNexusClient:
         video: Optional[str] = None,
         videos: Optional[List[str]] = None,
         messages: Optional[List[Dict]] = None,
+        model: Optional[str] = None,
         **generation_params
     ) -> AsyncGenerator[str, None]:
         """VL 异步流式视觉语言理解"""
@@ -602,6 +624,8 @@ class CoreNexusClient:
             payload["videos"] = videos
         if messages:
             payload["messages"] = messages
+        if model:
+            payload["model"] = model
         if generation_params:
             payload["generation"] = generation_params
 
@@ -749,8 +773,21 @@ _client: Optional[CoreNexusClient] = None
 
 
 def get_client() -> CoreNexusClient:
-    """获取全局客户端实例"""
+    """获取全局客户端实例，优先从 config_manager 读取 base_url"""
     global _client
     if _client is None:
-        _client = CoreNexusClient()
+        from src.shared.utils.config_manager import get as cfg_get
+        base_url = cfg_get("core_nexus.base_url") or config.CORE_NEXUS_BASE_URL
+        _client = CoreNexusClient(base_url=base_url)
     return _client
+
+
+def reset_client() -> None:
+    """重置全局客户端实例（配置变更后调用）"""
+    global _client
+    if _client is not None:
+        try:
+            _client.close()
+        except Exception:
+            pass
+        _client = None

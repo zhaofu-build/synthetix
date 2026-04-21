@@ -8,6 +8,7 @@ import logging
 from typing import Optional, List, Dict, AsyncGenerator
 
 from src.shared.utils.core_nexus_client import get_client
+from src.shared.utils.config_manager import get as cfg_get
 from src import config
 
 logger = logging.getLogger(__name__)
@@ -23,11 +24,15 @@ def select_model(messages: List[Dict[str, str]], force_model: str = None, iterat
     """
     if force_model:
         return force_model
+
+    # 从 config_manager 读取配置的模型名
+    configured_model = cfg_get("core_nexus.llm_model")
+
     if not config.FAST_MODEL:
-        return config.SLOW_MODEL
+        return config.SLOW_MODEL or configured_model or ""
     # 后续轮次始终用主模型（工具调用结果需要更强理解能力）
     if iteration > 0:
-        return config.SLOW_MODEL
+        return config.SLOW_MODEL or configured_model or ""
 
     last_msg = messages[-1]["content"] if messages else ""
     recent = str([m.get("content", "") for m in messages[-3:]])
@@ -37,7 +42,7 @@ def select_model(messages: List[Dict[str, str]], force_model: str = None, iterat
         logger.info(f"[ModelRouter] 使用快速模型: {config.FAST_MODEL}")
         return config.FAST_MODEL
 
-    return config.SLOW_MODEL
+    return config.SLOW_MODEL or configured_model or ""
 
 
 def generate_response(

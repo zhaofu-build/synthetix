@@ -989,15 +989,18 @@ async def tool_generate_music(
 ) -> Dict[str, Any]:
     """音乐生成工具"""
     from src.shared.utils.core_nexus_client import get_client
+    from src.shared.utils.config_manager import get as cfg_get
     from src import config
     import base64
 
     try:
         client = get_client()
+        music_model = cfg_get("core_nexus.music_model") or None
         result = client.text_to_music(
             prompt=prompt,
             duration=duration,
-            style=style
+            style=style,
+            model=music_model
         )
 
         audio_data = result.get("audio", "")

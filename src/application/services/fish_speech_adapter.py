@@ -7,6 +7,7 @@ import logging
 from typing import Optional, List
 
 from src.shared.utils.core_nexus_client import get_client
+from src.shared.utils.config_manager import get as cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +52,10 @@ def fish_voice(
             ref_text = ref.get("text")
 
         # 调用 API（使用简化的参数格式）
+        tts_model = cfg_get("core_nexus.tts_model") or None
         audio_data = client.tts_generate(
             text=text,
+            model=tts_model,
             ref_audio=ref_audio,
             ref_text=ref_text,
             language="Auto",
