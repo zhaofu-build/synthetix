@@ -238,6 +238,44 @@ def _start_tauri():
         logger.warning(f"Tauri 启动异常: {e}")
 
 
+def _wait_for_api(port, timeout=15):
+    """等待 API 服务就绪"""
+    import urllib.request
+    import urllib.error
+    import time
+    url = f"http://127.0.0.1:{port}/health"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(url, timeout=2)
+            return True
+        except (urllib.error.URLError, ConnectionError, OSError):
+            time.sleep(0.3)
+    return False
+
+
+def _build_frontend():
+    """构建前端 dist"""
+    frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "synthetix-vue")
+    npm_cmd = shutil.which("npm") or shutil.which("npm.cmd")
+    if not npm_cmd:
+        logger.warning("npm 未找到，跳过前端构建")
+        return False
+    logger.info("正在构建前端...")
+    result = subprocess.run(
+        f'"{npm_cmd}" run build',
+        cwd=frontend_dir,
+        shell=True,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.error(f"前端构建失败:\n{result.stderr}")
+        return False
+    logger.info("前端构建完成")
+    return True
+
+
 def run():
     """启动桌面应用（后端 API + Tauri 窗口）"""
     import threading
@@ -255,6 +293,9 @@ def run():
         logging.error(f"数据库初始化失败: {str(e)}", exc_info=True)
         raise
 
+    # 先构建前端（避免 Tauri beforeDevCommand 并行导致覆盖 dist）
+    _build_frontend()
+
     # 后台线程启动 uvicorn API 服务
     def _run_api():
         uvicorn.run(
@@ -266,7 +307,12 @@ def run():
 
     api_thread = threading.Thread(target=_run_api, daemon=True)
     api_thread.start()
-    logger.info(f"API 后端已启动: http://127.0.0.1:{config.api_host}")
+
+    # 等待 API 服务就绪
+    if _wait_for_api(config.api_host):
+        logger.info(f"API 后端已就绪: http://127.0.0.1:{config.api_host}")
+    else:
+        logger.warning(f"API 后端未能在超时内就绪: http://127.0.0.1:{config.api_host}")
 
     # 前台运行 Tauri 桌面窗口
     npx_cmd = shutil.which("npx") or shutil.which("npx.cmd")
