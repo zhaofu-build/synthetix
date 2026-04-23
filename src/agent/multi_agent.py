@@ -97,6 +97,7 @@ async def run_sub_agent(
 
             # 执行工具
             import json
+            tool_results_parts = []
             for tool_name, params_str in tool_calls:
                 try:
                     params = json.loads(params_str.strip())
@@ -108,14 +109,24 @@ async def run_sub_agent(
                 tool = registry.get_tool(tool_name)
                 if tool:
                     try:
-                        result = await tool.execute(**params)
-                        messages.append({"role": "assistant", "content": response})
+                        # 参数校验
+                        validated = tool.validate_params(params) if tool.param_model else params
+                        if tool.before_execute:
+                            validated = tool.before_execute(validated) or validated
+                        result = await tool.execute(**validated)
+                        if tool.after_execute:
+                            result = tool.after_execute(result) or result
                         result_str = json.dumps(result, ensure_ascii=False, default=str)
-                        messages.append({"role": "user", "content": f"工具 {tool_name} 结果: {result_str[:1000]}"})
+                        tool_results_parts.append(f"工具 {tool_name} 结果: {result_str[:1000]}")
                     except Exception as e:
-                        messages.append({"role": "user", "content": f"工具 {tool_name} 失败: {str(e)}"})
-                break  # 每轮只执行一个工具，简化逻辑
-        return response.strip() if 'response' in dir() else "执行超时"
+                        tool_results_parts.append(f"工具 {tool_name} 失败: {str(e)}")
+                else:
+                    tool_results_parts.append(f"工具 {tool_name} 不存在")
+
+            messages.append({"role": "assistant", "content": response})
+            messages.append({"role": "user", "content": "\n".join(tool_results_parts)})
+
+        return response.strip() if response else "执行超时"
 
     # 规划/审查 Agent 不调用工具，直接生成
     response = await generate_response_async(messages=messages, temperature=0.7, max_tokens=2048)
