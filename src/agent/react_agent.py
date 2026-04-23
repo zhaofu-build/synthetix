@@ -492,9 +492,19 @@ class ReActAgent:
     async def _execute_tool(
         self, tool_name: str, params: Dict, state: DialogState
     ) -> Dict[str, Any]:
-        """执行单个工具"""
+        """执行单个工具（支持 registry 工具和 MCP 外部工具）"""
         tool = registry.get_tool(tool_name)
+
+        # 尝试 MCP 外部工具
         if not tool:
+            try:
+                from src.agent.mcp_client import mcp_client
+                if tool_name in mcp_client.tools:
+                    logger.info(f"[ReAct] 调用 MCP 工具: {tool_name}")
+                    return await mcp_client.call_tool(tool_name, params)
+            except Exception as e:
+                logger.warning(f"[ReAct] MCP 工具调用失败: {e}")
+
             return {"success": False, "error": f"未知工具: {tool_name}"}
 
         # 注入 project_id
