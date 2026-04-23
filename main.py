@@ -27,6 +27,7 @@ from src.interfaces.api.task_api import router as task_api
 from src.interfaces.api.ws_api import router as ws_api
 from src.interfaces.api.mcp_api import router as mcp_api
 from src.interfaces.api.extension_api import router as extension_api
+from src.interfaces.api.comic_api import router as comic_api
 
 from src.shared.utils import file_util
 
@@ -114,6 +115,7 @@ app.include_router(task_api, prefix="/api/tasks", tags=["任务管理"])
 app.include_router(ws_api, tags=["WebSocket"])
 app.include_router(mcp_api, prefix="/api/mcp", tags=["MCP工具"])
 app.include_router(extension_api, prefix="/api/extensions", tags=["扩展管理"])
+app.include_router(comic_api, prefix="/api/comic-projects", tags=["漫剧项目"])
 # app.include_router(video_generation_api, tags=["视频生成"])
 
 # ⚠️ 重要：CORS 中间件必须在其他中间件之前添加

@@ -3391,3 +3391,483 @@ async def tool_browser_execute_js(expression: str, **kwargs) -> Dict[str, Any]:
         return await browser.execute_js(expression)
     except Exception as e:
         return {"success": False, "error": f"JS 执行失败: {e}"}
+
+
+# ==================== Comic Drama Tools ====================
+
+@registry.register(
+    name="comic_generate_script",
+    description="根据创意描述生成漫剧脚本，包含角色定义、分镜列表、对白和旁白。返回完整的脚本结构。",
+    parameters={
+        "project_id": {"type": "integer", "description": "漫剧项目 ID"},
+        "description": {"type": "string", "description": "故事设定/大纲，如'3分钟校园恋爱故事'"},
+        "genre": {"type": "string", "description": "类型: drama/comedy/action/romance/mystery/fantasy", "default": "drama"},
+        "num_panels": {"type": "integer", "description": "分镜数量 (3-50)", "default": 10},
+        "characters": {"type": "array", "description": "角色定义列表（可选）", "default": None},
+    },
+    examples=["帮我生成一个10个分镜的校园恋爱漫剧脚本", "创建一个悬疑漫剧，8个分镜"],
+    permission="modify",
+)
+async def tool_comic_generate_script(
+    project_id: int, description: str, genre: str = "drama",
+    num_panels: int = 10, characters: list = None, **kwargs
+) -> Dict[str, Any]:
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.comic_project import ComicProject
+    from src.application.services.llm_adapter import generate_response
+    from src.shared.utils.string_util import remove_think_tags
+    import json, re
+    try:
+        characters_str = "未指定"
+        if characters:
+            characters_str = "\n".join([
+                f"- {c.get('name', '?')}: {c.get('appearance', '?')}"
+                for c in characters
+            ])
+
+        prompt = f"""你是一个专业的漫剧编剧。请根据以下信息生成漫剧脚本。
+
+故事设定: {description}
+类型: {genre}
+分镜数量: {num_panels}
+角色: {characters_str}
+
+请严格按照以下 JSON 格式输出（不要用 ```json 标记）:
+{{
+  "title": "标题",
+  "synopsis": "简介",
+  "genre": "{genre}",
+  "scenes": [
+    {{
+      "sequence": 0,
+      "scene_description": "详细场景视觉描述（用于AI图片生成）",
+      "background_description": "背景描述",
+      "characters": ["角色名"],
+      "dialogues": [{{"character_id": "角色名", "text": "台词", "emotion": "开心"}}],
+      "narration": null,
+      "emotion": "neutral",
+      "duration": 3.0,
+      "transition": "cut",
+      "camera": "中景"
+    }}
+  ],
+  "bgm_prompt": "BGM风格描述"
+}}"""
+
+        result_text = generate_response([{"role": "user", "content": prompt}])
+        result_text = remove_think_tags(result_text).strip()
+
+        json_match = re.search(r'\{[\s\S]*\}', result_text)
+        if not json_match:
+            return {"success": False, "error": "AI 返回格式异常"}
+
+        script_data = json.loads(json_match.group())
+
+        with get_db_context() as db:
+            project = db.query(ComicProject).get(project_id)
+            if not project:
+                return {"success": False, "error": f"项目 {project_id} 不存在"}
+            project.script_data = script_data
+            if script_data.get("scenes"):
+                project.panels = script_data["scenes"]
+            if not project.genre and script_data.get("genre"):
+                project.genre = script_data["genre"]
+            project.current_step = 1
+            db.commit()
+
+        return {
+            "success": True,
+            "title": script_data.get("title", ""),
+            "num_panels": len(script_data.get("scenes", [])),
+            "message": f"脚本生成成功: {script_data.get('title', '')}, 共 {len(script_data.get('scenes', []))} 个分镜",
+        }
+    except json.JSONDecodeError:
+        return {"success": False, "error": "AI 返回 JSON 解析失败"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="comic_edit_panel",
+    description="编辑指定分镜的内容（场景描述、对白、时长、转场等）",
+    parameters={
+        "project_id": {"type": "integer", "description": "漫剧项目 ID"},
+        "panel_index": {"type": "integer", "description": "分镜索引（从0开始）"},
+        "scene_description": {"type": "string", "description": "新的场景描述", "default": None},
+        "dialogues": {"type": "array", "description": "新的对白列表", "default": None},
+        "duration": {"type": "number", "description": "持续秒数", "default": None},
+        "transition": {"type": "string", "description": "转场类型", "default": None},
+        "emotion": {"type": "string", "description": "情绪", "default": None},
+    },
+    examples=["修改第3个分镜的场景描述", "把分镜5的时长改为5秒"],
+    permission="modify",
+)
+async def tool_comic_edit_panel(
+    project_id: int, panel_index: int, scene_description: str = None,
+    dialogues: list = None, duration: float = None, transition: str = None,
+    emotion: str = None, **kwargs
+) -> Dict[str, Any]:
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.comic_project import ComicProject
+    try:
+        with get_db_context() as db:
+            project = db.query(ComicProject).get(project_id)
+            if not project:
+                return {"success": False, "error": f"项目 {project_id} 不存在"}
+            panels = project.panels or []
+            if panel_index < 0 or panel_index >= len(panels):
+                return {"success": False, "error": f"分镜索引 {panel_index} 越界"}
+            panel = panels[panel_index]
+            if scene_description is not None:
+                panel["scene_description"] = scene_description
+            if dialogues is not None:
+                panel["dialogues"] = dialogues
+            if duration is not None:
+                panel["duration"] = duration
+            if transition is not None:
+                panel["transition"] = transition
+            if emotion is not None:
+                panel["emotion"] = emotion
+            project.panels = panels
+            db.commit()
+        return {"success": True, "message": f"分镜 {panel_index} 已更新"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="comic_generate_image",
+    description="为指定分镜生成画面图片（通过 AI 文生图）",
+    parameters={
+        "project_id": {"type": "integer", "description": "漫剧项目 ID"},
+        "panel_index": {"type": "integer", "description": "分镜索引（从0开始）"},
+    },
+    examples=["生成分镜1的画面图片", "为第3个分镜生成图片"],
+    permission="modify",
+)
+async def tool_comic_generate_image(project_id: int, panel_index: int, **kwargs) -> Dict[str, Any]:
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.comic_project import ComicProject
+    from src.shared.utils.core_nexus_client import get_client
+    try:
+        client = get_client()
+        with get_db_context() as db:
+            project = db.query(ComicProject).get(project_id)
+            if not project:
+                return {"success": False, "error": f"项目 {project_id} 不存在"}
+            panels = project.panels or []
+            if panel_index < 0 or panel_index >= len(panels):
+                return {"success": False, "error": f"分镜索引 {panel_index} 越界"}
+            panel = panels[panel_index]
+            prompt = panel.get("scene_description", "")
+            style = project.style or "动漫"
+            style_map = {
+                "动漫": "anime style, high quality, detailed",
+                "写实": "photorealistic, cinematic lighting, 8k",
+                "水墨": "chinese ink painting style, elegant",
+                "像素": "pixel art style, retro game aesthetic",
+                "美漫": "western comic style, bold lines, vibrant colors",
+            }
+            full_prompt = f"{style_map.get(style, 'anime style')}, {prompt}"
+            result = await client.text_to_image_async(prompt=full_prompt)
+            if result.get("status") == "stub":
+                return {"success": False, "error": "图片生成服务尚未就绪"}
+            image_path = result.get("image_url") or result.get("image_path")
+            if image_path:
+                panel["generated_image_path"] = image_path
+                project.panels = panels
+                db.commit()
+        return {"success": True, "image_path": image_path, "message": f"分镜 {panel_index} 图片已生成"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="comic_generate_video",
+    description="为指定分镜生成动态视频（通过 AI 图/文生视频）",
+    parameters={
+        "project_id": {"type": "integer", "description": "漫剧项目 ID"},
+        "panel_index": {"type": "integer", "description": "分镜索引（从0开始）"},
+        "duration": {"type": "number", "description": "视频时长（秒）", "default": 3.0},
+    },
+    examples=["为分镜2生成3秒动态视频"],
+    permission="modify",
+)
+async def tool_comic_generate_video(
+    project_id: int, panel_index: int, duration: float = 3.0, **kwargs
+) -> Dict[str, Any]:
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.comic_project import ComicProject
+    from src.shared.utils.core_nexus_client import get_client
+    try:
+        client = get_client()
+        with get_db_context() as db:
+            project = db.query(ComicProject).get(project_id)
+            if not project:
+                return {"success": False, "error": f"项目 {project_id} 不存在"}
+            panels = project.panels or []
+            if panel_index < 0 or panel_index >= len(panels):
+                return {"success": False, "error": f"分镜索引 {panel_index} 越界"}
+            panel = panels[panel_index]
+            prompt = panel.get("scene_description", "")
+            ref_image = panel.get("generated_image_path")
+            result = await client.text_to_video_async(
+                prompt=prompt, duration=duration, ref_image=ref_image
+            )
+            if result.get("status") == "stub":
+                return {"success": False, "error": "视频生成服务尚未就绪"}
+            video_path = result.get("video_url") or result.get("video_path")
+            if video_path:
+                panel["generated_video_path"] = video_path
+                project.panels = panels
+                db.commit()
+        return {"success": True, "video_path": video_path, "message": f"分镜 {panel_index} 视频已生成"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="comic_generate_audio",
+    description="为指定分镜的对白生成 TTS 语音",
+    parameters={
+        "project_id": {"type": "integer", "description": "漫剧项目 ID"},
+        "panel_index": {"type": "integer", "description": "分镜索引（从0开始）"},
+        "text": {"type": "string", "description": "要合成语音的文本", "default": None},
+        "voice_id": {"type": "string", "description": "TTS speaker ID", "default": None},
+    },
+    examples=["为分镜1的对白生成语音", "生成分镜3的旁白音频"],
+    permission="modify",
+)
+async def tool_comic_generate_audio(
+    project_id: int, panel_index: int, text: str = None,
+    voice_id: str = None, **kwargs
+) -> Dict[str, Any]:
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.comic_project import ComicProject
+    from src.shared.utils.core_nexus_client import get_client
+    import base64, uuid, os
+    from src import config
+    try:
+        client = get_client()
+        with get_db_context() as db:
+            project = db.query(ComicProject).get(project_id)
+            if not project:
+                return {"success": False, "error": f"项目 {project_id} 不存在"}
+            panels = project.panels or []
+            if panel_index < 0 or panel_index >= len(panels):
+                return {"success": False, "error": f"分镜索引 {panel_index} 越界"}
+            panel = panels[panel_index]
+            if not text:
+                dialogues = panel.get("dialogues") or []
+                text = " ".join([d.get("text", "") for d in dialogues])
+            if not text:
+                return {"success": False, "error": "没有可用的文本内容"}
+
+            audio_bytes = await client.tts_generate_async(text=text, speaker=voice_id)
+            if audio_bytes:
+                upload_dir = os.path.join(config.ROOT_DIR_WIN, "static", "projects", str(project_id))
+                os.makedirs(upload_dir, exist_ok=True)
+                save_name = f"panel_{panel_index}_{uuid.uuid4().hex[:8]}.wav"
+                file_path = os.path.join(upload_dir, save_name)
+                with open(file_path, "wb") as f:
+                    f.write(audio_bytes if isinstance(audio_bytes, bytes) else base64.b64decode(audio_bytes))
+                audio_paths = panel.get("generated_audio_paths") or []
+                audio_paths.append(f"static/projects/{project_id}/{save_name}")
+                panel["generated_audio_paths"] = audio_paths
+                project.panels = panels
+                db.commit()
+            return {"success": True, "message": f"分镜 {panel_index} 语音已生成"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="comic_add_character",
+    description="为漫剧项目添加角色定义",
+    parameters={
+        "project_id": {"type": "integer", "description": "漫剧项目 ID"},
+        "name": {"type": "string", "description": "角色名称"},
+        "appearance": {"type": "string", "description": "外貌描述", "default": ""},
+        "gender": {"type": "string", "description": "性别", "default": None},
+        "personality": {"type": "string", "description": "性格特点", "default": ""},
+    },
+    examples=["添加一个角色：小红，活泼的女生"],
+    permission="modify",
+)
+async def tool_comic_add_character(
+    project_id: int, name: str, appearance: str = "", gender: str = None,
+    personality: str = "", **kwargs
+) -> Dict[str, Any]:
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.comic_project import ComicProject
+    import uuid
+    try:
+        with get_db_context() as db:
+            project = db.query(ComicProject).get(project_id)
+            if not project:
+                return {"success": False, "error": f"项目 {project_id} 不存在"}
+            characters = project.characters or []
+            characters.append({
+                "id": str(uuid.uuid4())[:8],
+                "name": name,
+                "appearance": appearance,
+                "gender": gender,
+                "personality": personality,
+            })
+            project.characters = characters
+            db.commit()
+        return {"success": True, "message": f"角色 '{name}' 已添加"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="comic_remove_panel",
+    description="删除指定分镜",
+    parameters={
+        "project_id": {"type": "integer", "description": "漫剧项目 ID"},
+        "panel_index": {"type": "integer", "description": "要删除的分镜索引（从0开始）"},
+    },
+    examples=["删除第3个分镜"],
+    permission="modify",
+)
+async def tool_comic_remove_panel(project_id: int, panel_index: int, **kwargs) -> Dict[str, Any]:
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.comic_project import ComicProject
+    try:
+        with get_db_context() as db:
+            project = db.query(ComicProject).get(project_id)
+            if not project:
+                return {"success": False, "error": f"项目 {project_id} 不存在"}
+            panels = project.panels or []
+            if panel_index < 0 or panel_index >= len(panels):
+                return {"success": False, "error": f"分镜索引 {panel_index} 越界"}
+            removed = panels.pop(panel_index)
+            for i, p in enumerate(panels):
+                p["sequence"] = i
+            project.panels = panels
+            db.commit()
+        return {"success": True, "message": f"分镜 {panel_index} 已删除，剩余 {len(panels)} 个分镜"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="comic_reorder_panels",
+    description="重新排列分镜顺序",
+    parameters={
+        "project_id": {"type": "integer", "description": "漫剧项目 ID"},
+        "new_order": {"type": "array", "description": "新的分镜索引顺序，如 [2,0,1] 表示原第3个分镜排第一"},
+    },
+    examples=["把分镜顺序调整为 [2,0,1]"],
+    permission="modify",
+)
+async def tool_comic_reorder_panels(project_id: int, new_order: list, **kwargs) -> Dict[str, Any]:
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.comic_project import ComicProject
+    try:
+        with get_db_context() as db:
+            project = db.query(ComicProject).get(project_id)
+            if not project:
+                return {"success": False, "error": f"项目 {project_id} 不存在"}
+            panels = project.panels or []
+            if len(new_order) != len(panels):
+                return {"success": False, "error": "新顺序长度与分镜数不匹配"}
+            reordered = [panels[i] for i in new_order]
+            for i, p in enumerate(reordered):
+                p["sequence"] = i
+            project.panels = reordered
+            db.commit()
+        return {"success": True, "message": f"分镜顺序已调整为 {new_order}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="comic_compose",
+    description="将所有分镜素材合成最终漫剧视频（图片序列+音频+BGM+字幕）",
+    parameters={
+        "project_id": {"type": "integer", "description": "漫剧项目 ID"},
+    },
+    examples=["合成漫剧视频"],
+    permission="destructive",
+)
+async def tool_comic_compose(project_id: int, **kwargs) -> Dict[str, Any]:
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.comic_project import ComicProject
+    from src.application.services.comic_composer import ComicComposer
+    from datetime import datetime as dt
+    try:
+        with get_db_context() as db:
+            project = db.query(ComicProject).get(project_id)
+            if not project:
+                return {"success": False, "error": f"项目 {project_id} 不存在"}
+            project.status = "compositing"
+            db.commit()
+
+            composer = ComicComposer()
+            result = composer.compose(
+                panels=project.panels or [],
+                bgm_config=project.bgm_config or {},
+                project_id=project_id,
+            )
+
+            if not result.get("success"):
+                project.status = "draft"
+                db.commit()
+                return {"success": False, "error": result.get("error", "合成失败")}
+
+            video_entry = {"path": result["output_path"], "created_at": dt.utcnow().isoformat()}
+            output_videos = project.output_videos or []
+            output_videos.append(video_entry)
+            project.output_videos = output_videos
+            project.status = "completed"
+            db.commit()
+
+        return {"success": True, "output_path": result["output_path"], "message": "漫剧视频合成完成"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="comic_select_bgm",
+    description="为漫剧项目选择或生成 BGM",
+    parameters={
+        "project_id": {"type": "integer", "description": "漫剧项目 ID"},
+        "bgm_id": {"type": "integer", "description": "已有 BGM 的 ID（可选）", "default": None},
+        "bgm_description": {"type": "string", "description": "BGM 风格描述（用于 AI 生成）", "default": None},
+        "volume": {"type": "number", "description": "音量 (0-1)", "default": 0.3},
+    },
+    examples=["为漫剧选择轻快的 BGM", "AI 生成一段紧张的背景音乐"],
+    permission="modify",
+)
+async def tool_comic_select_bgm(
+    project_id: int, bgm_id: int = None, bgm_description: str = None,
+    volume: float = 0.3, **kwargs
+) -> Dict[str, Any]:
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.comic_project import ComicProject
+    from src.domain.entities.bgm_item import BGMItem
+    try:
+        bgm_path = None
+        with get_db_context() as db:
+            if bgm_id:
+                bgm = db.query(BGMItem).filter(BGMItem.id == bgm_id).first()
+                if bgm:
+                    bgm_path = bgm.web_path
+
+            bgm_config = {"volume": volume}
+            if bgm_path:
+                bgm_config["path"] = bgm_path
+            if bgm_description:
+                bgm_config["description"] = bgm_description
+
+            project = db.query(ComicProject).get(project_id)
+            if not project:
+                return {"success": False, "error": f"项目 {project_id} 不存在"}
+            project.bgm_config = bgm_config
+            db.commit()
+
+        return {"success": True, "message": "BGM 配置已更新"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}

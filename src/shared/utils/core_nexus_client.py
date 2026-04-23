@@ -683,6 +683,64 @@ class CoreNexusClient:
         response = await self._request_async('POST', '/text-to-music', json_data=payload)
         return response.get('output', {})
 
+    # ==================== Image Generation 接口（stub） ====================
+
+    def text_to_image(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        width: int = 1024,
+        height: int = 1024,
+        ref_image: Optional[str] = None,
+        ref_strength: float = 0.4,
+        **generation_params
+    ) -> Dict[str, Any]:
+        """文本/参考图生成图片（stub，等待 core-nexus-ai 实现）"""
+        logger.warning("text_to_image called - stub implementation")
+        return {"status": "stub", "message": "text_to_image not yet implemented in core-nexus-ai"}
+
+    async def text_to_image_async(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        width: int = 1024,
+        height: int = 1024,
+        ref_image: Optional[str] = None,
+        ref_strength: float = 0.4,
+        **generation_params
+    ) -> Dict[str, Any]:
+        """异步文本生成图片（stub）"""
+        logger.warning("text_to_image_async called - stub implementation")
+        return {"status": "stub", "message": "text_to_image not yet implemented in core-nexus-ai"}
+
+    # ==================== Video Generation 接口（stub） ====================
+
+    def text_to_video(
+        self,
+        prompt: str,
+        duration: float = 3.0,
+        fps: int = 8,
+        model: Optional[str] = None,
+        ref_image: Optional[str] = None,
+        **generation_params
+    ) -> Dict[str, Any]:
+        """文本/图片生成视频（stub，等待 core-nexus-ai 实现）"""
+        logger.warning("text_to_video called - stub implementation")
+        return {"status": "stub", "message": "text_to_video not yet implemented in core-nexus-ai"}
+
+    async def text_to_video_async(
+        self,
+        prompt: str,
+        duration: float = 3.0,
+        fps: int = 8,
+        model: Optional[str] = None,
+        ref_image: Optional[str] = None,
+        **generation_params
+    ) -> Dict[str, Any]:
+        """异步文本生成视频（stub）"""
+        logger.warning("text_to_video_async called - stub implementation")
+        return {"status": "stub", "message": "text_to_video not yet implemented in core-nexus-ai"}
+
     # ==================== 工具方法 ====================
 
     @staticmethod

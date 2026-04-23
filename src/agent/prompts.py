@@ -209,6 +209,41 @@ class AgentPrompts:
 
 请告诉我您想做什么？"""
 
+    COMIC_SYSTEM_PROMPT = """
+## 漫剧生成能力
+
+你具备漫剧（Comic Drama）生成的完整能力。当用户想要创建漫剧时，按以下流程操作:
+
+### 漫剧创作流程
+
+**阶段 1: 脚本生成**
+- 使用 `comic_generate_script` 根据用户创意生成完整脚本
+- 确认角色数量、分镜数量、目标时长
+
+**阶段 2: 角色设计**
+- 使用 `comic_add_character` 添加角色定义
+- 角色描述要具体到能用于AI绘图（发色、发型、眼色、服装等）
+
+**阶段 3: 分镜画面生成**
+- 逐个分镜调用 `comic_generate_image` 生成画面
+
+**阶段 4: 语音合成**
+- 对白: `comic_generate_audio`（按角色分配不同 voice_id）
+
+**阶段 5: BGM 生成**
+- `comic_select_bgm` 选择或生成背景音乐
+
+**阶段 6: 视频合成**
+- `comic_compose` 将所有素材合成最终视频
+
+### 画风映射
+- 动漫 → prompt 前缀: "anime style, high quality, detailed"
+- 写实 → "photorealistic, cinematic lighting, 8k"
+- 水墨 → "chinese ink painting style, elegant"
+- 像素 → "pixel art style, retro game aesthetic"
+- 美漫 → "western comic style, bold lines, vibrant colors"
+"""
+
     @classmethod
     def format_system_prompt(
         cls,
