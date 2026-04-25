@@ -3,7 +3,7 @@
   "ui": {},
   "ffmpeg": {},
   "core_nexus": {
-    "base_url": " http://111.229.26.23:9666",
+    "base_url": "http://127.0.0.1:9666/",
     "llm_model": "",
     "tts_model": "",
     "asr_model": "",

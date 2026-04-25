@@ -106,13 +106,14 @@ async def test_connection(req: TestConnectionRequest):
     if not base_url:
         return error_response(error="ConfigError", message="请输入服务地址", code=400)
 
+    test_url = f"{base_url}/health"
     try:
         async with httpx.AsyncClient(timeout=10.0) as http_client:
-            resp = await http_client.get(f"{base_url}/health")
+            resp = await http_client.get(test_url)
             resp.raise_for_status()
-        return success_response(data={"status": "ok"}, message="连接成功")
+        return success_response(data={"status": "ok", "tested_url": test_url}, message="连接成功")
     except Exception as e:
-        return error_response(error="ConnectionError", message=f"连接失败: {e}", code=500)
+        return error_response(error="ConnectionError", message=f"连接失败 ({test_url}): {e}", code=500)
 
 
 # ==================== LLM 接口 ====================

@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 def transcribe(
     audio_path: str,
-    model_type: str = "base",
     output_format_type: str = "srt",
     is_translate: bool = False,
     subtitle_double: bool = False,
@@ -31,7 +30,6 @@ def transcribe(
 
     Args:
         audio_path: 音频文件路径
-        model_type: 模型类型（保留参数，兼容性）
         output_format_type: 输出格式 (txt/srt)
         is_translate: 是否翻译
         subtitle_double: 是否双语字幕
@@ -55,7 +53,10 @@ def transcribe(
         text = result.get('text', '')
         segments = result.get('segments', [])
 
-        # 如果没有 segments 信息，直接返回文本
+        # 如果没有 segments 信息，按句子拆分生成伪 segments
+        if not segments and text:
+            segments = _split_text_to_segments(text)
+
         if not segments:
             if is_translate:
                 return use_translation.translator_response(text, subtitle_language, translator_engine)
@@ -105,6 +106,28 @@ def transcribe(
         raise ValueError(f"ASR 转录失败: {e}")
 
 
+def _split_text_to_segments(text: str, chars_per_second: float = 4.0) -> list:
+    """将纯文本按句子拆分为带估算时间戳的 segments"""
+    import re
+    sentences = re.split(r'(?<=[，。！？；、\n])', text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+
+    if not sentences:
+        return [{"text": text, "start": 0, "end": len(text) / max(chars_per_second, 1)}]
+
+    segments = []
+    current_time = 0.0
+    for s in sentences:
+        duration = max(len(s) / chars_per_second, 1.0)
+        segments.append({
+            "text": s,
+            "start": round(current_time, 3),
+            "end": round(current_time + duration, 3),
+        })
+        current_time += duration
+    return segments
+
+
 def _format_srt_time(seconds: float) -> str:
     """
     将秒数格式化为 SRT 时间格式
@@ -127,7 +150,7 @@ if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1:
         audio_file = sys.argv[1]
-        result = transcribe(audio_file, "base", "srt")
+        result = transcribe(audio_file, "srt")
         print(result)
     else:
         print("用法: python whisper_adapter.py <audio_file>")

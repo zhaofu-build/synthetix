@@ -72,10 +72,9 @@ class VideoProcessRequest(BaseModel):
 class TranscribeRequest(BaseModel):
     """转录请求"""
     input_path: str = Field(..., min_length=1, description="输入文件路径")
-    model: str = Field(
-        default=Subtitle.DEFAULT_MODEL,
-        pattern=f"^({'|'.join(Subtitle.WHISPER_MODELS)})$",
-        description="模型大小"
+    model: Optional[str] = Field(
+        default=None,
+        description="模型（已弃用，使用 core-nexus-ai 默认模型）"
     )
     output_format: str = Field(
         default=Subtitle.DEFAULT_FORMAT,

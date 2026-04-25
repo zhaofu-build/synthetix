@@ -442,7 +442,6 @@ class VideoService:
     def transcribe(
         self,
         input_path: str,
-        model: str = "base",
         output_format: str = "srt",
         is_translate: bool = False,
         subtitle_double: bool = False,
@@ -454,7 +453,6 @@ class VideoService:
 
         Args:
             input_path: 输入文件路径
-            model: Whisper 模型大小
             output_format: 输出格式
             is_translate: 是否翻译
             subtitle_double: 字幕双语
@@ -467,7 +465,6 @@ class VideoService:
         try:
             subtitle_content = use_fast_whisper.transcribe(
                 input_path,
-                model,
                 output_format,
                 is_translate,
                 subtitle_double,

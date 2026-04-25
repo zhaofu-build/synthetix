@@ -182,7 +182,6 @@ async def transcribe(
     try:
         subtitle_content = service.transcribe(
             input_path=req.input_path,
-            model=req.model,
             output_format=req.output_format,
             is_translate=req.is_translate,
             subtitle_double=req.subtitle_double,
