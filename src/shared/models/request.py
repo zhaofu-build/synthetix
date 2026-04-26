@@ -120,6 +120,7 @@ class VideoUpdateRequest(BaseModel):
     description: Optional[str] = Field(None, max_length=2000, description="描述")
     video_type: Optional[int] = Field(None, ge=0, le=10, description="视频类型")
     del_flag: Optional[bool] = Field(None, description="删除标志")
+    tags: Optional[str] = Field(None, max_length=1000, description="标签，逗号分隔")
 
     class Config:
         extra = 'forbid'

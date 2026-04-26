@@ -18,18 +18,48 @@ from typing import Optional as Opt
 logger = logging.getLogger(__name__)
 
 
+def _add_material_to_project(project_id: int, video_id: int):
+    """将素材关联到项目的 material_ids 列表"""
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.video_project import VideoProject
+    with get_db_context() as db:
+        project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
+        if project:
+            ids = project.material_ids or []
+            if video_id not in ids:
+                ids.append(video_id)
+                project.material_ids = ids
+                db.commit()
+
+
 # ==================== Pydantic 参数模型 ====================
 
 class CutVideoParams(BaseModel):
     """剪切视频参数"""
     video_id: int = Field(..., description="视频 ID")
-    start_time: str = Field(default="00:00:00", description="开始时间 (HH:MM:SS)")
-    end_time: Opt[str] = Field(default=None, description="结束时间 (HH:MM:SS)")
+    start_time: str = Field(default="00:00:00", description="开始时间 (HH:MM:SS 或秒数)")
+    end_time: Opt[str] = Field(default=None, description="结束时间 (HH:MM:SS 或秒数)")
+    margin_before: float = Field(default=0.3, ge=0, le=5.0, description="开始前缓冲（秒）")
+    margin_after: float = Field(default=0.3, ge=0, le=5.0, description="结束后缓冲（秒）")
+    smart_margin: bool = Field(default=False, description="启用智能缓冲（基于语音停顿）")
 
-    @field_validator("start_time", "end_time")
+    @field_validator("start_time", "end_time", mode="before")
     @classmethod
     def validate_time_format(cls, v):
-        if v and not re.match(r'^\d{2}:\d{2}:\d{2}(\.\d+)?$', v):
+        if v is None:
+            return v
+        if isinstance(v, (int, float)):
+            total = int(v)
+            h, remainder = divmod(abs(total), 3600)
+            m, s = divmod(remainder, 60)
+            return f"{h:02d}:{m:02d}:{s:02d}"
+        v = str(v)
+        if v.isdigit():
+            total = int(v)
+            h, remainder = divmod(abs(total), 3600)
+            m, s = divmod(remainder, 60)
+            return f"{h:02d}:{m:02d}:{s:02d}"
+        if not re.match(r'^\d{2}:\d{2}:\d{2}(\.\d+)?$', v):
             raise ValueError(f"时间格式错误: {v}，需要 HH:MM:SS")
         return v
 
@@ -58,6 +88,10 @@ class SmartClipParams(BaseModel):
     description: str = Field(..., description="剪辑需求描述")
     duration: float = Field(default=30.0, description="目标时长（秒）")
     style: str = Field(default="动感", description="风格偏好")
+    margin_before: float = Field(default=0.3, ge=0, le=5.0, description="片段开始前缓冲（秒）")
+    margin_after: float = Field(default=0.3, ge=0, le=5.0, description="片段结束后缓冲（秒）")
+    smart_margin: bool = Field(default=False, description="启用智能缓冲")
+    text_first: bool = Field(default=True, description="启用文本优先模式（先 ASR 再 LLM 分析）")
 
 
 class AnalyzeVideoParams(BaseModel):
@@ -78,13 +112,15 @@ class SearchMaterialParams(BaseModel):
 
 class TranscribeVideoParams(BaseModel):
     """字幕提取参数"""
-    video_id: int = Field(..., description="视频 ID")
+    video_id: Opt[int] = Field(default=None, description="视频 ID")
+    file_path: Opt[str] = Field(default=None, description="直接传入文件路径（与 video_id 二选一）")
     language: Opt[str] = Field(default=None, description="语言（可选，默认自动检测）")
 
 
 class AnalyzeVideoVlParams(BaseModel):
     """AI 视频理解参数"""
-    video_id: int = Field(..., description="视频 ID")
+    video_id: Opt[int] = Field(default=None, description="视频 ID")
+    file_path: Opt[str] = Field(default=None, description="直接传入文件路径（与 video_id 二选一）")
     prompt: Opt[str] = Field(default="请详细描述这个视频的内容、场景和风格", description="分析提示")
 
 
@@ -205,6 +241,36 @@ class ToolRegistry:
     def __init__(self):
         """初始化工具注册表"""
         self._tools: Dict[str, Tool] = {}
+        self._pre_interceptors: List[Callable] = []
+        self._post_interceptors: List[Callable] = []
+
+    def add_pre_interceptor(self, fn: Callable):
+        """添加全局前置拦截器。fn(params, tool_name) -> params"""
+        self._pre_interceptors.append(fn)
+
+    def add_post_interceptor(self, fn: Callable):
+        """添加全局后置拦截器。fn(result, tool_name) -> result"""
+        self._post_interceptors.append(fn)
+
+    def run_pre_interceptors(self, params: Dict, tool_name: str) -> Dict:
+        for fn in self._pre_interceptors:
+            try:
+                result = fn(params, tool_name)
+                if result is not None:
+                    params = result
+            except Exception as e:
+                logger.warning(f"前置拦截器 {fn.__name__} 异常: {e}")
+        return params
+
+    def run_post_interceptors(self, result: Dict, tool_name: str) -> Dict:
+        for fn in self._post_interceptors:
+            try:
+                r = fn(result, tool_name)
+                if r is not None:
+                    result = r
+            except Exception as e:
+                logger.warning(f"后置拦截器 {fn.__name__} 异常: {e}")
+        return result
 
     def register(
         self,
@@ -322,11 +388,14 @@ def validate_videos_exist(params: Dict) -> Dict:
 
 @registry.register(
     name="cut_video",
-    description="剪切视频片段，指定开始和结束时间",
+    description="剪切视频片段，指定开始和结束时间。支持缓冲区(margin)避免截断句子",
     parameters={
         "video_id": {"type": "integer", "description": "视频 ID"},
         "start_time": {"type": "string", "description": "开始时间 (HH:MM:SS)"},
         "end_time": {"type": "string", "description": "结束时间 (HH:MM:SS)"},
+        "margin_before": {"type": "number", "description": "开始前缓冲（秒，默认0.3）"},
+        "margin_after": {"type": "number", "description": "结束后缓冲（秒，默认0.3）"},
+        "smart_margin": {"type": "boolean", "description": "启用智能缓冲（基于语音停顿）"},
     },
     examples=["帮我把视频前30秒剪出来", "从第10秒到第30秒剪切"],
     param_model=CutVideoParams,
@@ -336,12 +405,17 @@ async def tool_cut_video(
     video_id: int,
     start_time: str = "00:00:00",
     end_time: str = None,
+    margin_before: float = 0.3,
+    margin_after: float = 0.3,
+    smart_margin: bool = False,
     **kwargs
 ) -> Dict[str, Any]:
     """剪切视频工具"""
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
+    from src.application.services.whisper_adapter import get_speech_pauses, find_nearest_pause
+    from src.shared.utils import time_util
     import os
 
     try:
@@ -355,35 +429,70 @@ async def tool_cut_video(
                     "error": f"视频 {video_id} 不存在"
                 }
 
+            actual_margin_before = margin_before
+            actual_margin_after = margin_after
+
+            # 智能缓冲：基于 ASR 停顿点调整剪切位置
+            if smart_margin:
+                try:
+                    pauses = get_speech_pauses(video.local_path)
+                    if pauses:
+                        start_sec = time_util.parse_time(start_time)
+                        adjusted_start = find_nearest_pause(pauses, start_sec, "before")
+                        if adjusted_start is not None:
+                            actual_margin_before = start_sec - adjusted_start
+
+                        if end_time:
+                            end_sec = time_util.parse_time(end_time)
+                            adjusted_end = find_nearest_pause(pauses, end_sec, "after")
+                            if adjusted_end is not None:
+                                actual_margin_after = adjusted_end - end_sec
+                except Exception as e:
+                    logger.warning(f"智能缓冲计算失败，使用固定缓冲: {e}")
+
             # 执行剪切
-            output_path = ffmpeg.cut_video(
+            output_path = str(ffmpeg.cut_video(
                 input_path=video.local_path,
                 start_time=start_time,
-                end_time=end_time
-            )
+                end_time=end_time,
+                margin_before=actual_margin_before,
+                margin_after=actual_margin_after,
+            ))
 
             # 获取剪切后视频的时长
             cut_info = ffmpeg.get_video_info(output_path) or {}
             cut_duration = float(cut_info.get("duration", 0)) or None
 
-            # 入库：注册为新素材
-            cut_name = f"{video.video_name or 'video'}_cut_{start_time.replace(':','')}"
-            if end_time:
-                cut_name += f"_{end_time.replace(':','')}"
-            cut_name += os.path.splitext(video.video_name or '.mp4')[1] or '.mp4'
+            # 移动到正式素材目录，入 DB，关联项目
+            import shutil
+            cut_filename = os.path.basename(str(output_path))
+            dest_dir = config.source_videos_dir
+            os.makedirs(dest_dir, exist_ok=True)
+            dest_path = os.path.join(dest_dir, cut_filename)
+            shutil.move(output_path, dest_path)
 
             new_video = repo.create(
-                video_name=cut_name,
-                local_path=output_path,
-                duration=cut_duration,
+                video_name=f"{video.video_name or 'video'}_cut_{start_time.replace(':','')}{('_' + end_time.replace(':','')) if end_time else ''}{os.path.splitext(video.video_name or '.mp4')[1] or '.mp4'}",
+                local_path=dest_path,
+                web_path=f"/static/source_videos/{cut_filename}",
+                duration=str(cut_duration) if cut_duration else None,
+                is_temp=True,
+                file_type="video",
             )
+
+            project_id = kwargs.get("project_id")
+            if project_id:
+                _add_material_to_project(project_id, new_video.id)
 
             return {
                 "success": True,
                 "video_id": new_video.id,
-                "output_path": output_path,
+                "output_path": dest_path,
+                "web_path": f"/static/source_videos/{cut_filename}",
+                "output_type": "video",
                 "duration": cut_duration,
-                "message": f"剪切完成: {start_time} - {end_time or '结尾'}，新素材 ID={new_video.id}"
+                "is_temp_asset": True,
+                "message": f"剪切完成: {start_time} - {end_time or '结尾'}"
             }
 
     except Exception as e:
@@ -434,12 +543,40 @@ async def tool_merge_videos(
 
             # 执行合并
             output_path = f"{config.UPLOAD_DIR}merged_{len(video_paths)}_videos.mp4"
-            ffmpeg.concatenate_videos(video_paths, output_path)
+            if transition == "dissolve":
+                clip_infos = [{"path": p} for p in video_paths]
+                ffmpeg.concatenate_videos_with_transitions(clip_infos, output_path)
+            else:
+                ffmpeg.concatenate_videos_with_filter(video_paths, output_path)
+
+            # 移动到正式素材目录，入 DB，关联项目
+            import shutil
+            output_filename = os.path.basename(str(output_path))
+            dest_dir = config.source_videos_dir
+            os.makedirs(dest_dir, exist_ok=True)
+            dest_path = os.path.join(dest_dir, output_filename)
+            shutil.move(output_path, dest_path)
+
+            new_video = repo.create(
+                video_name=f"合并视频_{len(video_paths)}段.mp4",
+                local_path=dest_path,
+                web_path=f"/static/source_videos/{output_filename}",
+                is_temp=True,
+                file_type="video",
+            )
+
+            project_id = kwargs.get("project_id")
+            if project_id:
+                _add_material_to_project(project_id, new_video.id)
 
             return {
                 "success": True,
-                "output_path": output_path,
-                "message": f"成功合并 {len(video_paths)} 个视频"
+                "video_id": new_video.id,
+                "output_path": dest_path,
+                "web_path": f"/static/source_videos/{output_filename}",
+                "output_type": "video",
+                "is_temp_asset": True,
+                "message": f"成功合并 {len(video_paths)} 个视频（转场: {transition}）"
             }
 
     except Exception as e:
@@ -560,11 +697,14 @@ async def tool_change_speed(
 
 @registry.register(
     name="smart_clip",
-    description="智能剪辑，根据描述自动规划和生成视频",
+    description="智能剪辑，根据描述自动规划和生成视频。支持文本优先模式（先 ASR 再 LLM 分析）",
     parameters={
         "description": {"type": "string", "description": "剪辑需求描述"},
         "duration": {"type": "number", "description": "目标时长（秒）"},
         "style": {"type": "string", "description": "风格偏好"},
+        "text_first": {"type": "boolean", "description": "启用文本优先模式（默认 true，先 ASR 再分析）"},
+        "margin_before": {"type": "number", "description": "片段开始前缓冲（秒）"},
+        "margin_after": {"type": "number", "description": "片段结束后缓冲（秒）"},
     },
     examples=["帮我做一个30秒的旅行混剪", "做一个燃一点的短视频"],
     param_model=SmartClipParams
@@ -573,6 +713,8 @@ async def tool_smart_clip(
     description: str,
     duration: float = 30.0,
     style: str = "动感",
+    margin_before: float = 0.3,
+    margin_after: float = 0.3,
     **kwargs
 ) -> Dict[str, Any]:
     """智能剪辑工具"""
@@ -580,15 +722,48 @@ async def tool_smart_clip(
 
     try:
         service = CreativeService()
+
+        # 文本优先模式：先通过 ASR 获取字幕，再基于字幕做剪辑规划
+        text_first = kwargs.get("text_first", True)
+        if text_first:
+            try:
+                from src.application.services import whisper_adapter, ffmpeg_adapter
+                from src.infrastructure.db.session import get_db_context
+                from src.domain.entities.video_source import VideoSource
+
+                with get_db_context() as db:
+                    videos = db.query(VideoSource).filter(VideoSource.video_type == 1).all()
+
+                transcripts = []
+                for v in videos[:5]:  # 最多处理 5 个素材
+                    proxy_path = ffmpeg_adapter.generate_proxy(v.local_path)
+                    srt = whisper_adapter.transcribe(
+                        audio_path=v.local_path,
+                        output_format_type="srt",
+                        proxy_path=proxy_path,
+                    )
+                    if srt and len(srt.strip()) > 10:
+                        transcripts.append(f"[视频 {v.id}: {v.video_name or '未命名'}]\n{srt[:2000]}")
+
+                if transcripts:
+                    combined_transcript = "\n\n".join(transcripts)
+                    # 将转录文本注入创意描述
+                    description = f"{description}\n\n[以下是素材的转录文本，请基于文本定位高光片段：]\n{combined_transcript[:6000]}"
+                    logger.info(f"文本优先模式：注入了 {len(transcripts)} 段转录文本")
+            except Exception as e:
+                logger.warning(f"文本优先模式失败，回退到标准模式: {e}")
+
         result = service.create_video_with_transitions(
             creative=description,
-            audio_url=kwargs.get("audio_url")
+            audio_url=kwargs.get("audio_url"),
+            duration=duration,
+            style=style
         )
 
         return {
             "success": True,
             "output_path": result.get("concatenate_web_url"),
-            "message": f"智能剪辑完成，时长约 {duration} 秒"
+            "message": f"智能剪辑完成（text_first={text_first}），时长约 {duration} 秒"
         }
 
     except Exception as e:
@@ -735,7 +910,9 @@ async def tool_list_videos(**kwargs) -> Dict[str, Any]:
                     "id": v.id,
                     "name": v.video_name,
                     "duration": v.duration_hms,
-                    "description": v.description or "无描述"
+                    "description": v.description or "无描述",
+                    "is_temp": v.is_temp if v.is_temp is not None else False,
+                    "file_type": v.file_type or "video",
                 }
                 for v in videos
             ]
@@ -871,44 +1048,55 @@ async def tool_search_material(
 
 @registry.register(
     name="transcribe_video",
-    description="从视频中提取字幕，进行语音识别生成 SRT 字幕文件",
+    description="从视频/音频中提取字幕，进行语音识别生成 SRT 字幕文件",
     parameters={
-        "video_id": {"type": "integer", "description": "视频 ID"},
+        "video_id": {"type": "integer", "description": "视频 ID（与 file_path 二选一）"},
+        "file_path": {"type": "string", "description": "文件路径（与 video_id 二选一，支持视频和音频）"},
         "language": {"type": "string", "description": "语言（可选，默认自动检测）"},
     },
     examples=["帮我提取这个视频的字幕", "识别视频中的语音", "生成字幕文件"],
     param_model=TranscribeVideoParams,
-    before_execute=validate_video_exists,
     permission="read_only"
 )
 async def tool_transcribe_video(
-    video_id: int,
+    video_id: int = None,
+    file_path: str = None,
     language: str = None,
     **kwargs
 ) -> Dict[str, Any]:
     """字幕提取工具"""
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
-    from src.application.services import whisper_adapter
+    from src.application.services import whisper_adapter, ffmpeg_adapter
+    import os
 
     try:
-        with get_db_context() as db:
-            repo = VideoRepository(db)
-            video = repo.get_by_id(video_id)
+        local_path = file_path
 
-            if not video:
-                return {"success": False, "error": f"视频 {video_id} 不存在"}
+        if video_id and not file_path:
+            with get_db_context() as db:
+                repo = VideoRepository(db)
+                video = repo.get_by_id(video_id)
+                if not video:
+                    return {"success": False, "error": f"视频 {video_id} 不存在"}
+                local_path = video.local_path
 
-            subtitle_text = whisper_adapter.transcribe(
-                audio_path=video.local_path,
-                subtitle_language=language or "zh"
-            )
+        if not local_path or not os.path.exists(local_path):
+            return {"success": False, "error": f"文件不存在: {local_path}"}
 
-            return {
-                "success": True,
-                "subtitle": subtitle_text,
-                "message": "字幕提取完成"
-            }
+        proxy_path = ffmpeg_adapter.generate_proxy(local_path)
+
+        subtitle_text = whisper_adapter.transcribe(
+            audio_path=local_path,
+            subtitle_language=language or "zh",
+            proxy_path=proxy_path
+        )
+
+        return {
+            "success": True,
+            "subtitle": subtitle_text,
+            "message": "字幕提取完成"
+        }
 
     except Exception as e:
         logger.error(f"字幕提取失败: {e}")
@@ -917,26 +1105,100 @@ async def tool_transcribe_video(
 
 @registry.register(
     name="analyze_video_vl",
-    description="AI 深度分析视频内容，理解场景、人物、动作、风格等",
+    description="AI 深度分析视频/图片内容，理解场景、人物、动作、风格等",
     parameters={
-        "video_id": {"type": "integer", "description": "视频 ID"},
+        "video_id": {"type": "integer", "description": "视频 ID（与 file_path 二选一）"},
+        "file_path": {"type": "string", "description": "文件路径（与 video_id 二选一，支持图片和视频）"},
         "prompt": {"type": "string", "description": "分析提示（可选）"},
     },
     examples=["这个视频讲了什么", "分析视频内容和风格", "详细描述一下这个视频"],
     param_model=AnalyzeVideoVlParams,
-    before_execute=validate_video_exists,
     permission="read_only"
 )
 async def tool_analyze_video_vl(
-    video_id: int,
+    video_id: int = None,
+    file_path: str = None,
     prompt: str = "请详细描述这个视频的内容、场景和风格",
     **kwargs
 ) -> Dict[str, Any]:
-    """AI 视频理解工具"""
+    """AI 视觉理解工具"""
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import qwen_vl_adapter
     from src.application.services import ffmpeg_adapter as ffmpeg
+    import os
+
+    try:
+        local_path = file_path
+        video_name = os.path.basename(file_path) if file_path else None
+        duration_sec = None
+
+        # 优先使用 video_id 从数据库获取
+        if video_id and not file_path:
+            with get_db_context() as db:
+                repo = VideoRepository(db)
+                video = repo.get_by_id(video_id)
+                if not video:
+                    return {"success": False, "error": f"视频 {video_id} 不存在"}
+                local_path = video.local_path
+                video_name = video.video_name
+                duration_sec = video.duration if video.duration else None
+
+        if not local_path or not os.path.exists(local_path):
+            return {"success": False, "error": f"文件不存在: {local_path}"}
+
+        # 图片文件直接调用 image_summary
+        ext = os.path.splitext(local_path)[1].lower()
+        if ext in {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'}:
+            analysis = qwen_vl_adapter.image_summary(tmp_path=local_path, prompt=prompt)
+        else:
+            # 视频文件
+            proxy_path = ffmpeg.generate_proxy(local_path)
+            analysis = qwen_vl_adapter.video_summary(
+                tmp_path=local_path,
+                prompt=prompt,
+                duration=duration_sec,
+                proxy_path=proxy_path
+            )
+
+        return {
+            "success": True,
+            "analysis": {
+                "video_id": video_id,
+                "video_name": video_name,
+                "ai_summary": analysis
+            },
+            "message": "AI 分析完成"
+        }
+
+    except Exception as e:
+        logger.error(f"AI 视频分析失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="analyze_transcript",
+    description="基于视频的字幕/转录文本进行内容分析，识别高光片段、主题边界和情感峰值。比 VL 分析快 10 倍且成本低",
+    parameters={
+        "video_id": {"type": "integer", "description": "视频 ID"},
+        "analysis_type": {"type": "string", "description": "分析类型: highlights(高光)/topics(主题)/sentiment(情感)/summary(摘要)，默认 highlights"},
+    },
+    examples=["分析这个视频的高光片段", "提取视频的主题结构", "分析字幕内容"],
+    param_model=None,
+    before_execute=validate_video_exists,
+    permission="read_only"
+)
+async def tool_analyze_transcript(
+    video_id: int,
+    analysis_type: str = "highlights",
+    **kwargs
+) -> Dict[str, Any]:
+    """基于转录文本的视频分析工具（文本优先模式）"""
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src.application.services import whisper_adapter, ffmpeg_adapter
+    from src.shared.utils.core_nexus_client import get_client
+    from src.shared.utils.config_manager import get as cfg_get
 
     try:
         with get_db_context() as db:
@@ -946,27 +1208,74 @@ async def tool_analyze_video_vl(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            # AI 视觉理解
-            duration_sec = video.duration if video.duration else None
-            analysis = qwen_vl_adapter.video_summary(
-                tmp_path=video.local_path,
-                prompt=prompt,
-                duration=duration_sec
+            # 生成代理文件加速 ASR
+            proxy_path = ffmpeg_adapter.generate_proxy(video.local_path)
+
+            # ASR 转录
+            subtitle_text = whisper_adapter.transcribe(
+                audio_path=video.local_path,
+                output_format_type="srt",
+                proxy_path=proxy_path
             )
+
+            if not subtitle_text or len(subtitle_text.strip()) < 10:
+                return {
+                    "success": False,
+                    "error": "转录文本为空或过短，建议使用 analyze_video_vl 进行视觉分析",
+                    "fallback_tool": "analyze_video_vl"
+                }
+
+            # 构建 LLM 分析提示
+            analysis_prompts = {
+                "highlights": f"""分析以下视频字幕文本，识别最精彩、最有价值的片段。
+返回 JSON 格式的高光片段列表：
+{{"highlights": [{{"start": 秒数, "end": 秒数, "reason": "高光原因", "score": 1-10}}]}}
+
+字幕内容：
+{subtitle_text[:4000]}""",
+                "topics": f"""分析以下视频字幕文本，按主题/话题进行分段。
+返回 JSON 格式的主题列表：
+{{"topics": [{{"start": 秒数, "end": 秒数, "topic": "主题名称", "summary": "简要描述"}}]}}
+
+字幕内容：
+{subtitle_text[:4000]}""",
+                "sentiment": f"""分析以下视频字幕文本，识别情感变化。
+返回 JSON 格式的情感分析：
+{{"segments": [{{"start": 秒数, "end": 秒数, "sentiment": "积极/中性/消极", "intensity": 1-5}}]}}
+
+字幕内容：
+{subtitle_text[:4000]}""",
+                "summary": f"""总结以下视频字幕文本的内容。
+返回 JSON 格式：
+{{"title": "视频标题", "summary": "整体摘要(100字内)", "key_points": ["要点1", "要点2", ...]}}
+
+字幕内容：
+{subtitle_text[:4000]}""",
+            }
+
+            prompt = analysis_prompts.get(analysis_type, analysis_prompts["highlights"])
+
+            # 调用 LLM 分析
+            client = get_client()
+            model = cfg_get("core_nexus.fast_model") or cfg_get("core_nexus.model") or None
+            response = client.llm_generate(
+                messages=[{"role": "user", "content": prompt}],
+                model=model,
+            )
+
+            analysis_result = response.get("text", "")
 
             return {
                 "success": True,
-                "analysis": {
-                    "video_id": video_id,
-                    "video_name": video.video_name,
-                    "duration": video.duration_hms or "未知",
-                    "ai_summary": analysis
-                },
-                "message": "AI 视频分析完成"
+                "video_id": video_id,
+                "analysis_type": analysis_type,
+                "subtitle_length": len(subtitle_text),
+                "analysis": analysis_result,
+                "message": f"文本分析完成（类型: {analysis_type}，基于 {len(subtitle_text)} 字符的转录文本）"
             }
 
     except Exception as e:
-        logger.error(f"AI 视频分析失败: {e}")
+        logger.error(f"转录文本分析失败: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -1371,6 +1680,76 @@ async def tool_extract_frames(
 
     except Exception as e:
         logger.error(f"提取帧失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+class ExtractKeyframesParams(BaseModel):
+    video_id: int = Field(..., description="视频 ID")
+    mode: str = Field(default="smart", description="提取模式: fixed(固定间隔)/scene(场景切换)/smart(智能混合)")
+    interval: float = Field(default=2.0, ge=0.5, le=30.0, description="fixed 模式的间隔秒数")
+    scene_threshold: float = Field(default=0.3, ge=0.05, le=1.0, description="scene 模式的场景切换阈值")
+    max_frames: int = Field(default=50, ge=1, le=200, description="最大提取帧数")
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, v):
+        if v not in ("fixed", "scene", "smart"):
+            raise ValueError(f"模式必须是 fixed/scene/smart，收到: {v}")
+        return v
+
+
+@registry.register(
+    name="extract_keyframes",
+    description="分层关键帧提取，支持固定间隔、场景切换、智能混合三种模式",
+    parameters={
+        "video_id": {"type": "integer", "description": "视频 ID"},
+        "mode": {"type": "string", "description": "提取模式: fixed/scene/smart"},
+        "interval": {"type": "number", "description": "固定间隔秒数 (0.5-30)"},
+        "scene_threshold": {"type": "number", "description": "场景切换阈值 (0.05-1.0)"},
+        "max_frames": {"type": "integer", "description": "最大提取帧数 (1-200)"},
+    },
+    param_model=ExtractKeyframesParams,
+    before_execute=validate_video_exists,
+    permission="read_only",
+)
+async def tool_extract_keyframes(
+    video_id: int,
+    mode: str = "smart",
+    interval: float = 2.0,
+    scene_threshold: float = 0.3,
+    max_frames: int = 50,
+    **kwargs,
+) -> Dict[str, Any]:
+    from src.application.services import ffmpeg_adapter
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src import config
+
+    try:
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            if not video:
+                return {"success": False, "error": f"视频 {video_id} 不存在"}
+
+            output_dir = os.path.join(config.UPLOAD_DIR, f"keyframes_{video_id}")
+            frames = ffmpeg_adapter.extract_keyframes(
+                input_path=video.local_path,
+                output_dir=output_dir,
+                mode=mode,
+                interval=interval,
+                scene_threshold=scene_threshold,
+                max_frames=max_frames,
+            )
+            return {
+                "success": True,
+                "frames": frames,
+                "count": len(frames),
+                "mode": mode,
+                "message": f"使用 {mode} 模式提取了 {len(frames)} 个关键帧",
+            }
+    except Exception as e:
+        logger.error(f"关键帧提取失败: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -3870,4 +4249,951 @@ async def tool_comic_select_bgm(
 
         return {"success": True, "message": "BGM 配置已更新"}
     except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ── 质量检测工具 ──
+
+class QualityCheckParams(BaseModel):
+    video_id: Opt[int] = Field(default=None, description="视频 ID（用于黑屏/爆音检测）")
+    project_id: Opt[int] = Field(default=None, description="项目 ID（用于时长合规检测）")
+
+
+@registry.register(
+    name="quality_check",
+    description="视频质量检测：检查黑屏、爆音、跳切、时长合规等问题",
+    parameters={
+        "video_id": {"type": "integer", "description": "视频 ID（可选）"},
+        "project_id": {"type": "integer", "description": "项目 ID（可选，检测方案片段时长合规）"},
+    },
+    examples=["检查视频质量", "检测这个视频有没有黑屏或爆音", "质量评分"],
+    param_model=QualityCheckParams,
+    permission="read_only"
+)
+async def tool_quality_check(
+    video_id: int = None,
+    project_id: int = None,
+    **kwargs
+) -> Dict[str, Any]:
+    """视频质量检测工具"""
+    from src.application.services.quality_service import run_quality_check
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src.domain.entities.video_project import VideoProject
+
+    try:
+        video_path = None
+        clips = None
+        target_duration = None
+
+        with get_db_context() as db:
+            if video_id:
+                repo = VideoRepository(db)
+                video = repo.get_by_id(video_id)
+                if video:
+                    video_path = video.local_path
+
+            if project_id:
+                proj = db.query(VideoProject).filter(VideoProject.id == project_id).first()
+                if proj:
+                    target_duration = proj.target_duration
+                    if proj.plan_data and proj.plan_data.get("clips"):
+                        clips = proj.plan_data["clips"]
+
+        result = run_quality_check(
+            video_path=video_path,
+            clips=clips,
+            target_duration=target_duration,
+        )
+
+        return {
+            "success": True,
+            "quality": result,
+            "message": result["summary"],
+        }
+    except Exception as e:
+        logger.error(f"质量检测失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ── 多信号高光检测工具 ──
+
+class DiarizeSpeakersParams(BaseModel):
+    video_id: int = Field(..., description="视频 ID")
+    num_speakers: Opt[int] = Field(default=None, ge=1, le=20, description="预期说话人数量（可选）")
+
+
+@registry.register(
+    name="diarize_speakers",
+    description="对视频音频进行说话人分离，返回每段语音的说话人 ID + 时间范围",
+    parameters={
+        "video_id": {"type": "integer", "description": "视频 ID"},
+        "num_speakers": {"type": "integer", "description": "预期说话人数量（可选）"},
+    },
+    examples=["识别这个视频有几个说话人", "分离说话人", "谁在说话"],
+    param_model=DiarizeSpeakersParams,
+    before_execute=validate_video_exists,
+    permission="read_only"
+)
+async def tool_diarize_speakers(
+    video_id: int,
+    num_speakers: int = None,
+    **kwargs
+) -> Dict[str, Any]:
+    """说话人分离工具"""
+    from src.application.services import whisper_adapter, ffmpeg_adapter
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src.shared.utils.result_cache import get_cached, set_cached
+
+    try:
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            if not video:
+                return {"success": False, "error": f"视频 {video_id} 不存在"}
+
+            audio_path = video.local_path
+            cache_key = {"num": num_speakers or 0}
+            cached = get_cached(audio_path, "diarize", ttl=3600 * 4, **cache_key)
+            if cached is not None:
+                return {"success": True, "segments": cached, "message": f"检测到 {len(set(s['speaker'] for s in cached))} 个说话人（缓存）"}
+
+            # Use ASR to get segments, then cluster by timing gaps
+            proxy_path = ffmpeg_adapter.generate_proxy(audio_path)
+            srt_text = whisper_adapter.transcribe(
+                audio_path=audio_path, output_format_type="srt", proxy_path=proxy_path,
+            )
+
+            if not srt_text:
+                return {"success": False, "error": "ASR 转录失败，无法进行说话人分离"}
+
+            # Parse SRT and assign speakers based on pause patterns
+            import re
+            segments = []
+            blocks = re.split(r'\n\n+', srt_text.strip())
+            for block in blocks:
+                lines = block.strip().split('\n')
+                if len(lines) >= 3:
+                    time_match = re.match(r'(\d{2}:\d{2}:\d{2}),\d{3}\s*-->\s*(\d{2}:\d{2}:\d{2}),\d{3}', lines[1])
+                    if time_match:
+                        start = whisper_adapter._parse_srt_time(time_match.group(1))
+                        end = whisper_adapter._parse_srt_time(time_match.group(2))
+                        text = ' '.join(lines[2:])
+                        segments.append({"start": round(start, 2), "end": round(end, 2), "text": text})
+
+            # Simple speaker diarization: assign speaker based on pause gaps
+            speaker_segments = _assign_speakers(segments, num_speakers)
+            set_cached(audio_path, "diarize", speaker_segments, **cache_key)
+
+            unique_speakers = len(set(s["speaker"] for s in speaker_segments))
+            return {
+                "success": True,
+                "segments": speaker_segments,
+                "num_speakers": unique_speakers,
+                "message": f"检测到 {unique_speakers} 个说话人，{len(speaker_segments)} 个片段",
+            }
+    except Exception as e:
+        logger.error(f"说话人分离失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def _assign_speakers(segments: list, num_speakers: int = None) -> list:
+    """基于停顿间隔的简单说话人分配"""
+    if not segments:
+        return []
+
+    PAUSE_THRESHOLD = 1.5  # seconds — long pause likely means speaker change
+    speakers = ["spk0"]
+    results = []
+    current_speaker = "spk0"
+
+    for i, seg in enumerate(segments):
+        if i > 0:
+            gap = seg["start"] - segments[i - 1]["end"]
+            if gap >= PAUSE_THRESHOLD:
+                # Speaker change
+                idx = len(speakers)
+                if num_speakers and idx >= num_speakers:
+                    current_speaker = speakers[idx % len(speakers)]
+                else:
+                    current_speaker = f"spk{idx}"
+                    speakers.append(current_speaker)
+
+        results.append({
+            "start": seg["start"],
+            "end": seg["end"],
+            "text": seg["text"],
+            "speaker": current_speaker,
+        })
+
+    return results
+
+
+class DetectSilenceParams(BaseModel):
+    video_id: int = Field(..., description="视频 ID")
+    min_duration: float = Field(default=0.5, ge=0.1, le=10.0, description="最短静音时长(秒)")
+    noise_db: int = Field(default=-30, ge=-60, le=0, description="噪声阈值(dB)")
+
+
+@registry.register(
+    name="detect_silence",
+    description="检测视频中的静音段，返回静音开始/结束时间",
+    parameters={
+        "video_id": {"type": "integer", "description": "视频 ID"},
+        "min_duration": {"type": "number", "description": "最短静音时长(秒)，默认 0.5"},
+        "noise_db": {"type": "integer", "description": "噪声阈值(dB)，默认 -30"},
+    },
+    examples=["检测这个视频的静音段", "找出没有声音的部分"],
+    param_model=DetectSilenceParams,
+    before_execute=validate_video_exists,
+    permission="read_only"
+)
+async def tool_detect_silence(
+    video_id: int,
+    min_duration: float = 0.5,
+    noise_db: int = -30,
+    **kwargs
+) -> Dict[str, Any]:
+    """静音检测工具"""
+    from src.application.services import ffmpeg_adapter as ffmpeg
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+
+    try:
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            if not video:
+                return {"success": False, "error": f"视频 {video_id} 不存在"}
+            silences = ffmpeg.detect_silence_segments(video.local_path, min_duration, noise_db)
+            return {
+                "success": True,
+                "silences": silences,
+                "count": len(silences),
+                "message": f"检测到 {len(silences)} 段静音"
+            }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+class DetectSceneChangeParams(BaseModel):
+    video_id: int = Field(..., description="视频 ID")
+    threshold: float = Field(default=0.3, ge=0.01, le=1.0, description="场景切换敏感度(0-1)")
+
+
+@registry.register(
+    name="detect_scene_change",
+    description="检测视频中的场景切换点，返回切换时间列表",
+    parameters={
+        "video_id": {"type": "integer", "description": "视频 ID"},
+        "threshold": {"type": "number", "description": "敏感度(0-1)，默认 0.3"},
+    },
+    examples=["检测场景切换", "找出画面变化的点"],
+    param_model=DetectSceneChangeParams,
+    before_execute=validate_video_exists,
+    permission="read_only"
+)
+async def tool_detect_scene_change(
+    video_id: int,
+    threshold: float = 0.3,
+    **kwargs
+) -> Dict[str, Any]:
+    """场景切换检测工具"""
+    from src.application.services import ffmpeg_adapter as ffmpeg
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+
+    try:
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            if not video:
+                return {"success": False, "error": f"视频 {video_id} 不存在"}
+            changes = ffmpeg.detect_scene_changes(video.local_path, threshold)
+            return {
+                "success": True,
+                "changes": changes,
+                "count": len(changes),
+                "message": f"检测到 {len(changes)} 个场景切换点"
+            }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ── 缓存管理工具 ──
+
+@registry.register(
+    name="manage_cache",
+    description="管理分析结果缓存（查看统计、清除缓存）",
+    parameters={
+        "action": {"type": "string", "description": "操作: stats/clear", "enum": ["stats", "clear"]},
+        "prefix": {"type": "string", "description": "缓存类型: ffprobe/asr/vl（clear 时可选，不指定则全部清除）"},
+    },
+    examples=["查看缓存统计", "清除所有缓存", "清除 ASR 缓存"],
+    permission="destructive"
+)
+async def tool_manage_cache(
+    action: str = "stats",
+    prefix: str = None,
+    **kwargs
+) -> Dict[str, Any]:
+    """缓存管理工具"""
+    from src.shared.utils.result_cache import cache_stats, clear_cache
+
+    try:
+        if action == "stats":
+            stats = cache_stats()
+            return {
+                "success": True,
+                "stats": stats,
+                "message": f"缓存统计: {stats['count']} 条, {stats['total_size_mb']} MB"
+            }
+        elif action == "clear":
+            clear_cache(prefix)
+            label = f"{prefix} 缓存" if prefix else "所有缓存"
+            return {"success": True, "message": f"{label}已清除"}
+        else:
+            return {"success": False, "error": f"未知操作: {action}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ── 批量处理工具 ──
+
+class BatchCutParams(BaseModel):
+    video_id: int = Field(..., description="视频 ID")
+    segments: list = Field(..., description="剪切片段列表 [{start_time, end_time}]")
+
+
+@registry.register(
+    name="batch_cut",
+    description="批量剪切视频片段，一次性提取多个时间段",
+    parameters={
+        "video_id": {"type": "integer", "description": "视频 ID"},
+        "segments": {"type": "array", "description": "片段列表 [{start_time, end_time}]"},
+    },
+    param_model=BatchCutParams,
+    before_execute=validate_video_exists,
+    permission="modify",
+)
+async def tool_batch_cut(
+    video_id: int,
+    segments: list,
+    **kwargs,
+) -> Dict[str, Any]:
+    """批量剪切"""
+    from src.application.services import ffmpeg_adapter
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+
+    if not segments:
+        return {"success": False, "error": "未提供剪切片段"}
+
+    try:
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            if not video:
+                return {"success": False, "error": f"视频 {video_id} 不存在"}
+
+            results = []
+            for i, seg in enumerate(segments):
+                start = seg.get("start_time", "00:00:00")
+                end = seg.get("end_time")
+                if not end:
+                    continue
+                try:
+                    output = ffmpeg_adapter.cut_video(
+                        input_path=video.local_path,
+                        start_time=start,
+                        end_time=end,
+                    )
+                    results.append({"index": i, "start": start, "end": end, "path": output, "success": True})
+                except Exception as e:
+                    results.append({"index": i, "start": start, "end": end, "error": str(e), "success": False})
+
+            success_count = sum(1 for r in results if r["success"])
+            return {
+                "success": True,
+                "results": results,
+                "total": len(segments),
+                "success_count": success_count,
+                "message": f"批量剪切完成: {success_count}/{len(segments)} 成功",
+            }
+    except Exception as e:
+        logger.error(f"批量剪切失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+class BatchAnalyzeParams(BaseModel):
+    video_ids: list = Field(..., description="视频 ID 列表")
+    analyze_type: str = Field(default="basic", description="分析类型: basic/transcribe")
+
+
+@registry.register(
+    name="batch_analyze",
+    description="批量分析多个视频，支持基础信息获取和转录",
+    parameters={
+        "video_ids": {"type": "array", "description": "视频 ID 列表"},
+        "analyze_type": {"type": "string", "description": "分析类型: basic/transcribe"},
+    },
+    param_model=BatchAnalyzeParams,
+    permission="read_only",
+)
+async def tool_batch_analyze(
+    video_ids: list,
+    analyze_type: str = "basic",
+    **kwargs,
+) -> Dict[str, Any]:
+    """批量分析"""
+    from src.application.services import ffmpeg_adapter, whisper_adapter
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+
+    results = []
+    try:
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            for vid in video_ids:
+                video = repo.get_by_id(vid)
+                if not video:
+                    results.append({"video_id": vid, "success": False, "error": "不存在"})
+                    continue
+
+                if analyze_type == "transcribe":
+                    try:
+                        proxy = ffmpeg_adapter.generate_proxy(video.local_path)
+                        srt = whisper_adapter.transcribe(video.local_path, output_format_type="srt", proxy_path=proxy)
+                        results.append({"video_id": vid, "name": video.name, "subtitle": srt, "success": True})
+                    except Exception as e:
+                        results.append({"video_id": vid, "success": False, "error": str(e)})
+                else:
+                    info = ffmpeg_adapter.get_video_info(video.local_path)
+                    results.append({"video_id": vid, "name": video.name, "info": info, "success": True})
+
+        success_count = sum(1 for r in results if r.get("success"))
+        return {
+            "success": True,
+            "results": results,
+            "total": len(video_ids),
+            "success_count": success_count,
+            "message": f"批量分析完成: {success_count}/{len(video_ids)} 成功",
+        }
+    except Exception as e:
+        logger.error(f"批量分析失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ── AI 元数据生成 ──
+
+@registry.register(
+    name="generate_metadata",
+    description="根据视频内容 AI 生成标题、标签、描述、推荐封面帧等平台发布元数据",
+    parameters={
+        "video_id": {"type": "integer", "description": "视频 ID"},
+        "platform": {"type": "string", "description": "目标平台: douyin/bilibili/youtube/xiaohongshu (可选)"},
+    },
+    before_execute=validate_video_exists,
+    permission="read_only",
+)
+async def tool_generate_metadata(
+    video_id: int,
+    platform: str = None,
+    **kwargs,
+) -> Dict[str, Any]:
+    """AI 生成视频发布元数据"""
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src.application.services import whisper_adapter
+    from src.application.services.llm_adapter import generate_response_async
+    import json as _json
+
+    try:
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            if not video:
+                return {"success": False, "error": f"视频 {video_id} 不存在"}
+
+            context_parts = []
+            if video.description:
+                context_parts.append(f"视频描述: {video.description}")
+            if video.name:
+                context_parts.append(f"文件名: {video.name}")
+
+            try:
+                srt = whisper_adapter.transcribe(video.local_path, output_format_type="srt")
+                if srt:
+                    context_parts.append(f"转录内容摘要: {srt[:1000]}")
+            except Exception:
+                pass
+
+            context = "\n".join(context_parts) if context_parts else "无额外信息"
+            platform_hint = f"\n目标平台: {platform}" if platform else ""
+
+            prompt = f"""基于以下视频信息，生成适合社交媒体发布的元数据。
+请以 JSON 格式返回，包含以下字段：
+- title: 吸引人的标题（15-30字）
+- description: 详细描述（50-150字）
+- tags: 标签列表（5-10个）
+- category: 内容分类
+- cover_frame_second: 推荐封面帧的时间点（秒数）
+{platform_hint}
+
+视频信息：
+{context}
+
+请直接返回 JSON，不要包含其他文本。"""
+
+            response = await generate_response_async(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7, max_tokens=1024,
+            )
+
+            try:
+                cleaned = response.strip()
+                if cleaned.startswith("```"):
+                    cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
+                metadata = _json.loads(cleaned)
+            except (_json.JSONDecodeError, IndexError):
+                metadata = {
+                    "title": video.name or "未命名视频",
+                    "description": response[:200],
+                    "tags": [], "category": "其他", "cover_frame_second": 0,
+                }
+
+            return {
+                "success": True,
+                "metadata": metadata,
+                "video_id": video_id,
+                "message": f"已生成元数据: {metadata.get('title', '未知')}",
+            }
+    except Exception as e:
+        logger.error(f"元数据生成失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ==================== 图片处理工具 ====================
+
+def _get_image_info(video):
+    """验证素材是图片并返回 (local_path, ext, error)"""
+    if not video:
+        return None, None, "素材不存在"
+    ft = getattr(video, 'file_type', None) or 'video'
+    if ft != 'image':
+        return None, None, f"该素材不是图片（类型: {ft}），请选择图片素材"
+    local = video.local_path
+    if not local or not os.path.isfile(local):
+        return None, None, f"图片文件不存在: {local}"
+    ext = os.path.splitext(local)[1].lower()
+    return local, ext, None
+
+
+def _save_image_result(src_path, video_id, suffix, ext, project_id=None):
+    """将处理后的图片入库并关联项目"""
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    filename = f"img_{suffix}_{video_id}_{int(time.time())}{ext}"
+    dest_dir = str(config.source_videos_dir)
+    dest_path = os.path.join(dest_dir, filename)
+    import shutil
+    shutil.move(src_path, dest_path)
+    with get_db_context() as db:
+        repo = VideoRepository(db)
+        new_img = repo.create(
+            video_name=f"图片处理_{suffix}_{video_id}",
+            local_path=dest_path,
+            web_path=f"/static/source_videos/{filename}",
+            is_temp=True,
+            file_type="image",
+        )
+        db.commit()
+    if project_id:
+        _add_material_to_project(project_id, new_img.id)
+    return {
+        "success": True,
+        "video_id": new_img.id,
+        "web_path": f"/static/source_videos/{filename}",
+        "local_path": dest_path,
+        "output_type": "image",
+        "message": f"图片{suffix}完成",
+    }
+
+
+@registry.register(
+    name="resize_image",
+    description="缩放图片尺寸，可指定宽高（另一个维度自动等比缩放）",
+    parameters={
+        "video_id": {"type": "integer", "description": "图片素材 ID"},
+        "width": {"type": "integer", "description": "目标宽度（像素，0 表示按高度等比）"},
+        "height": {"type": "integer", "description": "目标高度（像素，0 表示按宽度等比）"},
+    },
+    examples=["把图片缩放到800x600", "缩小图片宽度到500"],
+    before_execute=validate_video_exists,
+)
+async def tool_resize_image(video_id: int, width: int = 0, height: int = 0, **kwargs) -> Dict[str, Any]:
+    if width <= 0 and height <= 0:
+        return {"success": False, "error": "请指定 width 或 height 至少一个"}
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src.application.services import ffmpeg_adapter as ffmpeg
+    try:
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            local, ext, err = _get_image_info(video)
+            if err:
+                return {"success": False, "error": err}
+            w = width if width > 0 else -1
+            h = height if height > 0 else -1
+            tmp_out = os.path.join(str(config.source_videos_dir), f"_resize_{video_id}_{int(time.time())}{ext}")
+            ffmpeg.run_ffmpeg_cmd([
+                '-y', '-i', local,
+                '-vf', f'scale={w}:{h}',
+                tmp_out
+            ])
+            return _save_image_result(tmp_out, video_id, "缩放", ext, kwargs.get("project_id"))
+    except Exception as e:
+        logger.error(f"图片缩放失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="crop_image",
+    description="裁剪图片指定区域",
+    parameters={
+        "video_id": {"type": "integer", "description": "图片素材 ID"},
+        "crop_width": {"type": "integer", "description": "裁剪宽度（像素）"},
+        "crop_height": {"type": "integer", "description": "裁剪高度（像素）"},
+        "x": {"type": "integer", "description": "起始 X 坐标（默认0）"},
+        "y": {"type": "integer", "description": "起始 Y 坐标（默认0）"},
+    },
+    examples=["裁剪图片中心区域", "把图片裁剪到800x600"],
+    before_execute=validate_video_exists,
+)
+async def tool_crop_image(video_id: int, crop_width: int = 0, crop_height: int = 0,
+                          x: int = 0, y: int = 0, **kwargs) -> Dict[str, Any]:
+    if crop_width <= 0 or crop_height <= 0:
+        return {"success": False, "error": "请指定 crop_width 和 crop_height"}
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src.application.services import ffmpeg_adapter as ffmpeg
+    try:
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            local, ext, err = _get_image_info(video)
+            if err:
+                return {"success": False, "error": err}
+            tmp_out = os.path.join(str(config.source_videos_dir), f"_crop_{video_id}_{int(time.time())}{ext}")
+            ffmpeg.run_ffmpeg_cmd([
+                '-y', '-i', local,
+                '-vf', f'crop={crop_width}:{crop_height}:{x}:{y}',
+                tmp_out
+            ])
+            return _save_image_result(tmp_out, video_id, "裁剪", ext, kwargs.get("project_id"))
+    except Exception as e:
+        logger.error(f"图片裁剪失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="rotate_image",
+    description="旋转图片（90/180/270度）",
+    parameters={
+        "video_id": {"type": "integer", "description": "图片素材 ID"},
+        "angle": {"type": "integer", "description": "旋转角度（90/180/270，默认90）"},
+    },
+    examples=["把图片旋转90度", "旋转图片180度"],
+    before_execute=validate_video_exists,
+)
+async def tool_rotate_image(video_id: int, angle: int = 90, **kwargs) -> Dict[str, Any]:
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src.application.services import ffmpeg_adapter as ffmpeg
+    try:
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            local, ext, err = _get_image_info(video)
+            if err:
+                return {"success": False, "error": err}
+            if angle == 90:
+                vf = 'transpose=1'
+            elif angle == 180:
+                vf = 'hflip,vflip'
+            elif angle == 270:
+                vf = 'transpose=2'
+            else:
+                return {"success": False, "error": "angle 仅支持 90/180/270"}
+            tmp_out = os.path.join(str(config.source_videos_dir), f"_rotate_{video_id}_{int(time.time())}{ext}")
+            ffmpeg.run_ffmpeg_cmd([
+                '-y', '-i', local,
+                '-vf', vf,
+                tmp_out
+            ])
+            return _save_image_result(tmp_out, video_id, f"旋转{angle}度", ext, kwargs.get("project_id"))
+    except Exception as e:
+        logger.error(f"图片旋转失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="flip_image",
+    description="翻转图片（水平或垂直）",
+    parameters={
+        "video_id": {"type": "integer", "description": "图片素材 ID"},
+        "direction": {"type": "string", "description": "翻转方向: horizontal(水平) / vertical(垂直)，默认 horizontal"},
+    },
+    examples=["水平翻转图片", "垂直翻转图片"],
+    before_execute=validate_video_exists,
+)
+async def tool_flip_image(video_id: int, direction: str = 'horizontal', **kwargs) -> Dict[str, Any]:
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src.application.services import ffmpeg_adapter as ffmpeg
+    try:
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            local, ext, err = _get_image_info(video)
+            if err:
+                return {"success": False, "error": err}
+            vf = 'hflip' if direction in ('horizontal', 'h', '水平') else 'vflip'
+            tmp_out = os.path.join(str(config.source_videos_dir), f"_flip_{video_id}_{int(time.time())}{ext}")
+            ffmpeg.run_ffmpeg_cmd([
+                '-y', '-i', local,
+                '-vf', vf,
+                tmp_out
+            ])
+            label = "水平翻转" if vf == 'hflip' else "垂直翻转"
+            return _save_image_result(tmp_out, video_id, label, ext, kwargs.get("project_id"))
+    except Exception as e:
+        logger.error(f"图片翻转失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="adjust_image",
+    description="调整图片亮度、对比度和饱和度",
+    parameters={
+        "video_id": {"type": "integer", "description": "图片素材 ID"},
+        "brightness": {"type": "number", "description": "亮度 (-1.0~1.0，默认0)"},
+        "contrast": {"type": "number", "description": "对比度 (0.1~10.0，默认1)"},
+        "saturation": {"type": "number", "description": "饱和度 (0.0~3.0，默认1)"},
+    },
+    examples=["把图片调亮", "增加对比度", "降低饱和度"],
+    before_execute=validate_video_exists,
+)
+async def tool_adjust_image(video_id: int, brightness: float = 0, contrast: float = 1.0,
+                            saturation: float = 1.0, **kwargs) -> Dict[str, Any]:
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src.application.services import ffmpeg_adapter as ffmpeg
+    try:
+        brightness = max(-1.0, min(1.0, float(brightness)))
+        contrast = max(0.1, min(10.0, float(contrast)))
+        saturation = max(0.0, min(3.0, float(saturation)))
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            local, ext, err = _get_image_info(video)
+            if err:
+                return {"success": False, "error": err}
+            tmp_out = os.path.join(str(config.source_videos_dir), f"_adj_{video_id}_{int(time.time())}{ext}")
+            ffmpeg.run_ffmpeg_cmd([
+                '-y', '-i', local,
+                '-vf', f'eq=brightness={brightness}:contrast={contrast}:saturation={saturation}',
+                tmp_out
+            ])
+            return _save_image_result(tmp_out, video_id, "调色", ext, kwargs.get("project_id"))
+    except Exception as e:
+        logger.error(f"图片调色失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="blur_image",
+    description="对图片应用模糊效果",
+    parameters={
+        "video_id": {"type": "integer", "description": "图片素材 ID"},
+        "sigma": {"type": "number", "description": "模糊强度 (0.1~20.0，默认5)"},
+    },
+    examples=["模糊图片", "给图片加模糊效果"],
+    before_execute=validate_video_exists,
+)
+async def tool_blur_image(video_id: int, sigma: float = 5.0, **kwargs) -> Dict[str, Any]:
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src.application.services import ffmpeg_adapter as ffmpeg
+    try:
+        sigma = max(0.1, min(20.0, float(sigma)))
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            local, ext, err = _get_image_info(video)
+            if err:
+                return {"success": False, "error": err}
+            tmp_out = os.path.join(str(config.source_videos_dir), f"_blur_{video_id}_{int(time.time())}{ext}")
+            ffmpeg.run_ffmpeg_cmd([
+                '-y', '-i', local,
+                '-vf', f'gblur=sigma={sigma}',
+                tmp_out
+            ])
+            return _save_image_result(tmp_out, video_id, "模糊", ext, kwargs.get("project_id"))
+    except Exception as e:
+        logger.error(f"图片模糊失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="sharpen_image",
+    description="对图片应用锐化效果",
+    parameters={
+        "video_id": {"type": "integer", "description": "图片素材 ID"},
+        "amount": {"type": "number", "description": "锐化强度 (0.5~5.0，默认1.5)"},
+    },
+    examples=["锐化图片", "让图片更清晰"],
+    before_execute=validate_video_exists,
+)
+async def tool_sharpen_image(video_id: int, amount: float = 1.5, **kwargs) -> Dict[str, Any]:
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src.application.services import ffmpeg_adapter as ffmpeg
+    try:
+        amount = max(0.5, min(5.0, float(amount)))
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            local, ext, err = _get_image_info(video)
+            if err:
+                return {"success": False, "error": err}
+            tmp_out = os.path.join(str(config.source_videos_dir), f"_sharp_{video_id}_{int(time.time())}{ext}")
+            ffmpeg.run_ffmpeg_cmd([
+                '-y', '-i', local,
+                '-vf', f'unsharp=5:5:{amount}',
+                tmp_out
+            ])
+            return _save_image_result(tmp_out, video_id, "锐化", ext, kwargs.get("project_id"))
+    except Exception as e:
+        logger.error(f"图片锐化失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="convert_image",
+    description="转换图片格式（jpg/png/webp/bmp）",
+    parameters={
+        "video_id": {"type": "integer", "description": "图片素材 ID"},
+        "format": {"type": "string", "description": "目标格式: jpg/png/webp/bmp"},
+    },
+    examples=["把PNG转为JPG", "转换为WEBP格式"],
+    before_execute=validate_video_exists,
+)
+async def tool_convert_image(video_id: int, format: str = 'jpg', **kwargs) -> Dict[str, Any]:
+    fmt = format.lower().lstrip('.')
+    if fmt == 'jpeg':
+        fmt = 'jpg'
+    if fmt not in ('jpg', 'png', 'webp', 'bmp', 'gif'):
+        return {"success": False, "error": f"不支持的格式: {format}，支持 jpg/png/webp/bmp/gif"}
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src.application.services import ffmpeg_adapter as ffmpeg
+    try:
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            local, ext, err = _get_image_info(video)
+            if err:
+                return {"success": False, "error": err}
+            new_ext = f".{fmt}"
+            tmp_out = os.path.join(str(config.source_videos_dir), f"_conv_{video_id}_{int(time.time())}{new_ext}")
+            ffmpeg.run_ffmpeg_cmd([
+                '-y', '-i', local,
+                tmp_out
+            ])
+            return _save_image_result(tmp_out, video_id, f"转{fmt}", new_ext, kwargs.get("project_id"))
+    except Exception as e:
+        logger.error(f"图片格式转换失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="compress_image",
+    description="压缩图片（降低质量以减小文件大小）",
+    parameters={
+        "video_id": {"type": "integer", "description": "图片素材 ID"},
+        "quality": {"type": "integer", "description": "质量 (1~100，数字越小文件越小，默认75)"},
+    },
+    examples=["压缩图片", "把图片质量降到60"],
+    before_execute=validate_video_exists,
+)
+async def tool_compress_image(video_id: int, quality: int = 75, **kwargs) -> Dict[str, Any]:
+    quality = max(1, min(100, int(quality)))
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src.application.services import ffmpeg_adapter as ffmpeg
+    try:
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            local, ext, err = _get_image_info(video)
+            if err:
+                return {"success": False, "error": err}
+            tmp_out = os.path.join(str(config.source_videos_dir), f"_comp_{video_id}_{int(time.time())}{ext}")
+            cmd = ['-y', '-i', local]
+            if ext in ('.jpg', '.jpeg'):
+                cmd.extend(['-q:v', str(max(1, min(31, int((100 - quality) / 100 * 31 + 1))))])
+            elif ext == '.png':
+                cmd.extend(['-compression_level', str(max(0, min(9, int((100 - quality) / 100 * 9))))])
+            cmd.append(tmp_out)
+            ffmpeg.run_ffmpeg_cmd(cmd)
+            return _save_image_result(tmp_out, video_id, "压缩", ext, kwargs.get("project_id"))
+    except Exception as e:
+        logger.error(f"图片压缩失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="add_text_to_image",
+    description="在图片上叠加文字",
+    parameters={
+        "video_id": {"type": "integer", "description": "图片素材 ID"},
+        "text": {"type": "string", "description": "要叠加的文字内容"},
+        "font_size": {"type": "integer", "description": "字号（默认36）"},
+        "color": {"type": "string", "description": "文字颜色（默认 white）"},
+        "x": {"type": "integer", "description": "X 坐标（默认10）"},
+        "y": {"type": "integer", "description": "Y 坐标（默认10）"},
+    },
+    examples=["在图片上写标题", "给图片加水印文字"],
+    before_execute=validate_video_exists,
+)
+async def tool_add_text_to_image(video_id: int, text: str, font_size: int = 36,
+                                 color: str = 'white', x: int = 10, y: int = 10, **kwargs) -> Dict[str, Any]:
+    if not text:
+        return {"success": False, "error": "请输入要叠加的文字"}
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src.application.services import ffmpeg_adapter as ffmpeg
+    from src.shared.utils.string_util import sanitize_ffmpeg_string
+    try:
+        safe_text = sanitize_ffmpeg_string(text)
+        safe_color = sanitize_ffmpeg_string(color)
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            video = repo.get_by_id(video_id)
+            local, ext, err = _get_image_info(video)
+            if err:
+                return {"success": False, "error": err}
+            tmp_out = os.path.join(str(config.source_videos_dir), f"_text_{video_id}_{int(time.time())}{ext}")
+            vf = f"drawtext=text='{safe_text}':fontsize={font_size}:fontcolor={safe_color}:x={x}:y={y}"
+            ffmpeg.run_ffmpeg_cmd([
+                '-y', '-i', local,
+                '-vf', vf,
+                tmp_out
+            ])
+            return _save_image_result(tmp_out, video_id, "加文字", ext, kwargs.get("project_id"))
+    except Exception as e:
+        logger.error(f"图片加文字失败: {e}")
         return {"success": False, "error": str(e)}

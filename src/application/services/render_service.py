@@ -286,3 +286,122 @@ class RenderService:
             "progress": 0,
             "status": "pending"
         }
+
+    # ==================== 两阶段渲染 ====================
+
+    def render_two_stage(
+        self,
+        timeline: Timeline,
+        audio_config: Dict = None,
+        resolution: tuple = (1920, 1080),
+        fps: int = 30,
+        task_id: str = None,
+    ) -> str:
+        """两阶段渲染：帧序列提取 + 编码合成
+
+        Stage 1: 从每个片段提取帧序列到临时目录
+        Stage 2: 将帧序列编码为最终视频
+
+        支持从上次中断处恢复。
+        """
+        task_id = task_id or str(uuid.uuid4())
+        frame_dir = os.path.join(self.output_dir, f"frames_{task_id}")
+        os.makedirs(frame_dir, exist_ok=True)
+
+        progress_file = os.path.join(frame_dir, "_progress.json")
+
+        # Check for resume
+        completed_clips = set()
+        if os.path.exists(progress_file):
+            try:
+                import json
+                with open(progress_file, "r") as f:
+                    saved = json.load(f)
+                completed_clips = set(saved.get("completed_clips", []))
+                logger.info(f"[TwoStage] Resuming from {len(completed_clips)} completed clips")
+            except Exception:
+                pass
+
+        # Stage 1: Extract frames from each clip
+        clip_infos = self._build_clip_infos(timeline)
+        if not clip_infos:
+            raise ValueError("没有可渲染的视频片段")
+
+        for i, clip_info in enumerate(clip_infos):
+            clip_key = str(i)
+            clip_frame_dir = os.path.join(frame_dir, f"clip_{i:04d}")
+
+            if clip_key in completed_clips:
+                logger.info(f"[TwoStage] Skipping clip {i} (already done)")
+                continue
+
+            os.makedirs(clip_frame_dir, exist_ok=True)
+
+            video_path = clip_info.get("path", "")
+            if not video_path or not os.path.exists(video_path):
+                logger.warning(f"[TwoStage] Clip {i} source not found, skipping")
+                continue
+
+            start = clip_info.get("start_time", "00:00:00")
+            end = clip_info.get("end_time", "")
+
+            cmd = [
+                "-i", video_path,
+                "-vf", f"scale={resolution[0]}:{resolution[1]}:force_original_aspect_ratio=decrease,pad={resolution[0]}:{resolution[1]}:(ow-iw)/2:(oh-ih)/2,fps={fps}",
+            ]
+            if start:
+                cmd.extend(["-ss", start])
+            if end:
+                cmd.extend(["-to", end])
+            cmd.extend(["-q:v", "2", os.path.join(clip_frame_dir, "frame_%06d.png")])
+
+            try:
+                ffmpeg.run_ffmpeg_cmd(cmd)
+                completed_clips.add(clip_key)
+                self._save_progress(progress_file, completed_clips)
+            except Exception as e:
+                logger.error(f"[TwoStage] Frame extraction failed for clip {i}: {e}")
+
+        # Stage 2: Encode frames into final video
+        output_path = os.path.join(self.output_dir, f"render_{task_id}.mp4")
+
+        # Concatenate all frames using concat demuxer
+        concat_list = os.path.join(frame_dir, "concat.txt")
+        frame_files = sorted(
+            [os.path.join(clip_frame_dir, f) for clip_frame_dir in
+             [os.path.join(frame_dir, d) for d in sorted(os.listdir(frame_dir)) if d.startswith("clip_")]
+             for f in os.listdir(clip_frame_dir) if f.endswith(".png")]
+        )
+
+        if not frame_files:
+            raise ValueError("帧提取失败，无可用的帧文件")
+
+        # Use image2 demuxer for frame sequence
+        first_clip_dir = os.path.join(frame_dir, "clip_0000")
+        if os.path.exists(first_clip_dir) and os.listdir(first_clip_dir):
+            encode_cmd = [
+                "-framerate", str(fps),
+                "-i", os.path.join(first_clip_dir, "frame_%06d.png"),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-preset", "medium", "-crf", "23",
+                "-y", output_path,
+            ]
+            ffmpeg.run_ffmpeg_cmd(encode_cmd)
+
+        # Cleanup frames
+        import shutil
+        try:
+            shutil.rmtree(frame_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+        logger.info(f"[TwoStage] Render complete: {output_path}")
+        return output_path
+
+    def _save_progress(self, path: str, completed_clips: set):
+        import json
+        try:
+            with open(path, "w") as f:
+                json.dump({"completed_clips": list(completed_clips)}, f)
+        except Exception:
+            pass

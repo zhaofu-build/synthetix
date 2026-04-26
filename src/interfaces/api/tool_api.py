@@ -57,19 +57,50 @@ _ALLOWED_FILE_EXT = {
 
 @router.post("/upload/file", summary="上传通用文件")
 async def upload_file(file_stream: UploadFile = File(...)):
-    """上传通用文件"""
+    """上传通用文件到正式素材目录并入库"""
+    from src.infrastructure.repositories import VideoRepository
+
     # 校验文件类型
     ext = os.path.splitext(file_stream.filename or "")[1].lower()
     if ext not in _ALLOWED_FILE_EXT:
         return error_response(error="UploadError", message=f"不支持的文件格式: {ext}", code=400)
 
     try:
-        file_info = await file_util.save_uploaded_file(file_stream, config.UPLOAD_DIR)
+        file_info = await file_util.save_uploaded_file(file_stream, config.source_videos_dir)
+
+        # 根据扩展名推断素材类型
+        _VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm", ".mpg", ".mpeg", ".3gp", ".ts"}
+        _AUDIO_EXT = {".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".wma"}
+        _IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}
+        if ext in _VIDEO_EXT:
+            file_type = "video"
+        elif ext in _AUDIO_EXT:
+            file_type = "audio"
+        elif ext in _IMAGE_EXT:
+            file_type = "image"
+        else:
+            file_type = "document"
+
+        # 入 DB 作为临时素材
+        from src.infrastructure.db.session import get_db_context
+        filename = file_info["filename"]
+        with get_db_context() as db:
+            repo = VideoRepository(db)
+            new_video = repo.create(
+                video_name=file_stream.filename or filename,
+                local_path=file_info["local_path"],
+                web_path=f"/static/source_videos/{filename}",
+                is_temp=True,
+                file_type=file_type,
+            )
+            video_id = new_video.id
+            db.commit()
 
         return success_response(
             data={
-                "web_path": file_info["web_path"],
-                "local_path": file_info["local_path"]
+                "video_id": video_id,
+                "web_path": f"/static/source_videos/{filename}",
+                "local_path": file_info["local_path"],
             },
             message="上传成功"
         )
@@ -101,6 +132,12 @@ async def update_config(req: Dict[str, Any]):
             config.CORE_NEXUS_BASE_URL = new_url
         from src.shared.utils.core_nexus_client import reset_client
         reset_client()
+
+    # 同步视频 API Key 到运行时配置
+    if "pixabay_api_key" in config_data:
+        config.pixabay_api_key = config_data["pixabay_api_key"]
+    if "video_api_keys" in config_data:
+        config.video_api_keys = config_data["video_api_keys"]
 
     return success_response(data=True, message="保存配置成功")
 

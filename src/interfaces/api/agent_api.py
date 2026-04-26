@@ -149,6 +149,95 @@ async def deep_research(request: DeepResearchRequest):
     )
 
 
+# ==================== 方案模式接口 ====================
+
+PLAN_SYSTEM_PROMPT = """你是视频剪辑方案规划器。用户会描述剪辑需求，你需要生成一个结构化的操作列表。
+
+严格要求：输出 JSON 格式的操作列表，不要包含其他文字。
+
+格式：
+{
+  "summary": "方案概述（一句话）",
+  "operations": [
+    {
+      "type": "操作类型（cut/merge/add_subtitle/add_audio/change_speed/generate_tts）",
+      "tool": "对应的工具名（cut_video/merge_videos/add_subtitle/add_audio/change_speed/generate_tts）",
+      "params": {"参数名": "参数值"},
+      "description": "人类可读的操作描述",
+      "risk": "safe 或 needs_confirm 或 destructive"
+    }
+  ]
+}
+
+风险等级说明：
+- safe: 只读操作、无损操作（如分析、查看、生成TTS）
+- needs_confirm: 修改视频的操作（如剪切、添加字幕、调整速度）
+- destructive: 删除素材、覆盖文件等不可逆操作
+
+注意事项：
+- cut_video 参数需要 video_id, start_time, end_time
+- merge_videos 参数需要 video_ids 列表
+- 时间格式为 HH:MM:SS
+"""
+
+
+@router.post("/plan", summary="生成剪辑方案")
+async def generate_plan(request: ChatRequest):
+    """
+    生成结构化剪辑方案（方案模式）
+
+    返回一组可编辑、可逐一确认的操作卡片。
+    """
+    try:
+        from src.shared.utils.core_nexus_client import get_client
+        from src.shared.utils.config_manager import get as cfg_get
+
+        client = get_client()
+        model = cfg_get("core_nexus.model") or None
+
+        # 获取可用工具描述
+        agent = get_react_agent()
+        from src.agent.tool_registry import registry
+        tools_desc = "\n".join(
+            f"- {t.name}: {t.description}"
+            for t in registry.list_tools()
+            if t.name in ["cut_video", "merge_videos", "add_subtitle", "add_audio",
+                          "change_speed", "generate_tts", "smart_clip",
+                          "transcribe_video", "analyze_transcript", "extract_audio"]
+        )
+
+        messages = [
+            {"role": "system", "content": PLAN_SYSTEM_PROMPT + f"\n\n可用工具：\n{tools_desc}"},
+            {"role": "user", "content": request.message}
+        ]
+
+        response = client.llm_generate(messages=messages, model=model)
+        plan_text = response.get("text", "")
+
+        # 尝试解析 JSON
+        import re
+        json_match = re.search(r'\{[\s\S]*\}', plan_text)
+        if json_match:
+            plan_data = json.loads(json_match.group())
+        else:
+            plan_data = {
+                "summary": plan_text[:200],
+                "operations": [],
+                "raw": plan_text
+            }
+
+        return success_response(data=plan_data)
+
+    except json.JSONDecodeError:
+        return success_response(data={
+            "summary": "方案生成完成（格式解析失败）",
+            "operations": [],
+            "raw": plan_text
+        })
+    except Exception as e:
+        return error_response(error="PlanError", message=str(e), code=500)
+
+
 # ==================== 直接执行接口 ====================
 
 @router.post("/execute", summary="直接执行工具")
@@ -299,4 +388,83 @@ async def list_sessions():
             for s in sessions
         ],
         "count": len(sessions)
+    })
+
+
+@router.get("/sessions/by-project/{project_id}", summary="获取项目会话")
+async def list_sessions_by_project(project_id: int):
+    """获取指定项目的所有会话"""
+    from src.agent.session_manager import get_session_manager
+    manager = get_session_manager()
+    sessions = manager.get_sessions_by_project(project_id)
+    return success_response(data={
+        "sessions": [
+            {
+                "session_id": s.session_id,
+                "status": s.status.value,
+                "intent": s.intent,
+                "history_count": len(s.history),
+                "created_at": s.created_at,
+                "updated_at": s.updated_at,
+            }
+            for s in sessions
+        ],
+        "count": len(sessions),
+    })
+
+
+@router.post("/sessions/restore/{project_id}", summary="恢复项目最近会话")
+async def restore_session(project_id: int):
+    """恢复项目最近一次会话"""
+    from src.agent.session_manager import get_session_manager
+    manager = get_session_manager()
+    session = manager.restore_last_session(project_id)
+    if not session:
+        return success_response(data=None, message="该项目暂无历史会话")
+    return success_response(data={
+        "session_id": session.session_id,
+        "status": session.status.value,
+        "history_count": len(session.history),
+        "last_user_message": session.get_last_user_message(),
+        "updated_at": session.updated_at,
+    })
+
+
+# ==================== 批量执行 ====================
+
+class BatchExecuteRequest(BaseModel):
+    tasks: List[Dict[str, Any]] = []
+    """[{tool, params}]"""
+
+
+@router.post("/batch/execute", summary="批量执行工具")
+async def batch_execute(request: BatchExecuteRequest):
+    """批量执行多个工具任务"""
+    from src.agent.tool_registry import registry as tool_registry
+    from src.agent.session_manager import get_session_manager
+    import asyncio
+
+    if not request.tasks:
+        return error_response(message="任务列表为空")
+
+    results = []
+    for task in request.tasks[:20]:  # max 20 tasks per batch
+        tool_name = task.get("tool")
+        params = task.get("params", {})
+        tool = tool_registry.get_tool(tool_name)
+        if not tool:
+            results.append({"tool": tool_name, "success": False, "error": f"未知工具: {tool_name}"})
+            continue
+        try:
+            validated = tool.validate_params(params) if tool.param_model else params
+            result = await tool.execute(**validated)
+            results.append({"tool": tool_name, "success": result.get("success", True), "data": result})
+        except Exception as e:
+            results.append({"tool": tool_name, "success": False, "error": str(e)})
+
+    success_count = sum(1 for r in results if r.get("success"))
+    return success_response(data={
+        "results": results,
+        "total": len(request.tasks),
+        "success_count": success_count,
     })

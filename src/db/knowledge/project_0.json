@@ -1,0 +1,51 @@
+{
+  "project_id": 0,
+  "counter": 5,
+  "documents": [
+    {
+      "id": "doc_1",
+      "content": "视频剪辑基本术语: 剪切(cut)、合并(merge)、转场(transition)、关键帧(keyframe)",
+      "source": "基础知识",
+      "tags": [
+        "editing",
+        "domain"
+      ]
+    },
+    {
+      "id": "doc_2",
+      "content": "常见视频分辨率: 720p(1280x720), 1080p(1920x1080), 4K(3840x2160)",
+      "source": "基础知识",
+      "tags": [
+        "technical",
+        "domain"
+      ]
+    },
+    {
+      "id": "doc_3",
+      "content": "常见视频编码: H.264(兼容性好), H.265/HEVC(压缩率高), AV1(新一代)",
+      "source": "基础知识",
+      "tags": [
+        "technical",
+        "domain"
+      ]
+    },
+    {
+      "id": "doc_4",
+      "content": "FFmpeg 常用参数: -crf 质量控制(18-28), -preset 编码速度, -r 帧率",
+      "source": "基础知识",
+      "tags": [
+        "technical",
+        "domain"
+      ]
+    },
+    {
+      "id": "doc_5",
+      "content": "音频处理基础: 采样率44.1kHz/48kHz, 比特率128-320kbps, 声道mono/stereo",
+      "source": "基础知识",
+      "tags": [
+        "audio",
+        "domain"
+      ]
+    }
+  ]
+}

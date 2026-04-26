@@ -2,7 +2,7 @@
 
 领域层实体，代表视频素材的业务概念
 """
-from sqlalchemy import Column, Integer, Text, TIMESTAMP, SmallInteger, func, Index
+from sqlalchemy import Column, Integer, Text, String, TIMESTAMP, SmallInteger, Boolean, func, Index
 
 from src.domain.entities.base import Base
 from src.domain.entities.mixins import ToDictMixin
@@ -41,6 +41,15 @@ class VideoSource(Base, ToDictMixin):
     
     # 逻辑删除标志：0-未删除，1-已删除
     del_flag = Column(SmallInteger, default=0, comment='逻辑删除 0:未删除 1:已删除', index=True)
+
+    # 标签（逗号分隔）
+    tags = Column(Text, nullable=True, comment='标签，逗号分隔')
+
+    # 是否临时素材
+    is_temp = Column(Boolean, default=True, comment='是否临时素材')
+
+    # 素材类型：video/audio/image/document
+    file_type = Column(String(20), default='video', comment='素材类型')
 
     # NOTE: 时间字段使用 TIMESTAMP + func.current_timestamp()，与 VideoProject/ClipPlanItem 的
     # DateTime + datetime.utcnow 不一致。统一为同一种方案需要数据迁移，暂不修改。

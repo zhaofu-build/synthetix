@@ -41,6 +41,9 @@ class VideoProject(Base):
     plan_data = Column(JSON, nullable=True, comment="剪辑方案数据（JSON）")
     output_path = Column(String(500), nullable=True, comment="输出文件路径")
     output_videos = Column(JSON, nullable=True, comment="输出视频列表 [{path, created_at}]")
+    proxy_dir = Column(String(500), nullable=True, comment="代理文件目录")
+    subtitle_data = Column(JSON, nullable=True, comment="字幕编辑数据")
+    plan_versions = Column(JSON, nullable=True, comment="版本快照列表")
 
     created_at = Column(DateTime, default=datetime.utcnow, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment="更新时间")
@@ -71,6 +74,9 @@ class VideoProject(Base):
             "plan_data": self.plan_data,
             "output_path": self.output_path,
             "output_videos": self.output_videos or [],
+            "proxy_dir": self.proxy_dir,
+            "subtitle_data": self.subtitle_data,
+            "plan_versions": self.plan_versions or [],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

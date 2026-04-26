@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(npx vite:*)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(python -c ' *)",
+      "Bash(python *)"
     ]
   }
 }

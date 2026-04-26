@@ -187,13 +187,14 @@ class VideoService:
             "duration": video_info.get("duration_hms", "00:00:00")
         }
 
-    def download_video(self, video_url: str, output_dir: str = None) -> Dict[str, Any]:
+    def download_video(self, video_url: str, output_dir: str = None, tags: str = None) -> Dict[str, Any]:
         """
         从 URL 下载视频并保存到素材库
 
         Args:
             video_url: 视频 URL
             output_dir: 输出目录，默认使用上传目录
+            tags: 标签，逗号分隔
 
         Returns:
             包含文件路径、时长和数据库 ID 的字典
@@ -234,6 +235,7 @@ class VideoService:
             local_path=str(access_url_path),
             duration=video_info.get("duration", str(duration) if duration else "0"),
             duration_hms=duration_hms,
+            tags=tags,
         )
 
         logger.info(f"视频下载入库: ID={video_obj.id}, 文件名={title}")

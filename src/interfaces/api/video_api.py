@@ -88,6 +88,21 @@ def get_random_video(
     return error_response(error="NotFound", message="没有可用的视频", code=404)
 
 
+# ==================== 在线搜索 ====================
+
+@router.get("/search-online", summary="在线搜索视频素材")
+def search_online(query: str = Query(..., description="搜索关键词"),
+                  source: str = Query(default="all", description="来源: pexels/pixabay/all")):
+    """搜索在线视频素材（Pexels + Pixabay）"""
+    from src.application.services.video_downloader_adapter import search_videos
+    try:
+        results = search_videos(query, minimum_duration=3, source=source)
+        return success_response(data={"videos": results})
+    except Exception as e:
+        logger.error(f"在线搜索失败: {e}")
+        return error_response(error="SearchError", message=str(e), code=500)
+
+
 # ==================== 视频下载 ====================
 
 @router.post("/download", summary="下载视频")
@@ -98,7 +113,7 @@ async def download_video(
     """从URL下载视频"""
     try:
         logger.info("---------------------------------")
-        result = service.download_video(req.video_url)
+        result = service.download_video(req.video_url, tags=req.tags)
         return success_response(data=result, message="下载成功")
     except ValueError as e:
         return error_response(error="DownloadError", message=str(e), code=400)
@@ -270,6 +285,8 @@ def update_video(
         update_data['video_type'] = req.video_type
     if req.del_flag is not None:
         update_data['del_flag'] = req.del_flag
+    if req.tags is not None:
+        update_data['tags'] = req.tags
 
     video_data = service.update_video(video_id, **update_data)
     if video_data:

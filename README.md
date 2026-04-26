@@ -8,7 +8,7 @@ AI 视频剪辑桌面平台，基于 Tauri 2.0 + Vue 3 + FastAPI，通过 AI 能
 - **对话式剪辑** — 自然语言描述需求，Agent 自动调用工具完成剪辑
 - **SSE 流式响应** — 思考过程、工具执行、结果逐步实时展示
 - **深度研究模式** — 多阶段分析素材→规划方案→执行操作，处理复杂剪辑需求
-- **73 个内置工具** — 视频剪切、合并、字幕、特效、音频处理、AI 分析等
+- **93 个内置工具** — 视频剪切、合并、字幕、特效、音频处理、AI 分析等
 
 ### 编辑器
 - **统一编辑器** — 三栏布局：工作区（剪辑方案/音频）| AI 对话 | 素材库 + 预览
@@ -24,10 +24,11 @@ AI 视频剪辑桌面平台，基于 Tauri 2.0 + Vue 3 + FastAPI，通过 AI 能
 - **音乐生成** — 文本生成背景音乐
 
 ### 素材与处理
-- **素材管理** — 上传/下载/搜索素材，AI 自动分析生成描述
+- **素材管理** — 本地上传 / 在线搜索（Pexels、Pixabay）、标签筛选、AI 自动分析描述
 - **音视频处理** — 格式转换、字幕提取翻译、伴奏分离、批量压缩
 - **BGM 管理** — 曲库管理、AI 选曲、AI 生成音乐
 - **视频下载** — 支持上千个平台的视频一键下载（yt-dlp）
+- **漫剧制作** — 图文视频化，AI 辅助漫剧项目创作
 
 ### 扩展性
 - **扩展/插件** — 自定义扩展注入工具和系统提示词
@@ -131,7 +132,7 @@ docker-compose up --build
 src/
 ├── agent/                        # Agent 系统
 │   ├── react_agent.py            #   ReAct Agent（TAOR 循环 + SSE 流式）
-│   ├── tool_registry.py          #   73 个工具注册（Pydantic 校验 + Hook + 权限）
+│   ├── tool_registry.py          #   93 个工具注册（Pydantic 校验 + Hook + 权限）
 │   ├── session_manager.py        #   会话管理（内存 + DB 双写）
 │   ├── mcp_client.py             #   MCP 协议客户端
 │   ├── extension_loader.py       #   扩展/插件加载（扫描 src/extensions/）
@@ -144,7 +145,7 @@ src/
 ├── scripts/                      # 工具脚本
 ├── domain/entities/              # SQLAlchemy 数据模型
 ├── application/services/         # 业务逻辑（视频/音频处理、LLM、FFmpeg、渲染）
-├── interfaces/api/               # FastAPI 路由（11 个模块）
+├── interfaces/api/               # FastAPI 路由（12 个模块）
 ├── shared/                       # 公共模型、工具类、core-nexus 客户端、CDP 浏览器
 └── infrastructure/               # 数据库会话、Repository 层
 
@@ -197,6 +198,7 @@ pytest tests/unit/ -v
 | `/api/mcp` | mcp_api | MCP Server 管理 |
 | `/api/extensions` | extension_api | 扩展管理 |
 | `/api/ai` | llm_clip_api | 关键词素材、转场 |
+| `/api/comic-projects` | comic_api | 漫剧项目管理 |
 | `/ws` | ws_api | WebSocket（对话/渲染/通知） |
 
 ## License

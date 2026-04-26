@@ -27,6 +27,8 @@ class Skill:
     description: str
     tools: List[str]
     prompt: str
+    scenarios: str = ""
+    params: str = ""
 
 
 _skills: Dict[str, Skill] = {}
@@ -45,11 +47,21 @@ def _parse_md(text: str) -> Skill:
 
     # 提取所需工具
     tools: List[str] = []
+    scenarios: str = ""
+    params: str = ""
     for line in lines:
         m = re.match(r'\*\*所需工具\*\*\s*[:：]\s*(.+)', line.strip())
         if m:
             tools = [t.strip() for t in m.group(1).split(',') if t.strip()]
-            break
+            continue
+        m = re.match(r'\*\*适用场景\*\*\s*[:：]\s*(.+)', line.strip())
+        if m:
+            scenarios = m.group(1).strip()
+            continue
+        m = re.match(r'\*\*参数\*\*\s*[:：]\s*(.+)', line.strip())
+        if m:
+            params = m.group(1).strip()
+            continue
 
     # 找到第一个 ## 标题，其后续内容作为 prompt
     prompt_lines: List[str] = []
@@ -73,7 +85,7 @@ def _parse_md(text: str) -> Skill:
         description = s
         break
 
-    return Skill(name=name, description=description, tools=tools, prompt=prompt)
+    return Skill(name=name, description=description, tools=tools, prompt=prompt, scenarios=scenarios, params=params)
 
 
 def load_skills() -> Dict[str, Skill]:
@@ -124,6 +136,10 @@ def get_skills_prompt_section() -> str:
         tools_str = ", ".join(skill.tools) if skill.tools else "无"
         parts.append(f"### {skill.name}")
         parts.append(f"描述: {skill.description}")
+        if skill.scenarios:
+            parts.append(f"适用场景: {skill.scenarios}")
+        if skill.params:
+            parts.append(f"参数: {skill.params}")
         parts.append(f"所需工具: {tools_str}")
         if skill.prompt:
             parts.append(f"执行流程:\n{skill.prompt}")

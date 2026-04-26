@@ -17,17 +17,79 @@ from src import config
 logger = logging.getLogger(__name__)
 
 
+class ApiKeyPool:
+    """API Key 池管理：轮询选择、健康追踪、自动冷却"""
+
+    def __init__(self):
+        self._pools: Dict[str, List[str]] = {}   # service -> [key1, key2, ...]
+        self._index: Dict[str, int] = {}          # service -> round-robin index
+        self._health: Dict[str, Dict[str, float]] = {}  # service -> {key: cooldown_ts}
+        self._strategy: str = "round_robin"       # round_robin | random | least_used
+
+    def set_keys(self, service: str, keys: List[str]):
+        """设置某个服务的 API Key 池"""
+        if not keys:
+            return
+        svc = service.upper()
+        self._pools[svc] = keys
+        self._index.setdefault(svc, 0)
+        self._health.setdefault(svc, {})
+        logger.info(f"[KeyPool] {svc} 设置 {len(keys)} 个 API Key")
+
+    def get_key(self, service: str) -> Optional[str]:
+        """获取一个可用的 API Key"""
+        svc = service.upper()
+        pool = self._pools.get(svc, [])
+        if not pool:
+            return None
+
+        now = time.time()
+        available = [k for k in pool if now >= self._health.get(svc, {}).get(k, 0)]
+        if not available:
+            # All in cooldown — pick the one with earliest cooldown expiry
+            earliest = min(pool, key=lambda k: self._health.get(svc, {}).get(k, 0))
+            logger.warning(f"[KeyPool] {svc} 所有 Key 冷却中，使用最早解冻的")
+            return earliest
+
+        if self._strategy == "random":
+            import random
+            return random.choice(available)
+
+        # round_robin (default)
+        idx = self._index.get(svc, 0) % len(available)
+        self._index[svc] = idx + 1
+        return available[idx]
+
+    def mark_cooldown(self, service: str, key: str, seconds: float = 60.0):
+        """标记某个 Key 进入冷却期"""
+        svc = service.upper()
+        self._health.setdefault(svc, {})[key] = time.time() + seconds
+        logger.warning(f"[KeyPool] {svc} Key ...{key[-6:]} 冷却 {seconds}s")
+
+    def mark_healthy(self, service: str, key: str):
+        """标记某个 Key 恢复健康"""
+        svc = service.upper()
+        health = self._health.get(svc, {})
+        health.pop(key, None)
+
+    def get_stats(self) -> Dict[str, Any]:
+        """获取 Key 池状态"""
+        now = time.time()
+        stats = {}
+        for svc, pool in self._pools.items():
+            health = self._health.get(svc, {})
+            stats[svc] = {
+                "total": len(pool),
+                "available": sum(1 for k in pool if now >= health.get(k, 0)),
+                "cooldown": sum(1 for k in pool if now < health.get(k, 0)),
+            }
+        return stats
+
+
 class CoreNexusClient:
-    """core-nexus-ai API 客户端"""
+    """core-nexus-ai API 客户端（支持多服务商容错 + API Key 轮换）"""
 
     def __init__(self, base_url: Optional[str] = None, timeout: float = 120.0):
-        """
-        初始化客户端
-
-        Args:
-            base_url: API 基础地址，默认从配置读取
-            timeout: 请求超时时间（秒）
-        """
         raw = (base_url or config.CORE_NEXUS_BASE_URL).strip()
         if raw and not raw.startswith(('http://', 'https://')):
             raw = f'http://{raw}'
@@ -37,11 +99,72 @@ class CoreNexusClient:
         if not self.base_url:
             raise ValueError("CORE_NEXUS_BASE_URL 未配置，请在 .env 中设置")
 
-        # 同步客户端（向后兼容）
         self._client = httpx.Client(timeout=timeout)
-        # 异步客户端（懒加载）
         self._async_client: Optional[httpx.AsyncClient] = None
+
+        # Failover: backup URLs for each service type
+        self._fallback_urls: Dict[str, List[str]] = {}
+        self._cooldown_until: Dict[str, float] = {}  # url -> cooldown timestamp
+
+        # API Key pool
+        self._key_pool = ApiKeyPool()
+        self._init_key_pool()
+
         logger.info(f"CoreNexusClient 初始化 | base_url: {self.base_url}")
+
+    def _init_key_pool(self):
+        """从环境变量初始化 API Key 池（支持逗号分隔的多 key）"""
+        key_map = {
+            "LLM": getattr(config, "LLM_KEY", ""),
+            "TTS": getattr(config, "TTS_KEY", "") or getattr(config, "LLM_KEY", ""),
+            "ASR": getattr(config, "ASR_KEY", "") or getattr(config, "LLM_KEY", ""),
+            "VL": getattr(config, "VL_KEY", "") or getattr(config, "LLM_KEY", ""),
+        }
+        for svc, raw_keys in key_map.items():
+            keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+            if len(keys) > 1:
+                self._key_pool.set_keys(svc, keys)
+
+    def set_api_keys(self, service: str, keys: List[str]):
+        """外部配置 API Key 池"""
+        self._key_pool.set_keys(service, keys)
+
+    @property
+    def key_pool_stats(self) -> Dict[str, Any]:
+        return self._key_pool.get_stats()
+
+    def set_fallback_urls(self, service: str, urls: List[str]):
+        """配置备用服务商 URL
+
+        Args:
+            service: 服务类型 (LLM/TTS/ASR/VL/MUSIC)
+            urls: 备用 URL 列表
+        """
+        self._fallback_urls[service.upper()] = [u.rstrip('/') for u in urls]
+
+    def _get_service_from_endpoint(self, endpoint: str) -> str:
+        """从端点路径推断服务类型"""
+        if '/llm' in endpoint: return 'LLM'
+        if '/tts' in endpoint: return 'TTS'
+        if '/asr' in endpoint: return 'ASR'
+        if '/vl' in endpoint: return 'VL'
+        if '/music' in endpoint or '/text-to-music' in endpoint: return 'MUSIC'
+        return 'UNKNOWN'
+
+    def _is_cooled_down(self, url: str) -> bool:
+        return time.time() >= self._cooldown_until.get(url, 0)
+
+    def _cooldown(self, url: str, seconds: float = 60.0):
+        self._cooldown_until[url] = time.time() + seconds
+        logger.warning(f"[Failover] {url} 冷却 {seconds}s")
+
+    def _get_active_urls(self, service: str) -> List[str]:
+        """获取可用的 URL 列表（主 URL + 未冷却的备用 URL）"""
+        urls = [self.base_url]
+        for fb in self._fallback_urls.get(service, []):
+            if fb != self.base_url and self._is_cooled_down(fb):
+                urls.append(fb)
+        return urls
 
     def close(self):
         """关闭同步客户端连接"""
@@ -56,6 +179,14 @@ class CoreNexusClient:
 
     # ==================== 同步请求方法 ====================
 
+    def _build_headers(self, service: str) -> Dict[str, str]:
+        """构建请求头，注入 X-API-Key"""
+        headers = {}
+        api_key = self._key_pool.get_key(service)
+        if api_key:
+            headers["X-API-Key"] = api_key
+        return headers, api_key
+
     def _request(
         self,
         method: str,
@@ -64,48 +195,57 @@ class CoreNexusClient:
         max_retries: int = 3,
         **kwargs
     ) -> Dict[str, Any]:
-        """
-        发送 HTTP 请求（带指数退避重试）
-
-        Args:
-            method: HTTP 方法
-            endpoint: API 端点
-            json_data: JSON 请求数据
-            max_retries: 最大重试次数
-            **kwargs: 其他请求参数
-
-        Returns:
-            响应 JSON 数据
-
-        Raises:
-            httpx.HTTPError: HTTP 请求错误
-        """
-        url = f"{self.base_url}{endpoint}"
         kwargs.setdefault('timeout', self.timeout)
+        service = self._get_service_from_endpoint(endpoint)
+        active_urls = self._get_active_urls(service)
 
-        logger.debug(f"API 请求: {method} {url}")
+        # Inject API key via X-API-Key header
+        headers, api_key = self._build_headers(service)
+        kwargs.setdefault('headers', {}).update(headers)
 
         last_error = None
-        for attempt in range(max_retries):
-            try:
-                response = self._client.request(method, url, json=json_data, **kwargs)
-                response.raise_for_status()
-                return response.json()
-            except httpx.TransportError as e:
-                last_error = e
-                if attempt < max_retries - 1:
-                    wait = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
-                    logger.warning(f"请求失败 (尝试 {attempt + 1}/{max_retries}): {e}, {wait}s 后重试")
-                    time.sleep(wait)
-            except httpx.HTTPStatusError as e:
-                # 4xx 客户端错误不重试
-                if e.response.status_code < 500:
-                    raise
-                last_error = e
-                if attempt < max_retries - 1:
-                    wait = 0.5 * (2 ** attempt)
-                    logger.warning(f"服务端错误 (尝试 {attempt + 1}/{max_retries}): {e}, {wait}s 后重试")
-                    time.sleep(wait)
+        for url_base in active_urls:
+            url = f"{url_base}{endpoint}"
+            _masked_headers = {k: (v[:8] + '...' if len(str(v)) > 12 else v) for k, v in kwargs.get('headers', {}).items()}
+            logger.info(f"[CoreNexus] {method} {url} | headers={_masked_headers}")
+            if json_data:
+                import json as _json
+                _body_preview = _json.dumps(json_data, ensure_ascii=False)[:800]
+                logger.info(f"[CoreNexus] body: {_body_preview}")
+
+            for attempt in range(max_retries):
+                try:
+                    response = self._client.request(method, url, json=json_data, **kwargs)
+                    response.raise_for_status()
+                    if api_key:
+                        self._key_pool.mark_healthy(service, api_key)
+                    return response.json()
+                except httpx.TransportError as e:
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        wait = 0.5 * (2 ** attempt)
+                        logger.warning(f"请求失败 (尝试 {attempt + 1}/{max_retries}): {e}, {wait}s 后重试")
+                        time.sleep(wait)
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 429:
+                        self._cooldown(url_base, 30)
+                        if api_key:
+                            self._key_pool.mark_cooldown(service, api_key, 60)
+                        logger.warning(f"[Failover] {url_base} 限流，切换到备用")
+                        break
+                    if e.response.status_code < 500:
+                        logger.error(f"[CoreNexus] {method} {url} → {e.response.status_code} | {e.response.text[:500]}")
+                        raise
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        wait = 0.5 * (2 ** attempt)
+                        logger.warning(f"[CoreNexus] {method} {url} → {e.response.status_code} (尝试 {attempt + 1}/{max_retries}), {wait}s 后重试 | {e.response.text[:300]}")
+                        time.sleep(wait)
+
+            if url_base != self.base_url:
+                continue
+            if len(active_urls) > 1:
+                logger.warning(f"[Failover] {url_base} 失败，尝试备用服务")
 
         raise last_error
 
@@ -131,7 +271,17 @@ class CoreNexusClient:
         url = f"{self.base_url}{endpoint}"
         kwargs.setdefault('timeout', self.timeout)
 
-        logger.debug(f"API 流式请求: {method} {url}")
+        # Inject API key via X-API-Key header
+        service = self._get_service_from_endpoint(endpoint)
+        headers, api_key = self._build_headers(service)
+        kwargs.setdefault('headers', {}).update(headers)
+
+        _masked_headers = {k: (v[:8] + '...' if len(str(v)) > 12 else v) for k, v in kwargs.get('headers', {}).items()}
+        logger.info(f"[CoreNexus] {method} {url} (stream) | headers={_masked_headers}")
+        if json_data:
+            import json as _json
+            _body_preview = _json.dumps(json_data, ensure_ascii=False)[:800]
+            logger.info(f"[CoreNexus] body: {_body_preview}")
 
         with self._client.stream(method, url, json=json_data, **kwargs) as response:
             response.raise_for_status()
@@ -159,45 +309,58 @@ class CoreNexusClient:
         max_retries: int = 3,
         **kwargs
     ) -> Dict[str, Any]:
-        """
-        异步发送 HTTP 请求（带指数退避重试）
-
-        Args:
-            method: HTTP 方法
-            endpoint: API 端点
-            json_data: JSON 请求数据
-            max_retries: 最大重试次数
-            **kwargs: 其他请求参数
-
-        Returns:
-            响应 JSON 数据
-        """
         client = await self._get_async_client()
-        url = f"{self.base_url}{endpoint}"
         kwargs.setdefault('timeout', self.timeout)
+        service = self._get_service_from_endpoint(endpoint)
+        active_urls = self._get_active_urls(service)
 
-        logger.debug(f"异步 API 请求: {method} {url}")
+        # Inject API key via X-API-Key header
+        headers, api_key = self._build_headers(service)
+        kwargs.setdefault('headers', {}).update(headers)
 
         last_error = None
-        for attempt in range(max_retries):
-            try:
-                response = await client.request(method, url, json=json_data, **kwargs)
-                response.raise_for_status()
-                return response.json()
-            except httpx.TransportError as e:
-                last_error = e
-                if attempt < max_retries - 1:
-                    wait = 0.5 * (2 ** attempt)
-                    logger.warning(f"异步请求失败 (尝试 {attempt + 1}/{max_retries}): {e}, {wait}s 后重试")
-                    await asyncio.sleep(wait)
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code < 500:
-                    raise
-                last_error = e
-                if attempt < max_retries - 1:
-                    wait = 0.5 * (2 ** attempt)
-                    logger.warning(f"异步服务端错误 (尝试 {attempt + 1}/{max_retries}): {e}, {wait}s 后重试")
-                    await asyncio.sleep(wait)
+        for url_base in active_urls:
+            url = f"{url_base}{endpoint}"
+            _masked_headers = {k: (v[:8] + '...' if len(str(v)) > 12 else v) for k, v in kwargs.get('headers', {}).items()}
+            logger.info(f"[CoreNexus] {method} {url} (async) | headers={_masked_headers}")
+            if json_data:
+                import json as _json
+                _body_preview = _json.dumps(json_data, ensure_ascii=False)[:800]
+                logger.info(f"[CoreNexus] body: {_body_preview}")
+
+            for attempt in range(max_retries):
+                try:
+                    response = await client.request(method, url, json=json_data, **kwargs)
+                    response.raise_for_status()
+                    if api_key:
+                        self._key_pool.mark_healthy(service, api_key)
+                    return response.json()
+                except httpx.TransportError as e:
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        wait = 0.5 * (2 ** attempt)
+                        logger.warning(f"异步请求失败 (尝试 {attempt + 1}/{max_retries}): {e}, {wait}s 后重试")
+                        await asyncio.sleep(wait)
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 429:
+                        self._cooldown(url_base, 30)
+                        if api_key:
+                            self._key_pool.mark_cooldown(service, api_key, 60)
+                        logger.warning(f"[Failover] {url_base} 限流，切换到备用")
+                        break
+                    if e.response.status_code < 500:
+                        logger.error(f"[CoreNexus] {method} {url} → {e.response.status_code} | {e.response.text[:500]}")
+                        raise
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        wait = 0.5 * (2 ** attempt)
+                        logger.warning(f"[CoreNexus] {method} {url} → {e.response.status_code} (尝试 {attempt + 1}/{max_retries}), {wait}s 后重试 | {e.response.text[:300]}")
+                        await asyncio.sleep(wait)
+
+            if url_base != self.base_url:
+                continue
+            if len(active_urls) > 1:
+                logger.warning(f"[Failover] {url_base} 失败，尝试备用服务")
 
         raise last_error
 
@@ -224,7 +387,17 @@ class CoreNexusClient:
         url = f"{self.base_url}{endpoint}"
         kwargs.setdefault('timeout', self.timeout)
 
-        logger.debug(f"异步 API 流式请求: {method} {url}")
+        # Inject API key via X-API-Key header
+        service = self._get_service_from_endpoint(endpoint)
+        headers, api_key = self._build_headers(service)
+        kwargs.setdefault('headers', {}).update(headers)
+
+        _masked_headers = {k: (v[:8] + '...' if len(str(v)) > 12 else v) for k, v in kwargs.get('headers', {}).items()}
+        logger.info(f"[CoreNexus] {method} {url} (async stream) | headers={_masked_headers}")
+        if json_data:
+            import json as _json
+            _body_preview = _json.dumps(json_data, ensure_ascii=False)[:800]
+            logger.info(f"[CoreNexus] body: {_body_preview}")
 
         import json
         async with client.stream(method, url, json=json_data, **kwargs) as response:
@@ -293,6 +466,10 @@ class CoreNexusClient:
         if model:
             payload["model"] = model
 
+        import json as _json
+        print(f"[CoreNexus] POST {self.base_url}/llm | model={model} | msgs={len(messages)}")
+        print(f"[CoreNexus] body: {_json.dumps(payload, ensure_ascii=False)[:500]}")
+
         response = await self._request_async('POST', '/llm', json_data=payload)
         return response.get('output', {}).get('text', '')
 
@@ -341,6 +518,10 @@ class CoreNexusClient:
         }
         if model:
             payload["model"] = model
+
+        import json as _json
+        print(f"[CoreNexus] POST {self.base_url}/llm/stream | model={model} | msgs={len(messages)}")
+        print(f"[CoreNexus] body: {_json.dumps(payload, ensure_ascii=False)[:500]}")
 
         async for chunk in self._request_stream_async('POST', '/llm/stream', json_data=payload):
             if 'text' in chunk:
@@ -426,7 +607,8 @@ class CoreNexusClient:
         logger.info(f"TTS 完整请求参数: {json.dumps(payload, ensure_ascii=False, indent=2)}")
 
         url = f"{self.base_url}/tts"
-        response = self._client.post(url, json=payload, timeout=self.timeout)
+        headers, _ = self._build_headers("TTS")
+        response = self._client.post(url, json=payload, timeout=self.timeout, headers=headers)
 
         logger.debug(f"TTS 响应状态: {response.status_code}")
 
@@ -479,7 +661,8 @@ class CoreNexusClient:
 
         client = await self._get_async_client()
         url = f"{self.base_url}/tts"
-        response = await client.post(url, json=payload, timeout=self.timeout)
+        headers, _ = self._build_headers("TTS")
+        response = await client.post(url, json=payload, timeout=self.timeout, headers=headers)
 
         logger.debug(f"TTS 异步响应状态: {response.status_code}")
 
@@ -526,9 +709,6 @@ class CoreNexusClient:
             payload["messages"] = messages
         if model:
             payload["model"] = model
-        if generation_params:
-            payload["generation"] = generation_params
-            payload["messages"] = messages
         if generation_params:
             payload["generation"] = generation_params
 

@@ -79,6 +79,26 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"扩展加载失败: {e}")
 
+    # 注册全局拦截器
+    try:
+        from src.agent.tool_registry import registry
+        from src.agent.interceptors import register_default_interceptors
+        register_default_interceptors(registry)
+    except Exception as e:
+        logger.warning(f"拦截器注册失败: {e}")
+
+    # 从 settings.json 同步配置到运行时
+    try:
+        from src.shared.utils.config_manager import get as cfg_get
+        _px_key = cfg_get('pixabay_api_key', '')
+        if _px_key:
+            config.pixabay_api_key = _px_key
+        _va_keys = cfg_get('video_api_keys', '')
+        if _va_keys:
+            config.video_api_keys = _va_keys
+    except Exception as e:
+        logger.warning(f"配置同步失败: {e}")
+
     yield
 
     # 关闭时执行
@@ -153,6 +173,55 @@ async def serve_frontend_index():
     return JSONResponse({"message": "前端未构建，请先执行: cd synthetix-vue && npm run build"}, status_code=404)
 
 
+@app.get("/api/metrics/ai")
+async def ai_metrics(hours: int = 24):
+    """AI 调用统计"""
+    from src.shared.utils.observability import get_ai_stats
+    return get_ai_stats(hours)
+
+
+# ── 平台适配预设 ──
+PLATFORM_PRESETS = {
+    "douyin": {
+        "name": "抖音/TikTok", "aspect": "9:16", "width": 1080, "height": 1920,
+        "max_duration": 300, "codec": "h264", "bitrate": "8M",
+        "fps": 30, "tips": "竖屏优先，15-60秒最佳，添加字幕提升完播率",
+    },
+    "bilibili": {
+        "name": "B站/Bilibili", "aspect": "16:9", "width": 1920, "height": 1080,
+        "max_duration": 3600, "codec": "h264", "bitrate": "12M",
+        "fps": 30, "tips": "横屏为主，支持4K，中长视频需章节标记",
+    },
+    "youtube": {
+        "name": "YouTube", "aspect": "16:9", "width": 1920, "height": 1080,
+        "max_duration": 43200, "codec": "h264", "bitrate": "15M",
+        "fps": 30, "tips": "16:9 标准，4K可选，Shorts用9:16 60秒内",
+    },
+    "xiaohongshu": {
+        "name": "小红书", "aspect": "3:4", "width": 1080, "height": 1440,
+        "max_duration": 300, "codec": "h264", "bitrate": "6M",
+        "fps": 30, "tips": "3:4或1:1，图文视频化效果佳，封面至关重要",
+    },
+    "kuaishou": {
+        "name": "快手", "aspect": "9:16", "width": 1080, "height": 1920,
+        "max_duration": 300, "codec": "h264", "bitrate": "8M",
+        "fps": 30, "tips": "竖屏优先，前3秒抓眼球，节奏要快",
+    },
+    "weibo": {
+        "name": "微博", "aspect": "16:9", "width": 1920, "height": 1080,
+        "max_duration": 900, "codec": "h264", "bitrate": "10M",
+        "fps": 30, "tips": "横屏为主，5分钟内效果好，清晰度优先",
+    },
+}
+
+
+@app.get("/api/platform-presets")
+async def get_platform_presets():
+    """获取平台适配预设列表"""
+    from src.shared.models.response import success_response
+    return success_response(data=PLATFORM_PRESETS)
+
+
 @app.get("/health")
 async def health_check():
     checks = {"status": "ok", "version": "1.0.0"}
@@ -175,6 +244,9 @@ async def health_check():
         from src.shared.utils.core_nexus_client import get_client
         client = get_client()
         checks["core_nexus"] = "configured" if client.base_url else "not_configured"
+        key_stats = client.key_pool_stats
+        if key_stats:
+            checks["api_key_pool"] = key_stats
     except Exception:
         checks["core_nexus"] = "error"
 
@@ -185,6 +257,21 @@ async def health_check():
         checks["active_sessions"] = len(manager.get_active_sessions())
     except Exception:
         checks["active_sessions"] = 0
+
+    # 资源状态
+    try:
+        from src.shared.utils.resource_monitor import get_resource_profile
+        profile = get_resource_profile()
+        checks["resources"] = {
+            "cpu": profile.cpu_count,
+            "memory_gb": profile.memory_total_gb,
+            "gpu": profile.gpu_name or "none",
+            "disk_free_gb": profile.disk_free_gb,
+            "gpu_acceleration": profile.gpu_acceleration,
+            "max_parallel": profile.max_parallel_ffmpeg,
+        }
+    except Exception:
+        pass
 
     if any(v.startswith("error") if isinstance(v, str) else False for v in checks.values()):
         checks["status"] = "degraded"
@@ -270,6 +357,8 @@ def _build_frontend():
         shell=True,
         capture_output=True,
         text=True,
+        encoding='utf-8',
+        errors='replace',
     )
     if result.returncode != 0:
         logger.error(f"前端构建失败:\n{result.stderr}")

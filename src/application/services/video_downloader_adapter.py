@@ -90,6 +90,9 @@ def search_videos_pexels(
     video_orientation = "landscape"
     video_width, video_height = 1920, 1080
     api_key = config.video_api_keys
+    if not api_key:
+        logger.warning("Pexels API key 未配置 (VIDEO_API_KEYS)")
+        return []
     headers = {
         "Authorization": api_key,
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
@@ -98,10 +101,11 @@ def search_videos_pexels(
     params = {"query": search_term, "per_page": 20, "orientation": video_orientation}
     query_url = f"https://api.pexels.com/videos/search?{urlencode(params)}"
 
+    proxies = config.proxy if config.proxy else None
     r = requests.get(
         query_url,
         headers=headers,
-        proxies=[],
+        proxies={"http": proxies, "https": proxies} if proxies else None,
         timeout=(30, 60),
     )
     response = r.json()
@@ -115,22 +119,35 @@ def search_videos_pexels(
         # check if video has desired minimum duration
         if duration < minimum_duration:
             continue
-        # 转换秒数为HH:MM:SS格式
         duration_formatted = time_util.seconds_to_hms(duration)
-        video_files = v["video_files"]
-        # loop through each url to determine the best quality
+        video_files = v.get("video_files", [])
+        # 选高清文件用于下载，小文件用于预览
+        best = None
+        preview = None
+        fallback = None
+        smallest = None
         for video in video_files:
-            w = int(video["width"])
-            h = int(video["height"])
+            w = int(video.get("width", 0))
+            h = int(video.get("height", 0))
             if w == video_width and h == video_height:
-                item = {
-                    "provider": "pexels",
-                    "url": video["link"],
-                    "duration": duration,
-                    "duration_hms": duration_formatted,  # 格式化的时长 (如00:00:30)
-                    "search_term": search_term
-                }
-                video_items.append(item)
+                best = video
+            if w >= 1280 and h >= 720 and (fallback is None or w * h > int(fallback.get("width", 0)) * int(fallback.get("height", 0))):
+                fallback = video
+            if w > 0 and h > 0 and (smallest is None or w * h < int(smallest.get("width", 0)) * int(smallest.get("height", 0))):
+                smallest = video
+        chosen = best or fallback
+        preview = smallest or chosen
+        if chosen:
+            item = {
+                "provider": "pexels",
+                "url": chosen["link"],
+                "preview_url": preview["link"] if preview else chosen["link"],
+                "duration": duration,
+                "duration_hms": duration_formatted,
+                "search_term": search_term,
+                "image": v.get("image", ""),
+            }
+            video_items.append(item)
     return video_items
 
 
@@ -140,44 +157,83 @@ def search_videos_pixabay(
         minimum_duration: int
 ):
     video_width, video_height = 1920, 1080
-    api_key = config.video_api_keys
-    # Build URL
+    api_key = config.pixabay_api_key or config.video_api_keys
+    if not api_key:
+        logger.warning("Pixabay API key 未配置 (PIXABAY_API_KEY 或 VIDEO_API_KEYS)")
+        return []
     params = {
         "q": search_term,
-        "video_type": "all",  # Accepted values: "all", "film", "animation"
+        "video_type": "all",
         "per_page": 50,
         "key": api_key,
+        "safesearch": "true",
     }
     query_url = f"https://pixabay.com/api/videos/?{urlencode(params)}"
 
+    proxies = config.proxy if config.proxy else None
     r = requests.get(
-        query_url, proxies=config.proxy or None, timeout=(30, 60)
+        query_url,
+        proxies={"http": proxies, "https": proxies} if proxies else None,
+        timeout=(30, 60),
     )
     response = r.json()
     video_items = []
     if "hits" not in response:
         return video_items
     videos = response["hits"]
-    # loop through each video in the result
     for v in videos:
-        duration = v["duration"]
-        # check if video has desired minimum duration
+        duration = v.get("duration", 0)
         if duration < minimum_duration:
             continue
-        video_files = v["videos"]
-        # loop through each url to determine the best quality
-        for video_type in video_files:
-            video = video_files[video_type]
-            w = int(video["width"])
-            if w >= video_width:
-                item = {
-                    "provider": "pixabay",
-                    "url": video["url"],
-                    "duration": duration,
-                    "search_term": search_term
-                }
-                video_items.append(item)
+        duration_formatted = time_util.seconds_to_hms(duration)
+        video_files = v.get("videos", {})
+        # Pixabay 提供 large/medium/small/tiny 四种分辨率
+        best = None
+        preview = None
+        for quality in ["large", "medium", "small", "tiny"]:
+            vf = video_files.get(quality)
+            if not vf:
+                continue
+            w = int(vf.get("width", 0))
+            h = int(vf.get("height", 0))
+            if best is None or w * h > int(best.get("width", 0)) * int(best.get("height", 0)):
+                best = vf
+            if preview is None or (w * h < int(preview.get("width", 0)) * int(preview.get("height", 0)) and w > 0):
+                preview = vf
+        if best:
+            # 用 medium 分辨率做预览（太小会模糊）
+            preview = video_files.get("small") or video_files.get("tiny") or best
+            item = {
+                "provider": "pixabay",
+                "url": best["url"],
+                "preview_url": preview["url"],
+                "duration": duration,
+                "duration_hms": duration_formatted,
+                "search_term": search_term,
+                "image": v.get("userImageURL", "") or f"https://i.vimeocdn.com/video/{v.get('picture_id', '')}_640x360.jpg" if v.get("picture_id") else "",
+            }
+            video_items.append(item)
     return video_items
+
+
+def search_videos(search_term: str, minimum_duration: int = 3, source: str = None):
+    """统一搜索入口，支持 pexels / pixabay / all"""
+    source = source or getattr(config, 'video_type', 'pexels')
+    results = []
+
+    if source in ('pexels', 'all'):
+        try:
+            results.extend(search_videos_pexels(search_term, minimum_duration))
+        except Exception as e:
+            logger.error(f"Pexels 搜索失败: {e}")
+
+    if source in ('pixabay', 'all'):
+        try:
+            results.extend(search_videos_pixabay(search_term, minimum_duration))
+        except Exception as e:
+            logger.error(f"Pixabay 搜索失败: {e}")
+
+    return results
 
 
 def download_video(video_info):

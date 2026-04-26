@@ -394,6 +394,53 @@ def list_projects(
         return error_response(error="QueryError", message=str(e), code=500)
 
 
+class SaveToLibraryRequest(BaseModel):
+    """保存临时资产到素材库"""
+    video_id: int
+
+
+@router.post("/save-to-library", summary="保存临时资产到素材库")
+async def save_to_library(request: SaveToLibraryRequest, db: Session = Depends(get_db)):
+    """将临时素材转为正式素材"""
+    try:
+        from src.infrastructure.repositories import VideoRepository
+        repo = VideoRepository(db)
+        updated = repo.update(request.video_id, is_temp=False)
+        if not updated:
+            return error_response(error="NotFound", message="素材不存在", code=404)
+        return success_response(data={"video_id": request.video_id})
+    except Exception as e:
+        logger.error(f"保存到素材库失败: {e}")
+        return error_response(error="SaveError", message=str(e), code=500)
+
+
+@router.delete("/temp-material/{video_id}", summary="删除临时素材")
+async def delete_temp_material(video_id: int, db: Session = Depends(get_db)):
+    """删除临时素材（DB记录 + 物理文件），并从项目中移除关联"""
+    try:
+        from src.domain.entities.video_source import VideoSource
+        video = db.query(VideoSource).filter(VideoSource.id == video_id).first()
+        if not video:
+            return error_response(error="NotFound", message="素材不存在", code=404)
+
+        # 从所有项目的 material_ids 中移除
+        projects = db.query(VideoProject).all()
+        for p in projects:
+            if p.material_ids and video_id in p.material_ids:
+                p.material_ids = [x for x in p.material_ids if x != video_id]
+
+        # 删除物理文件
+        if video.local_path and os.path.exists(video.local_path):
+            os.remove(video.local_path)
+
+        db.delete(video)
+        db.commit()
+        return success_response(message="已删除")
+    except Exception as e:
+        logger.error(f"删除临时素材失败: {e}")
+        return error_response(error="DeleteError", message=str(e), code=500)
+
+
 @router.get("/{project_id}", summary="获取项目详情")
 def get_project(
     project_id: int,
@@ -433,6 +480,8 @@ def get_project_full(
             "duration": v.duration,
             "durationHms": v.duration_hms,
             "description": v.description,
+            "isTemp": v.is_temp if v.is_temp is not None else False,
+            "fileType": v.file_type or "video",
         } for v in videos]
     else:
         data["materials"] = []
@@ -837,3 +886,108 @@ def render_project(
         return error_response(error="RenderError", message=str(e), code=500)
 
 
+# ==================== 字幕数据接口 ====================
+
+class SubtitleDataRequest(BaseModel):
+    entries: List[Dict[str, Any]] = []
+    speakers: List[Dict[str, Any]] = []
+    style: Dict[str, Any] = {}
+
+
+@router.get("/{project_id}/subtitles", summary="获取字幕数据")
+async def get_subtitles(project_id: int, db: Session = Depends(get_db)):
+    project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
+    if not project:
+        return error_response(error="NotFound", message="项目不存在", code=404)
+    return success_response(data=project.subtitle_data if hasattr(project, 'subtitle_data') and project.subtitle_data else {})
+
+
+@router.post("/{project_id}/subtitles", summary="保存字幕数据")
+async def save_subtitles(project_id: int, request: SubtitleDataRequest, db: Session = Depends(get_db)):
+    project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
+    if not project:
+        return error_response(error="NotFound", message="项目不存在", code=404)
+
+    subtitle_data = {
+        "entries": request.entries,
+        "speakers": request.speakers,
+        "style": request.style,
+    }
+
+    if hasattr(project, 'subtitle_data'):
+        project.subtitle_data = subtitle_data
+    else:
+        # 如果列不存在（未迁移），存到 plan_data 的扩展字段
+        plan = project.plan_data or {}
+        plan["subtitle_data"] = subtitle_data
+        project.plan_data = plan
+
+    db.commit()
+    return success_response(data=subtitle_data, message="字幕数据已保存")
+
+
+# ==================== 质量检测 ====================
+
+class QualityCheckRequest(BaseModel):
+    video_id: Optional[int] = None
+    project_id: Optional[int] = None
+
+
+@router.post("/quality-check", summary="视频质量检测")
+async def quality_check(request: QualityCheckRequest, db: Session = Depends(get_db)):
+    """检测视频黑屏、爆音、跳切、时长合规等问题"""
+    from src.application.services.quality_service import run_quality_check
+    from src.infrastructure.repositories import VideoRepository
+
+    video_path = None
+    clips = None
+    target_duration = None
+
+    if request.video_id:
+        repo = VideoRepository(db)
+        video = repo.get_by_id(request.video_id)
+        if video:
+            video_path = video.local_path
+
+    if request.project_id:
+        proj = db.query(VideoProject).filter(VideoProject.id == request.project_id).first()
+        if proj:
+            target_duration = proj.target_duration
+            if proj.plan_data and proj.plan_data.get("clips"):
+                clips = proj.plan_data["clips"]
+
+    result = run_quality_check(
+        video_path=video_path,
+        clips=clips,
+        target_duration=target_duration,
+    )
+    return success_response(data=result, message=result["summary"])
+
+
+# ==================== 版本快照 ====================
+
+class SnapshotRequest(BaseModel):
+    label: str = ""
+    data: dict = {}
+
+
+@router.post("/{project_id}/plan/snapshot", summary="创建版本快照")
+async def create_plan_snapshot(project_id: int, req: SnapshotRequest, db: Session = Depends(get_db)):
+    project = db.query(VideoProject).filter_by(id=project_id).first()
+    if not project:
+        return error_response(message="项目不存在", code=404)
+    snapshots = project.plan_versions or []
+    snapshots.insert(0, {**req.data, "label": req.label, "timestamp": datetime.utcnow().isoformat()})
+    snapshots = snapshots[:50]
+    project.plan_versions = snapshots
+    db.commit()
+    return success_response(data={"snapshot_count": len(snapshots)}, message="快照已保存")
+
+
+@router.get("/{project_id}/plan/snapshots", summary="获取版本快照列表")
+async def list_plan_snapshots(project_id: int, db: Session = Depends(get_db)):
+    project = db.query(VideoProject).filter_by(id=project_id).first()
+    if not project:
+        return error_response(message="项目不存在", code=404)
+    snapshots = project.plan_versions or []
+    return success_response(data={"snapshots": snapshots})

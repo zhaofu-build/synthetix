@@ -308,3 +308,44 @@ docker-compose up --build
 - **健康检查**: `GET /health` 检查数据库、ffmpeg、core-nexus 连接、活跃会话数
 - **WebSocket**: 三个通道 `/ws`（Agent 对话）、`/ws/render`（渲染进度）、`/ws/system`（系统通知）
 - **国际化**: `vue-i18n@9`，locale 文件在 `synthetix-vue/src/locales/`，设置页可切换语言
+
+## 常见陷阱
+
+### to_dict() 双系统（新增字段时必查）
+
+项目中存在两套 `to_dict()` 机制：
+- **ToDictMixin**（`domain/entities/mixins.py`）：自动遍历 `__table__.columns`，新增列自动包含
+- **Repository/Entity 手动覆盖**：硬编码字段列表，新增列不会自动出现
+
+手动覆盖的位置：
+| 文件 | 行 | 类型 |
+|------|-----|------|
+| `video_repository.py` | 170 | Repository 覆盖 |
+| `audio_repository.py` | 110 | Repository 覆盖 |
+| `video_project.py` | 54 | Entity 覆盖 |
+| `video_project.py` | 102 | ClipPlanItem Entity 覆盖 |
+| `comic_project.py` | 40 | Entity 覆盖 |
+| `bgm_item.py` | 24 | Entity 覆盖 |
+
+**规则**：给任何实体新增列后，必须同时更新对应的 `to_dict()` 手动覆盖（如果存在），否则 API 响应中该字段会静默丢失。
+
+### Alembic 自动生成的迁移需手动清理
+
+`alembic revision --autogenerate` 在 SQLite batch 模式下可能生成无名的 FK 约束（`batch_op.create_foreign_key(None, ...)`），执行时会报 `ValueError: Constraint must have a name`。解决方法：检查生成的迁移文件，移除不需要的 FK/index 操作，只保留实际新增的列。
+
+### subprocess 编码（Windows）
+
+`subprocess.run()` 在 Windows 上 `text=True` 默认使用系统编码（GBK/CP936），处理中文路径时会报 `UnicodeDecodeError`。所有 `subprocess.run/call` 应使用 `encoding='utf-8', errors='replace'`。目前 `run_ffmpeg_cmd()` 已修复，但 `ffmpeg_adapter.py`、`quality_service.py`、`ffmpeg_util.py` 中仍有遗漏。
+
+### 在线素材搜索（Pexels + Pixabay）
+
+`video_downloader_adapter.py` 提供统一搜索入口：
+- `search_videos(term, min_duration, source)` — `source` 为 `pexels`/`pixabay`/`all`
+- 每个结果返回双 URL：`url`（下载用，高清）+ `preview_url`（预览用，SD）
+- 搜索词自动作为 `tags` 保存到素材
+- 前端通过 `GET /api/videos/search-online?query=xxx&source=all` 调用
+
+**API Key 配置**：
+- Pexels Key：环境变量 `VIDEO_API_KEYS` 或设置页"视频/剪辑"Pexels Key
+- Pixabay Key：环境变量 `PIXABAY_API_KEY` 或设置页"视频/剪辑"Pixabay Key
+- 设置页保存的 key 通过 `tool_api.py` 的 `update_config` 同步到 `config.py` 运行时变量；`main.py` lifespan 从 `config_manager` 读取同步到运行时

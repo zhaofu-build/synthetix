@@ -64,7 +64,7 @@ def _file_to_data_url(file_path: str) -> str:
     return f"data:{mime_type};base64,{encoded}"
 
 
-def video_summary(tmp_path: str, prompt: Optional[str] = None, duration: Optional[float] = None) -> str:
+def video_summary(tmp_path: str, prompt: Optional[str] = None, duration: Optional[float] = None, proxy_path: Optional[str] = None) -> str:
     """
     视频内容总结
 
@@ -72,10 +72,22 @@ def video_summary(tmp_path: str, prompt: Optional[str] = None, duration: Optiona
         tmp_path: 视频文件路径
         prompt: 自定义提示词（可选）
         duration: 视频时长（秒），用于提示词中约束片段范围
+        proxy_path: 代理文件路径（优先使用代理文件进行 VL 分析）
 
     Returns:
         视频描述文本
     """
+    # 优先使用代理文件
+    actual_path = proxy_path or tmp_path
+
+    # 检查 VL 缓存（同文件+同 prompt → 复用）
+    from src.shared.utils.result_cache import get_cached, set_cached
+    vl_cache_kwargs = {"prompt_hash": hash(prompt or "")}
+    cached = get_cached(actual_path, "vl", ttl=3600 * 4, **vl_cache_kwargs)
+    if cached is not None:
+        logger.info(f"[VL Cache] hit: {os.path.basename(actual_path)}")
+        return cached
+
     if prompt is None:
         duration_hint = ""
         if duration and duration > 0:
@@ -95,18 +107,19 @@ def video_summary(tmp_path: str, prompt: Optional[str] = None, duration: Optiona
             '{"segments":[{"start":0,"end":5,"desc":"画面描述"},{"start":5,"end":12,"desc":"画面描述"}]}'
         )
 
-    logger.info(f"🎬 视频理解 | 路径: {tmp_path}")
+    logger.info(f"🎬 视频理解 | 路径: {actual_path}")
 
     try:
         client = get_client()
         vl_model = cfg_get("core_nexus.vl_model") or None
-        video_data = _file_to_data_url(tmp_path)
+        video_data = _file_to_data_url(actual_path)
         response = client.vl_generate(
             prompt=prompt,
             video=video_data,
             model=vl_model
         )
         logger.info(f"✅ 视频理解完成")
+        set_cached(actual_path, "vl", response, **vl_cache_kwargs)
         return response
 
     except Exception as e:

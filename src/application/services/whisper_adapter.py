@@ -23,7 +23,8 @@ def transcribe(
     is_translate: bool = False,
     subtitle_double: bool = False,
     translator_engine: str = "google",
-    subtitle_language: str = "zh"
+    subtitle_language: str = "zh",
+    proxy_path: Optional[str] = None
 ) -> str:
     """
     语音转文字
@@ -35,17 +36,28 @@ def transcribe(
         subtitle_double: 是否双语字幕
         translator_engine: 翻译引擎
         subtitle_language: 字幕语言
+        proxy_path: 代理文件路径（优先使用代理文件进行 ASR）
 
     Returns:
         字幕内容字符串
     """
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
+    # 优先使用代理文件
+    actual_path = proxy_path or audio_path
+
+    # 检查 ASR 缓存（同文件+同语言+同格式 → 复用）
+    from src.shared.utils.result_cache import get_cached, set_cached
+    cache_key_kwargs = {"fmt": output_format_type, "lang": subtitle_language}
+    cached = get_cached(actual_path, "asr", ttl=3600 * 2, **cache_key_kwargs)
+    if cached is not None:
+        return cached
+
     try:
         client = get_client()
         asr_model = cfg_get("core_nexus.asr_model") or None
         result = client.asr_transcribe(
-            audio=audio_path,
+            audio=actual_path,
             language=subtitle_language,
             model=asr_model
         )
@@ -99,6 +111,7 @@ def transcribe(
                 else:
                     segments_txt += f"{subtitle_text}\n\n"
 
+        set_cached(actual_path, "asr", segments_txt, **cache_key_kwargs)
         return segments_txt
 
     except Exception as e:
@@ -128,6 +141,12 @@ def _split_text_to_segments(text: str, chars_per_second: float = 4.0) -> list:
     return segments
 
 
+def _parse_srt_time(time_str: str) -> float:
+    """将 SRT 时间格式 (HH:MM:SS,mmm) 转换为秒数"""
+    parts = time_str.replace(',', '.').split(':')
+    return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+
+
 def _format_srt_time(seconds: float) -> str:
     """
     将秒数格式化为 SRT 时间格式
@@ -143,6 +162,73 @@ def _format_srt_time(seconds: float) -> str:
     secs = int(seconds % 60)
     millis = int((seconds % 1) * 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def get_speech_pauses(audio_path: str, language: str = "zh") -> list:
+    """获取音频中的语音停顿点（静音间隙），用于智能边距计算
+
+    Args:
+        audio_path: 音频/视频文件路径
+        language: 语言代码
+
+    Returns:
+        停顿区间列表 [{"start": float, "end": float, "duration": float}]
+    """
+    try:
+        client = get_client()
+        asr_model = cfg_get("core_nexus.asr_model") or None
+        result = client.asr_transcribe(audio=audio_path, language=language, model=asr_model)
+
+        segments = result.get('segments', [])
+        if not segments or len(segments) < 2:
+            return []
+
+        pauses = []
+        for i in range(1, len(segments)):
+            gap_start = segments[i - 1].get('end', 0)
+            gap_end = segments[i].get('start', 0)
+            gap_duration = gap_end - gap_start
+            if gap_duration >= 0.1:
+                pauses.append({
+                    "start": round(gap_start, 3),
+                    "end": round(gap_end, 3),
+                    "duration": round(gap_duration, 3),
+                })
+
+        return pauses
+
+    except Exception as e:
+        logger.error(f"获取语音停顿失败: {e}")
+        return []
+
+
+def find_nearest_pause(pauses: list, target_time: float, direction: str = "before") -> Optional[float]:
+    """在目标时间附近找到最近的语音停顿点
+
+    Args:
+        pauses: get_speech_pauses() 返回的停顿列表
+        target_time: 目标时间（秒）
+        direction: "before" 找目标之前的停顿，"after" 找之后的
+
+    Returns:
+        停顿中点时间（秒），未找到则返回 None
+    """
+    if not pauses:
+        return None
+
+    candidates = []
+    for p in pauses:
+        mid = (p["start"] + p["end"]) / 2
+        if direction == "before" and mid <= target_time:
+            candidates.append((abs(target_time - mid), mid))
+        elif direction == "after" and mid >= target_time:
+            candidates.append((abs(target_time - mid), mid))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: x[0])
+    return candidates[0][1]
 
 
 if __name__ == "__main__":

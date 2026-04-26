@@ -22,6 +22,8 @@ class TimelineClip:
     speed: float = 1.0       # 播放速度
     volume: float = 1.0      # 音量
     effects: List[Dict] = field(default_factory=list)
+    margin_before: float = 0.0  # 开始前缓冲（秒）
+    margin_after: float = 0.0   # 结束后缓冲（秒）
 
     @property
     def duration(self) -> float:
@@ -44,7 +46,9 @@ class TimelineClip:
             "trim_end": self.trim_end,
             "speed": self.speed,
             "volume": self.volume,
-            "effects": self.effects
+            "effects": self.effects,
+            "margin_before": self.margin_before,
+            "margin_after": self.margin_after,
         }
 
     @classmethod
@@ -59,7 +63,9 @@ class TimelineClip:
             trim_end=data.get("trim_end", 0.0),
             speed=data.get("speed", 1.0),
             volume=data.get("volume", 1.0),
-            effects=data.get("effects", [])
+            effects=data.get("effects", []),
+            margin_before=data.get("margin_before", 0.0),
+            margin_after=data.get("margin_after", 0.0),
         )
 
 

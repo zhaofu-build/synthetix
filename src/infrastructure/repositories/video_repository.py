@@ -188,6 +188,9 @@ class VideoRepository(BaseRepository[VideoSource]):
             "video_type": video.video_type,
             "create_time": video.create_time,
             "del_flag": video.del_flag,
+            "tags": video.tags,
+            "is_temp": video.is_temp if video.is_temp is not None else True,
+            "file_type": video.file_type or "video",
         }
 
     def bulk_to_dict(self, videos: List[VideoSource]) -> List[Dict[str, Any]]:

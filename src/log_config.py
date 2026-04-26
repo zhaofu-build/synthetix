@@ -75,6 +75,10 @@ def setup_advanced_logging():
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
 
+    # 抑制第三方库的 DEBUG 日志
+    for _name in ('httpcore', 'httpx', 'urllib3', 'asyncio', 'multipart'):
+        logging.getLogger(_name).setLevel(logging.WARNING)
+
 
 def log_run():
     setup_advanced_logging()  # 或 setup_basic_logging()

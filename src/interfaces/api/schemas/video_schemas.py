@@ -7,6 +7,7 @@ from src.shared.constants import VideoProcessing, Subtitle
 class VideoDownloadRequest(BaseModel):
     """视频下载请求"""
     video_url: str = Field(..., min_length=10, max_length=2048, description="视频URL")
+    tags: Optional[str] = Field(default=None, description="标签，逗号分隔")
 
     @field_validator('video_url')
     @classmethod

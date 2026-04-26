@@ -187,6 +187,36 @@ class SessionManager:
         """
         return list(self._sessions.values())
 
+    def get_sessions_by_project(self, project_id: int) -> List[DialogState]:
+        """获取指定项目的所有会话（内存 + 数据库）"""
+        results = [s for s in self._sessions.values() if s.project_id == project_id]
+        if results:
+            return results
+        try:
+            from src.infrastructure.db.session import get_db_context
+            from src.domain.entities.dialog_session import DialogSession
+            with get_db_context() as db:
+                rows = db.query(DialogSession).filter(
+                    DialogSession.metadata_["project_id"].as_integer() == project_id
+                ).order_by(DialogSession.updated_at.desc()).limit(20).all()
+                for row in rows:
+                    if row.session_id not in self._sessions:
+                        state = self._load_from_db(row.session_id)
+                        if state:
+                            self._sessions[row.session_id] = state
+                            results.append(state)
+        except Exception as e:
+            logger.warning(f"按项目查询会话失败: {e}")
+        return results
+
+    def restore_last_session(self, project_id: int) -> Optional[DialogState]:
+        """恢复项目最近一次会话"""
+        sessions = self.get_sessions_by_project(project_id)
+        if not sessions:
+            return None
+        sessions.sort(key=lambda s: s.updated_at, reverse=True)
+        return sessions[0]
+
     def get_session_count(self) -> int:
         """获取会话数量"""
         return len(self._sessions)

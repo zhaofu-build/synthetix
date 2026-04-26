@@ -4,7 +4,10 @@ import json
 import subprocess
 import shutil
 import shlex
+import asyncio
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Dict, Optional, Tuple
 from src.shared.utils.file_util import get_download_folder, get_file_name, get_file_suffix, get_file_name_no_suffix, del_file
 from src.shared.utils import time_util, string_util, ffmpeg_util, file_util
 import logging
@@ -14,6 +17,216 @@ from src.infrastructure.db.session import get_db_context
 from src.domain.entities.video_source import VideoSource
 
 logger = logging.getLogger(__name__)
+
+# 并行执行基础设施
+_ffmpeg_executor = ThreadPoolExecutor(max_workers=min(os.cpu_count() or 4, 4), thread_name_prefix="ffmpeg")
+_best_encoder_cache: Optional[str] = None
+
+
+def detect_best_encoder() -> str:
+    """自动探测最佳编码器: h264_nvenc → h264_qsv → libx264"""
+    global _best_encoder_cache
+    if _best_encoder_cache is not None:
+        return _best_encoder_cache
+
+    encoders = ["h264_nvenc", "h264_qsv", "libx264"]
+    for enc in encoders:
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-encoders"],
+                capture_output=True, text=True, timeout=10,
+                creationflags=0 if sys.platform != 'win32' else subprocess.CREATE_NO_WINDOW
+            )
+            if enc.lstrip("lib") in result.stdout or enc in result.stdout:
+                _best_encoder_cache = enc
+                logger.info(f"自动选择编码器: {enc}")
+                return enc
+        except Exception:
+            continue
+
+    _best_encoder_cache = "libx264"
+    return _best_encoder_cache
+
+
+async def run_ffmpeg_cmd_async(cmd):
+    """在 ThreadPoolExecutor 中异步运行 FFmpeg 命令"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_ffmpeg_executor, run_ffmpeg_cmd, cmd)
+
+
+async def extract_clips_parallel(clip_specs: List[Dict]) -> List[str]:
+    """并行提取多个视频片段
+
+    Args:
+        clip_specs: 片段规格列表，每项包含 input_path, start_time, end_time, output_path
+
+    Returns:
+        输出文件路径列表（与输入顺序一致，失败项为 None）
+    """
+    def _extract_one(spec):
+        try:
+            output_path = spec.get("output_path")
+            if not output_path:
+                name = get_file_name_no_suffix(spec["input_path"])
+                output_path = str(config.ROOT_DIR_WIN / "static/uploads" / f"{name}_clip_{spec['start_time'].replace(':', '')}{get_file_suffix(spec['input_path'])}")
+
+            cmd = [
+                '-y',
+                '-ss', str(spec["start_time"]),
+                '-i', str(spec["input_path"]),
+                '-c:v', detect_best_encoder(),
+                '-c:a', 'aac', '-b:a', '192k',
+                '-vsync', 'cfr',
+                '-video_track_timescale', '1000',
+                '-g', '60',
+                '-preset', 'fast',
+                '-r', '30',
+            ]
+            if spec.get("end_time"):
+                cmd.extend(['-to', str(spec["end_time"])])
+            elif spec.get("duration"):
+                cmd.extend(['-t', str(spec["duration"])])
+            cmd.append(str(output_path))
+            run_ffmpeg_cmd(cmd)
+            return output_path
+        except Exception as e:
+            logger.error(f"并行提取片段失败 [{spec.get('start_time')}-{spec.get('end_time')}]: {e}")
+            return None
+
+    loop = asyncio.get_event_loop()
+    tasks = [loop.run_in_executor(_ffmpeg_executor, _extract_one, spec) for spec in clip_specs]
+    return await asyncio.gather(*tasks)
+
+
+def detect_silence_segments(input_path: str, min_duration: float = 0.5, noise_db: int = -30) -> List[Dict]:
+    """检测音频静音段
+
+    Returns: [{"start": float, "end": float, "duration": float}]
+    """
+    cmd = [
+        "ffmpeg", "-i", str(input_path),
+        "-af", f"silencedetect=noise={noise_db}dB:d={min_duration}",
+        "-f", "null", "-"
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=120,
+            creationflags=0 if sys.platform != "win32" else subprocess.CREATE_NO_WINDOW,
+        )
+        silences = []
+        lines = result.stderr.splitlines()
+        for line in lines:
+            if "silence_start" in line:
+                try:
+                    start = float(line.split("silence_start:")[1].strip().split()[0])
+                    silences.append({"start": start})
+                except (ValueError, IndexError):
+                    pass
+            elif "silence_end" in line and silences:
+                try:
+                    end = float(line.split("silence_end:")[1].strip().split("|")[0].strip())
+                    silences[-1]["end"] = end
+                    silences[-1]["duration"] = round(end - silences[-1]["start"], 2)
+                except (ValueError, IndexError):
+                    pass
+        for s in silences:
+            if "end" not in s:
+                s["end"] = None
+                s["duration"] = None
+        return silences
+    except Exception as e:
+        logger.warning(f"静音检测失败: {e}")
+        return []
+
+
+def detect_scene_changes(input_path: str, threshold: float = 0.3) -> List[Dict]:
+    """检测场景切换点
+
+    Returns: [{"time": float, "score": float}]
+    """
+    cmd = [
+        "ffmpeg", "-i", str(input_path),
+        "-filter:v", f"select='gt(scene,{threshold})',showinfo",
+        "-f", "null", "-"
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=180,
+            creationflags=0 if sys.platform != "win32" else subprocess.CREATE_NO_WINDOW,
+        )
+        changes = []
+        for line in result.stderr.splitlines():
+            if "showinfo" in line and "pts_time" in line:
+                try:
+                    pts_part = line.split("pts_time:")[1].split()[0].rstrip(",")
+                    t = float(pts_part)
+                    changes.append({"time": round(t, 2)})
+                except (ValueError, IndexError):
+                    pass
+        return changes
+    except Exception as e:
+        logger.warning(f"场景切换检测失败: {e}")
+        return []
+
+
+def generate_proxy(input_path, scale_factor: float = 0.5, max_height: int = 540, fps: int = 15) -> Optional[str]:
+    """为大型视频生成低分辨率代理文件
+
+    Args:
+        input_path: 原始文件路径
+        scale_factor: 缩放比例（默认 0.5）
+        max_height: 最大高度（默认 540p）
+        fps: 代理文件帧率（默认 15）
+
+    Returns:
+        代理文件路径，不需要代理则返回 None
+    """
+    info = get_video_info(input_path)
+    if not info:
+        return None
+
+    height = info.get('height', 0)
+    duration = info.get('duration', 0)
+
+    # 仅对大视频生成代理（分辨率 > 1080p 或时长 > 30 分钟）
+    if height <= 1080 and duration <= 1800:
+        return None
+
+    # 生成代理路径
+    input_p = Path(input_path)
+    proxy_dir = input_p.parent / "proxy"
+    proxy_dir.mkdir(parents=True, exist_ok=True)
+    proxy_path = proxy_dir / f"{input_p.stem}_proxy{input_p.suffix}"
+
+    # 如果代理已存在且比原始文件新，直接返回
+    if proxy_path.exists():
+        import os.path as op
+        if op.getmtime(proxy_path) >= op.getmtime(input_path):
+            logger.info(f"使用已有代理文件: {proxy_path}")
+            return str(proxy_path)
+
+    # 计算代理分辨率
+    width = info.get('width', 1920)
+    proxy_height = min(max_height, int(height * scale_factor))
+    proxy_height = proxy_height + proxy_height % 2  # 确保偶数
+    proxy_width = int(width * (proxy_height / height))
+    proxy_width = proxy_width + proxy_width % 2
+
+    logger.info(f"生成代理文件: {width}x{height} -> {proxy_width}x{proxy_height}")
+
+    cmd = [
+        '-y',
+        '-i', str(input_path),
+        '-c:v', detect_best_encoder(),
+        '-vf', f'scale={proxy_width}:{proxy_height}',
+        '-r', str(fps),
+        '-an',  # 代理文件不需要音频
+        '-preset', 'ultrafast',
+        '-crf', '28',
+        str(proxy_path),
+    ]
+    run_ffmpeg_cmd(cmd)
+    return str(proxy_path)
 
 
 def safe_path(path: str) -> str:
@@ -75,7 +288,11 @@ def _video_source_to_dict(video_obj: VideoSource) -> dict:
 
 
 def get_video_info(input_path):
-    """获取视频详细信息（编码、比特率、时长等）"""
+    """获取视频详细信息（编码、比特率、时长等）— 带缓存"""
+    from src.shared.utils.result_cache import get_cached, set_cached
+    cached = get_cached(str(input_path), "ffprobe", ttl=3600)
+    if cached is not None:
+        return cached
     try:
         cmd = [
             'ffprobe',
@@ -121,6 +338,7 @@ def get_video_info(input_path):
             video_info['bitrate_per_minute'] = (video_info['file_size'] * 8) / (1024 * minutes)  # kbps per minute
         else:
             video_info['bitrate_per_minute'] = 0
+        set_cached(str(input_path), "ffprobe", video_info, ttl=3600)
         return video_info
     except Exception as e:
         logger.error(f"获取视频信息失败 {input_path}: {e}")
@@ -293,6 +511,68 @@ def extract_frames(input_video_path, output_dir, start_time, end_time):
             output_image_path  # 输出图像文件
         ]
         run_ffmpeg_cmd(command)
+
+
+def extract_keyframes(input_path, output_dir, mode="fixed", interval=2.0,
+                      scene_threshold=0.3, max_frames=50) -> list:
+    """分层关键帧提取
+
+    Args:
+        input_path: 视频路径
+        output_dir: 输出目录
+        mode: fixed(固定间隔) | scene(场景切换) | smart(智能混合)
+        interval: fixed 模式的间隔秒数
+        scene_threshold: scene 模式的场景切换阈值 (0-1)
+        max_frames: 最大提取帧数
+
+    Returns:
+        提取的帧路径列表
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    info = get_video_info(input_path)
+    duration = float(info.get("duration", 0))
+    if duration <= 0:
+        return []
+
+    timestamps = []
+
+    if mode == "fixed":
+        ts = 0.0
+        while ts < duration and len(timestamps) < max_frames:
+            timestamps.append(round(ts, 2))
+            ts += interval
+
+    elif mode == "scene":
+        changes = detect_scene_changes(input_path, scene_threshold)
+        for sc in changes[:max_frames]:
+            timestamps.append(round(sc, 2))
+        if not timestamps:
+            ts = 0.0
+            while ts < duration and len(timestamps) < max_frames:
+                timestamps.append(round(ts, 2))
+                ts += max(interval, 5.0)
+
+    elif mode == "smart":
+        changes = detect_scene_changes(input_path, scene_threshold)
+        fixed_ts = [round(i * interval, 2) for i in range(int(duration / interval) + 1)]
+        all_ts = sorted(set(fixed_ts + [round(c, 2) for c in changes]))
+        timestamps = all_ts[:max_frames]
+
+    else:
+        return []
+
+    paths = []
+    for i, ts in enumerate(timestamps):
+        out_path = os.path.join(output_dir, f"keyframe_{i:04d}_{ts:.2f}s.jpg")
+        cmd = ["-ss", str(ts), "-i", input_path, "-vframes", "1",
+               "-q:v", "2", "-y", out_path]
+        try:
+            run_ffmpeg_cmd(cmd)
+            paths.append({"path": out_path, "timestamp": ts})
+        except Exception:
+            pass
+
+    return paths
 
 
 # 生成gif文件
@@ -535,14 +815,40 @@ def str_to_ass(srt_file, ass_file):
 
 
 # 分割视频
-def cut_video(input_path, start_time, end_time=None, duration=None, output_suffix="(剪切)"):
+def cut_video(input_path, start_time, end_time=None, duration=None,
+              margin_before: float = 0.0, margin_after: float = 0.0,
+              output_suffix="(剪切)"):
+    """剪切视频片段
+
+    Args:
+        input_path: 输入文件路径
+        start_time: 开始时间 (HH:MM:SS 或秒数)
+        end_time: 结束时间 (可选)
+        duration: 持续时长 (可选，与 end_time 二选一)
+        margin_before: 开始前的缓冲时长（秒）
+        margin_after: 结束后的缓冲时长（秒）
+        output_suffix: 输出文件名后缀
+    """
+    # 应用缓冲区
+    if margin_before > 0 or margin_after > 0:
+        start_sec = time_util.parse_time(str(start_time))
+        if margin_before > 0:
+            start_sec = max(0, start_sec - margin_before)
+            start_time = time_util.seconds_to_hms(start_sec)
+
+        if end_time and margin_after > 0:
+            end_sec = time_util.parse_time(str(end_time))
+            end_sec += margin_after
+            end_time = time_util.seconds_to_hms(end_sec)
+
     output_path = config.ROOT_DIR_WIN / "static/uploads" / f"{get_file_name_no_suffix(input_path)}{output_suffix}{get_file_suffix(input_path)}"
     command = [
         '-y',
-        '-ss', start_time,
+        '-ss', str(start_time),
         '-i', str(input_path),
-        '-an',  # 禁用音频
-        '-c:v', 'libx264',
+        '-c:v', detect_best_encoder(),
+        '-c:a', 'aac',
+        '-b:a', '192k',
         '-vsync', 'cfr',  # 保证恒定帧率
         '-video_track_timescale', '1000',  # 关键：统一时间基为1/1000
         '-g', '60',  # 关键：设置GOP长度避免丢帧
@@ -669,7 +975,7 @@ def concatenate_videos_with_transitions(clip_infos, output_path):
         '-filter_complex', ''.join(filter_script),
         '-map', '[vout]',
         '-map', '[aout]',
-        '-c:v', 'h264_nvenc' if ffmpeg_util.check_nvidia() else 'libx264',  # 自动检测NVIDIA显卡
+        '-c:v', detect_best_encoder(),
         '-preset', 'fast',
         '-profile:v', 'main',
         '-movflags', '+faststart',
@@ -908,24 +1214,17 @@ def batch_compress_videos(
     logger.info(f"平均速度: {stats['total_files'] / (elapsed_time / 60):.1f} 文件/分钟")
 
 
-def run_ffmpeg_cmd(cmd):
-    # cmd执行ffmpeg命令
-    # # ffmpeg
-    # if sys.platform == 'win32':
-    #     os.environ['PATH'] = ROOT_DIR + f';{ROOT_DIR}/ffmpeg;' + os.environ['PATH']
-    #     if Path(ROOT_DIR + '/ffmpeg/ffmpeg.exe').is_file():
-    #         FFMPEG_BIN = ROOT_DIR + '/ffmpeg/ffmpeg.exe'
-    # else:
-    #     os.environ['PATH'] = ROOT_DIR + f':{ROOT_DIR}/ffmpeg:' + os.environ['PATH']
-    #     if Path(ROOT_DIR + '/ffmpeg/ffmpeg').is_file():
-    #         FFMPEG_BIN = ROOT_DIR + '/ffmpeg/ffmpeg'
+def run_ffmpeg_cmd(cmd, timeout=300):
+    """执行 ffmpeg 命令，带超时保护和安全检查"""
+    # Security: reject dangerous flags
+    cmd_str = " ".join(str(c) for c in cmd)
+    dangerous_patterns = ["-y /", "rm ", "; ", "&& ", "| ", "$(", "`"]
+    for pat in dangerous_patterns:
+        if pat in cmd_str:
+            raise RuntimeError(f"FFmpeg 命令包含不安全内容: {pat}")
+
     try:
-        command = [
-            "ffmpeg"
-        ]
-        # 检查ffmpeg是否支持CUDA
-        # if ffmpeg_util.check_cuda_support():
-        #     command.extend(['-hwaccel', 'cuda'])
+        command = ["ffmpeg"]
         command.extend(cmd)
         logger.debug(f"ffmpeg运行命令：{' '.join(str(c) for c in command)}")
         result = subprocess.run(command,
@@ -934,15 +1233,44 @@ def run_ffmpeg_cmd(cmd):
                                 text=True,
                                 encoding="utf-8",
                                 check=True,
+                                timeout=timeout,
                                 creationflags=0 if sys.platform != 'win32' else subprocess.CREATE_NO_WINDOW
                                 )
         return result
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"FFmpeg 命令超时 ({timeout}s): {' '.join(str(c) for c in cmd[:6])}")
     except subprocess.CalledProcessError as e:
         logger.error("ffmpeg 命令执行失败")
         logger.error(f"Command: {e.cmd}")
         logger.error(f"Return code: {e.returncode}")
         logger.error(f"Output: {e.output}")
         raise RuntimeError(f"ffmpeg 命令执行失败 (返回码 {e.returncode}): {e.output[:500] if e.output else '无输出'}") from e
+
+
+def run_ffmpeg_cmd_atomic(cmd, output_path, timeout=300):
+    """原子写入：先输出到临时文件，成功后 rename"""
+    import tempfile
+    tmp_dir = os.path.dirname(output_path)
+    with tempfile.NamedTemporaryFile(suffix=os.path.splitext(output_path)[1],
+                                     dir=tmp_dir, delete=False) as tmp:
+        tmp_path = tmp.name
+
+    # Replace output path in cmd with temp path
+    safe_cmd = []
+    for c in cmd:
+        if c == output_path:
+            safe_cmd.append(tmp_path)
+        else:
+            safe_cmd.append(c)
+
+    try:
+        run_ffmpeg_cmd(safe_cmd, timeout=timeout)
+        os.replace(tmp_path, output_path)
+        return output_path
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 
 if __name__ == '__main__':

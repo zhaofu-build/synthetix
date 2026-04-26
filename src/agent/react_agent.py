@@ -5,8 +5,10 @@ ReAct Agent 模块
 "笨引擎 + 聪明模型"：运行时不含业务逻辑，所有智能决策由 LLM 完成。
 """
 import json
+import os
 import re
 import logging
+import time
 from typing import Dict, List, Optional, Any
 
 from src.agent.tool_registry import registry
@@ -74,9 +76,103 @@ class ReActAgent:
 
     MAX_ITERATIONS = 5  # 最大循环次数，防止无限循环
     DEEP_RESEARCH_STAGES = ["分析素材", "规划方案", "执行操作"]
+    CHECKPOINT_DIR = os.path.join(os.path.expanduser("~"), ".synthetix", "checkpoints")
+    ARTIFACTS_DIR = os.path.join(os.path.expanduser("~"), ".synthetix", "artifacts")
 
     def __init__(self):
         self.sessions = get_session_manager()
+
+    def _save_checkpoint(self, session_id: str, stage_idx: int, stage_summaries: list, messages: list):
+        """持久化中间结果到检查点文件"""
+        os.makedirs(self.CHECKPOINT_DIR, exist_ok=True)
+        checkpoint = {
+            "session_id": session_id,
+            "stage_idx": stage_idx,
+            "stage_summaries": stage_summaries,
+            "messages": messages[-40:],
+            "saved_at": time.time(),
+        }
+        path = os.path.join(self.CHECKPOINT_DIR, f"{session_id}.json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(checkpoint, f, ensure_ascii=False, default=str)
+            logger.info(f"[Checkpoint] saved stage {stage_idx} for {session_id}")
+        except Exception as e:
+            logger.warning(f"[Checkpoint] save failed: {e}")
+
+    def _save_artifact(self, session_id: str, stage_name: str, stage_idx: int, content: Any):
+        """Save stage artifact to artifacts directory with meta.json index."""
+        session_dir = os.path.join(self.ARTIFACTS_DIR, session_id)
+        os.makedirs(session_dir, exist_ok=True)
+
+        artifact_file = os.path.join(session_dir, f"stage_{stage_idx}_{stage_name}.json")
+        try:
+            with open(artifact_file, "w", encoding="utf-8") as f:
+                json.dump({"stage": stage_name, "index": stage_idx, "content": content,
+                           "saved_at": time.time()}, f, ensure_ascii=False, default=str)
+        except Exception as e:
+            logger.warning(f"[Artifact] save failed for stage {stage_idx}: {e}")
+            return
+
+        # Update meta.json index
+        meta_path = os.path.join(session_dir, "meta.json")
+        meta = {"session_id": session_id, "stages": []}
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+            except Exception:
+                pass
+
+        stage_entry = {"idx": stage_idx, "name": stage_name, "file": f"stage_{stage_idx}_{stage_name}.json"}
+        existing = [s for s in meta["stages"] if s["idx"] != stage_idx]
+        existing.append(stage_entry)
+        existing.sort(key=lambda s: s["idx"])
+        meta["stages"] = existing
+        meta["updated_at"] = time.time()
+
+        try:
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+            logger.info(f"[Artifact] saved {stage_name} (stage {stage_idx}) for {session_id}")
+        except Exception as e:
+            logger.warning(f"[Artifact] meta update failed: {e}")
+
+    def _load_artifacts(self, session_id: str) -> list:
+        """Load all artifacts for a session from meta.json index."""
+        meta_path = os.path.join(self.ARTIFACTS_DIR, session_id, "meta.json")
+        if not os.path.exists(meta_path):
+            return []
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            artifacts = []
+            for stage in meta.get("stages", []):
+                fpath = os.path.join(self.ARTIFACTS_DIR, session_id, stage["file"])
+                if os.path.exists(fpath):
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    artifacts.append(data)
+            return artifacts
+        except Exception as e:
+            logger.warning(f"[Artifact] load failed: {e}")
+            return []
+
+    def _load_checkpoint(self, session_id: str) -> Optional[dict]:
+        """加载检查点"""
+        path = os.path.join(self.CHECKPOINT_DIR, f"{session_id}.json")
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def _clear_checkpoint(self, session_id: str):
+        path = os.path.join(self.CHECKPOINT_DIR, f"{session_id}.json")
+        if os.path.exists(path):
+            os.remove(path)
 
     async def process_message(
         self,
@@ -104,6 +200,9 @@ class ReActAgent:
             pid = context.get("project_id")
             if pid:
                 state.project_id = int(pid)
+            attachments = context.get("attachments")
+            if attachments:
+                state.metadata["pending_attachments"] = attachments
 
         logger.info(f"[ReAct] 用户输入: '{user_input}', project_id={state.project_id}")
 
@@ -153,6 +252,9 @@ class ReActAgent:
             pid = context.get("project_id")
             if pid:
                 state.project_id = int(pid)
+            attachments = context.get("attachments")
+            if attachments:
+                state.metadata["pending_attachments"] = attachments
 
         yield {"type": "session", "session_id": state.session_id}
         logger.info(f"[ReAct-Stream] 用户输入: '{user_input}', project_id={state.project_id}")
@@ -160,6 +262,8 @@ class ReActAgent:
         try:
             messages = self._build_messages(state)
             final_reply = ""
+
+            has_temp_asset = False
 
             for iteration in range(self.MAX_ITERATIONS):
                 yield {"type": "thinking", "iteration": iteration + 1}
@@ -175,6 +279,10 @@ class ReActAgent:
                 tool_calls = self._parse_tool_calls(response_text)
 
                 if not tool_calls:
+                    # 有临时素材产出时不输出冗余文字，直接结束
+                    if has_temp_asset:
+                        final_reply = ""
+                        break
                     final_reply = self._strip_tool_call_hints(response_text)
                     yield {"type": "reply", "content": final_reply}
                     break
@@ -196,7 +304,14 @@ class ReActAgent:
                         "permission": perm,
                     }
 
+                    print(f"[ToolExec] >>> {tool_name}({json.dumps(tool_params, ensure_ascii=False)[:300]})")
                     result = await self._execute_tool(tool_name, tool_params, state)
+                    _res_preview = json.dumps(result, ensure_ascii=False, default=str)[:300]
+                    print(f"[ToolExec] <<< {tool_name} success={result.get('success', True)} | {_res_preview}")
+
+                    if result.get("is_temp_asset"):
+                        has_temp_asset = True
+
                     tool_results.append({
                         "name": tool_name,
                         "params": tool_params,
@@ -211,11 +326,23 @@ class ReActAgent:
                     if len(result_preview) > 500:
                         result_preview = result_preview[:500] + "...(已截断)"
 
+                    # 提取临时素材信息供前端渲染预览卡片
+                    media_info = None
+                    if result.get("is_temp_asset") or result.get("web_path"):
+                        media_info = {
+                            "web_path": result.get("web_path"),
+                            "output_path": result.get("output_path"),
+                            "output_type": result.get("output_type", "video"),
+                            "duration": result.get("duration"),
+                            "video_id": result.get("video_id"),
+                        }
+
                     yield {
                         "type": "tool_result",
                         "tool": tool_name,
                         "success": result.get("success", True),
                         "preview": result_preview,
+                        "media_info": media_info,
                     }
 
                 # Observe
@@ -266,15 +393,29 @@ class ReActAgent:
             pid = context.get("project_id")
             if pid:
                 state.project_id = int(pid)
+            attachments = context.get("attachments")
+            if attachments:
+                state.metadata["pending_attachments"] = attachments
 
         yield {"type": "session", "session_id": state.session_id}
         yield {"type": "deep_research", "stage": "start", "total_stages": len(self.DEEP_RESEARCH_STAGES)}
 
-        stage_summaries = []
-        messages = self._build_messages(state)
+        # Check for existing checkpoint to resume
+        checkpoint = self._load_checkpoint(state.session_id)
+        if checkpoint and checkpoint.get("stage_idx", 0) > 0:
+            start_stage = checkpoint["stage_idx"] + 1
+            stage_summaries = checkpoint.get("stage_summaries", [])
+            messages = checkpoint.get("messages", self._build_messages(state))
+            yield {"type": "deep_research", "stage": "resume", "resumed_from": start_stage}
+            logger.info(f"[DeepResearch] resuming from stage {start_stage}")
+        else:
+            start_stage = 0
+            stage_summaries = []
+            messages = self._build_messages(state)
 
         try:
-            for i, stage_name in enumerate(self.DEEP_RESEARCH_STAGES):
+            for i in range(start_stage, len(self.DEEP_RESEARCH_STAGES)):
+                stage_name = self.DEEP_RESEARCH_STAGES[i]
                 yield {
                     "type": "deep_research",
                     "stage": i + 1,
@@ -318,9 +459,23 @@ class ReActAgent:
                     tool_results = []
                     for tc in tool_calls:
                         yield {"type": "tool_start", "tool": tc["name"], "params": tc["params"], "stage": stage_name}
+                        print(f"[ToolExec] >>> {tc['name']}({json.dumps(tc['params'], ensure_ascii=False)[:300]})")
                         result = await self._execute_tool(tc["name"], tc["params"], state)
+                        _res_preview = json.dumps(result, ensure_ascii=False, default=str)[:300]
+                        print(f"[ToolExec] <<< {tc['name']} success={result.get('success', True)} | {_res_preview}")
                         tool_results.append({"name": tc["name"], "params": tc["params"], "result": result})
-                        yield {"type": "tool_result", "tool": tc["name"], "success": result.get("success", True)}
+
+                        dr_media_info = None
+                        if result.get("is_temp_asset") or result.get("web_path"):
+                            dr_media_info = {
+                                "web_path": result.get("web_path"),
+                                "output_path": result.get("output_path"),
+                                "output_type": result.get("output_type", "video"),
+                                "duration": result.get("duration"),
+                                "video_id": result.get("video_id"),
+                            }
+
+                        yield {"type": "tool_result", "tool": tc["name"], "success": result.get("success", True), "media_info": dr_media_info}
 
                     messages.append({"role": "assistant", "content": response_text})
                     observation = self._format_observations(tool_results)
@@ -331,6 +486,14 @@ class ReActAgent:
 
                 stage_summaries.append((stage_name, stage_reply[:500]))
                 yield {"type": "stage_result", "stage": stage_name, "summary": stage_reply[:500]}
+
+                # Save checkpoint after each completed stage
+                self._save_checkpoint(state.session_id, i, stage_summaries, messages)
+                # Save artifact for crash recovery
+                self._save_artifact(state.session_id, stage_name, i, {
+                    "summary": stage_reply[:2000],
+                    "tool_calls": [tr["name"] for tr in tool_results] if tool_results else [],
+                })
 
             # 最终综合回复
             final_prompt = (
@@ -344,6 +507,7 @@ class ReActAgent:
 
             state.add_message("assistant", final_reply)
             self.sessions.persist_session(state)
+            self._clear_checkpoint(state.session_id)
             yield {"type": "reply", "content": final_reply}
             yield {"type": "done", "status": "completed", "session_id": state.session_id}
 
@@ -361,6 +525,7 @@ class ReActAgent:
         """
         # 构建消息历史（最近 20 条）
         messages = self._build_messages(state)
+        has_temp_asset = False
 
         for iteration in range(self.MAX_ITERATIONS):
             logger.info(f"[ReAct] 第{iteration+1}轮循环")
@@ -381,18 +546,27 @@ class ReActAgent:
             if not tool_calls:
                 # 无工具调用 → 循环结束，直接回复用户
                 clean_reply = self._strip_tool_call_hints(response_text)
+                # 有临时素材产出时跳过冗余文字
+                if has_temp_asset and clean_reply:
+                    return ""
                 return clean_reply
 
             # Act: 执行工具调用
             tool_results = []
             for tc in tool_calls:
+                print(f"[ToolExec] >>> {tc['name']}({json.dumps(tc['params'], ensure_ascii=False)[:300]})")
                 result = await self._execute_tool(tc["name"], tc["params"], state)
+                _res_preview = json.dumps(result, ensure_ascii=False, default=str)[:300]
+                print(f"[ToolExec] <<< {tc['name']} success={result.get('success', True)} | {_res_preview}")
+
+                if result.get("is_temp_asset"):
+                    has_temp_asset = True
+
                 tool_results.append({
                     "name": tc["name"],
                     "params": tc["params"],
                     "result": result,
                 })
-                logger.info(f"[ReAct] 工具 {tc['name']} 执行完成, success={result.get('success', True)}")
 
                 # 缓存视频列表供序数解析
                 if tc["name"] == "list_videos" and result.get("videos"):
@@ -405,7 +579,7 @@ class ReActAgent:
             logger.info(f"[ReAct] 观察: {observation[:300]}")
 
         # 超过最大循环次数
-        return response_text if response_text else "处理超时，请简化您的问题后重试。"
+        return "" if has_temp_asset else (response_text if response_text else "处理超时，请简化您的问题后重试。")
 
     def _build_messages(self, state: DialogState) -> List[Dict[str, str]]:
         """构建发送给 LLM 的消息列表"""
@@ -468,6 +642,18 @@ class ReActAgent:
         for msg in history:
             messages.append({"role": msg["role"], "content": msg["content"]})
 
+        # 注入用户上传的附件信息
+        pending = state.metadata.pop("pending_attachments", None)
+        if pending:
+            att_desc = "用户上传了以下素材：\n"
+            for att in pending:
+                file_type = att.get("type", "file")
+                name = att.get("name", "未知文件")
+                local_path = att.get("localPath", "")
+                att_desc += f"- {file_type}文件: {name} (本地路径: {local_path})\n"
+            att_desc += "请根据用户的需求，使用对应工具对素材进行操作。"
+            messages.append({"role": "user", "content": att_desc})
+
         return messages
 
     def _parse_tool_calls(self, text: str) -> List[Dict[str, Any]]:
@@ -515,6 +701,9 @@ class ReActAgent:
             # 参数校验
             validated = tool.validate_params(params) if tool.param_model else params
 
+            # Global pre-interceptors
+            validated = registry.run_pre_interceptors(validated, tool_name)
+
             # before_execute hook
             if tool.before_execute:
                 validated = tool.before_execute(validated) or validated
@@ -526,11 +715,57 @@ class ReActAgent:
             if tool.after_execute:
                 result = tool.after_execute(result) or result
 
+            # Global post-interceptors
+            result = registry.run_post_interceptors(result, tool_name)
+
+            # Self-verification for destructive/modify tools
+            if result.get("success") and tool.permission in ("modify", "destructive"):
+                result = self._verify_tool_result(tool_name, validated, result)
+
             return result
 
         except Exception as e:
             logger.error(f"[ReAct] 工具 {tool_name} 执行异常: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
+
+    def _verify_tool_result(self, tool_name: str, params: Dict, result: Dict) -> Dict:
+        """Post-execution self-verification for tool results."""
+        import re as _re
+        warnings = []
+
+        # 1. Timestamp alignment check for cut/merge/smart_clip
+        if tool_name in ("cut_video", "smart_clip"):
+            start = params.get("start_time", "")
+            end = params.get("end_time", "")
+            if start and end:
+                try:
+                    s = sum(float(x) * 60 ** i for i, x in enumerate(reversed(start.split(":"))))
+                    e = sum(float(x) * 60 ** i for i, x in enumerate(reversed(end.split(":"))))
+                    if e <= s:
+                        warnings.append(f"时间异常: 结束({end}) <= 开始({start})")
+                except (ValueError, IndexError):
+                    pass
+
+        # 2. Output file existence check
+        output_path = result.get("output_path") or result.get("file_path")
+        if output_path:
+            import os as _os
+            if not _os.path.exists(output_path):
+                warnings.append(f"输出文件不存在: {output_path}")
+
+        # 3. Format completeness for known tool types
+        if tool_name == "cut_video" and not result.get("output_path"):
+            warnings.append("剪切结果缺少 output_path")
+        if tool_name == "transcribe_video" and result.get("success") and not result.get("subtitle"):
+            warnings.append("转录成功但无字幕内容")
+
+        if warnings:
+            result["_warnings"] = warnings
+            logger.warning(f"[ReAct] 工具 {tool_name} 验证警告: {warnings}")
+        else:
+            result["_verified"] = True
+
+        return result
 
     def _format_observations(self, tool_results: List[Dict]) -> str:
         """将工具执行结果格式化为观察消息"""

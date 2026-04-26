@@ -78,13 +78,17 @@ class CreativeService:
     def create_video_with_transitions(
         self,
         creative: str,
-        audio_url: Optional[str] = None
+        audio_url: Optional[str] = None,
+        duration: float = 30.0,
+        style: str = "动感"
     ) -> Dict[str, str]:
         """创建带转场的视频
 
         Args:
             creative: 创意描述
             audio_url: 音频URL（可选）
+            duration: 目标时长（秒）
+            style: 风格偏好
 
         Returns:
             包含最终视频路径的字典
@@ -94,14 +98,14 @@ class CreativeService:
         # 获取视频素材信息
         source_infos = self._get_video_sources()
 
-        # 获取音频时长（如果有）
-        duration = 30
+        # 获取音频时长（如果有），否则使用参数时长
         if audio_url is not None:
             duration = self._get_audio_duration(audio_url)
 
-        # 获取剪辑提示
+        # 获取剪辑提示（包含风格偏好）
         logger.info("=================================llm获取剪辑视频提示词=================================")
-        clip_prompt = prompt_config.clip_prompt(creative, source_infos, duration)
+        styled_creative = f"[风格: {style}] {creative}" if style != "动感" else creative
+        clip_prompt = prompt_config.clip_prompt(styled_creative, source_infos, duration)
         logger.info(clip_prompt)
 
         # 调用 LLM 生成剪辑方案

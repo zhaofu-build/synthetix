@@ -59,6 +59,7 @@ CORE_NEXUS_BASE_URL = os.getenv('CORE_NEXUS_BASE_URL', '')
 # 视频API配置
 video_type = os.getenv('VIDEO_TYPE', 'pexels')
 video_api_keys = os.getenv('VIDEO_API_KEYS', '')
+pixabay_api_key = os.getenv('PIXABAY_API_KEY', '')
 
 # CORS配置 - 允许的来源，逗号分隔
 cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:9528,http://127.0.0.1:9528,http://localhost:9527,http://127.0.0.1:9527').split(',')

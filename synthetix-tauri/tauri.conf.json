@@ -41,6 +41,12 @@
   "plugins": {
     "shell": {
       "open": true
+    },
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://gitee.com/zhaofu233/synthetix/releases/latest/download/latest.json"
+      ]
     }
   }
 }
