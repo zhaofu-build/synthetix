@@ -208,9 +208,13 @@ class ReActAgent:
 
         try:
             # TAOR 循环
-            final_reply = await self._taor_loop(state, user_input)
+            final_reply, tool_summary = await self._taor_loop(state, user_input)
 
-            state.add_message("assistant", final_reply)
+            reply_with_context = final_reply
+            if tool_summary:
+                reply_with_context += f"\n\n[工具执行记录]\n{tool_summary}"
+
+            state.add_message("assistant", reply_with_context)
             self.sessions.persist_session(state)
 
             return {
@@ -264,6 +268,7 @@ class ReActAgent:
             final_reply = ""
 
             has_temp_asset = False
+            all_tool_results = []  # 收集所有轮次的工具结果
 
             for iteration in range(self.MAX_ITERATIONS):
                 yield {"type": "thinking", "iteration": iteration + 1}
@@ -305,7 +310,23 @@ class ReActAgent:
                     }
 
                     print(f"[ToolExec] >>> {tool_name}({json.dumps(tool_params, ensure_ascii=False)[:300]})")
-                    result = await self._execute_tool(tool_name, tool_params, state)
+
+                    # 支持进度的工具：后台执行 + 轮询进度
+                    if tool_name == "download_video":
+                        import asyncio
+                        progress_dict = {}
+                        tool_task = asyncio.ensure_future(
+                            self._execute_tool(tool_name, tool_params, state, progress_dict=progress_dict)
+                        )
+                        while not tool_task.done():
+                            p = {k: v for k, v in progress_dict.items() if v}
+                            if p:
+                                yield {"type": "tool_progress", "tool": tool_name, **p}
+                            await asyncio.sleep(0.8)
+                        result = tool_task.result()
+                    else:
+                        result = await self._execute_tool(tool_name, tool_params, state)
+
                     _res_preview = json.dumps(result, ensure_ascii=False, default=str)[:300]
                     print(f"[ToolExec] <<< {tool_name} success={result.get('success', True)} | {_res_preview}")
 
@@ -313,6 +334,11 @@ class ReActAgent:
                         has_temp_asset = True
 
                     tool_results.append({
+                        "name": tool_name,
+                        "params": tool_params,
+                        "result": result,
+                    })
+                    all_tool_results.append({
                         "name": tool_name,
                         "params": tool_params,
                         "result": result,
@@ -354,7 +380,12 @@ class ReActAgent:
                 final_reply = response_text if response_text else "处理超时，请简化您的问题后重试。"
                 yield {"type": "reply", "content": final_reply}
 
-            state.add_message("assistant", final_reply)
+            reply_with_context = final_reply
+            tool_summary = self._build_tool_summary(all_tool_results)
+            if tool_summary:
+                reply_with_context += f"\n\n[工具执行记录]\n{tool_summary}"
+
+            state.add_message("assistant", reply_with_context)
             self.sessions.persist_session(state)
 
             # 从本次对话中提取偏好并保存
@@ -515,17 +546,20 @@ class ReActAgent:
             logger.error(f"[DeepResearch] 失败: {e}", exc_info=True)
             yield {"type": "error", "message": str(e), "session_id": state.session_id}
 
-    async def _taor_loop(self, state: DialogState, user_input: str) -> str:
+    async def _taor_loop(self, state: DialogState, user_input: str):
         """
         TAOR 主循环: Think → Act → Observe → Repeat
 
         每轮将历史消息 + 工具结果发送给 LLM，
         LLM 要么直接回复用户，要么输出 <tool_call/> 调用工具。
         如果有工具调用，执行后把结果加入消息历史，继续下一轮。
+
+        Returns: (final_reply, tool_summary)
         """
         # 构建消息历史（最近 20 条）
         messages = self._build_messages(state)
         has_temp_asset = False
+        all_tool_results = []  # 收集所有轮次的工具结果
 
         for iteration in range(self.MAX_ITERATIONS):
             logger.info(f"[ReAct] 第{iteration+1}轮循环")
@@ -548,8 +582,8 @@ class ReActAgent:
                 clean_reply = self._strip_tool_call_hints(response_text)
                 # 有临时素材产出时跳过冗余文字
                 if has_temp_asset and clean_reply:
-                    return ""
-                return clean_reply
+                    return "", self._build_tool_summary(all_tool_results)
+                return clean_reply, self._build_tool_summary(all_tool_results)
 
             # Act: 执行工具调用
             tool_results = []
@@ -567,6 +601,11 @@ class ReActAgent:
                     "params": tc["params"],
                     "result": result,
                 })
+                all_tool_results.append({
+                    "name": tc["name"],
+                    "params": tc["params"],
+                    "result": result,
+                })
 
                 # 缓存视频列表供序数解析
                 if tc["name"] == "list_videos" and result.get("videos"):
@@ -579,7 +618,8 @@ class ReActAgent:
             logger.info(f"[ReAct] 观察: {observation[:300]}")
 
         # 超过最大循环次数
-        return "" if has_temp_asset else (response_text if response_text else "处理超时，请简化您的问题后重试。")
+        reply = "" if has_temp_asset else (response_text if response_text else "处理超时，请简化您的问题后重试。")
+        return reply, self._build_tool_summary(all_tool_results)
 
     def _build_messages(self, state: DialogState) -> List[Dict[str, str]]:
         """构建发送给 LLM 的消息列表"""
@@ -676,7 +716,8 @@ class ReActAgent:
         return calls
 
     async def _execute_tool(
-        self, tool_name: str, params: Dict, state: DialogState
+        self, tool_name: str, params: Dict, state: DialogState,
+        progress_dict: Dict = None,
     ) -> Dict[str, Any]:
         """执行单个工具（支持 registry 工具和 MCP 外部工具）"""
         tool = registry.get_tool(tool_name)
@@ -696,6 +737,10 @@ class ReActAgent:
         # 注入 project_id
         if state.project_id and "project_id" not in params:
             params["project_id"] = state.project_id
+
+        # 注入 progress_dict（供支持进度的工具使用）
+        if progress_dict is not None:
+            params["_progress_dict"] = progress_dict
 
         try:
             # 参数校验
@@ -766,6 +811,42 @@ class ReActAgent:
             result["_verified"] = True
 
         return result
+
+    def _build_tool_summary(self, all_tool_results: List[Dict]) -> str:
+        """构建工具执行摘要，存入对话历史供 LLM 后续引用"""
+        if not all_tool_results:
+            return ""
+        lines = []
+        for tr in all_tool_results:
+            name = tr["name"]
+            result = tr["result"]
+            success = result.get("success", True)
+            status = "成功" if success else "失败"
+            parts = [f"- {name}: {status}"]
+
+            # 成功时提取关键产物信息
+            if success:
+                if result.get("video_id"):
+                    parts.append(f"video_id={result['video_id']}")
+                if result.get("output_path"):
+                    parts.append(f"文件={result['output_path']}")
+                if result.get("filename"):
+                    parts.append(f"文件名={result['filename']}")
+                if result.get("duration"):
+                    parts.append(f"时长={result['duration']}")
+                if result.get("web_path"):
+                    parts.append(f"路径={result['web_path']}")
+                if result.get("videos"):
+                    parts.append(f"素材数={len(result['videos'])}")
+                if result.get("audio_id"):
+                    parts.append(f"audio_id={result['audio_id']}")
+            else:
+                error = result.get("error", "")
+                if error:
+                    parts.append(f"错误={error[:100]}")
+
+            lines.append(" | ".join(parts))
+        return "\n".join(lines)
 
     def _format_observations(self, tool_results: List[Dict]) -> str:
         """将工具执行结果格式化为观察消息"""

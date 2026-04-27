@@ -149,6 +149,39 @@ async def reload_config():
     return success_response(data=cfg_get_all(), message="配置已重新加载")
 
 
+COOKIE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "cookies.txt")
+
+
+@router.get("/cookies", summary="获取 Cookie 文件内容")
+async def get_cookies():
+    if not os.path.exists(COOKIE_FILE):
+        return success_response(data={"exists": False, "content": ""}, message="Cookie 文件不存在")
+    try:
+        with open(COOKIE_FILE, "r", encoding="utf-8") as f:
+            content = f.read()
+        return success_response(data={"exists": True, "content": content}, message="获取成功")
+    except Exception as e:
+        return error_response(error="CookieError", message=str(e), code=500)
+
+
+@router.put("/cookies", summary="保存 Cookie 文件")
+async def save_cookies(req: Dict[str, Any]):
+    content = req.get("content", "")
+    try:
+        with open(COOKIE_FILE, "w", encoding="utf-8") as f:
+            f.write(content)
+        return success_response(message="Cookie 已保存")
+    except Exception as e:
+        return error_response(error="CookieError", message=str(e), code=500)
+
+
+@router.delete("/cookies", summary="删除 Cookie 文件")
+async def delete_cookies():
+    if os.path.exists(COOKIE_FILE):
+        os.remove(COOKIE_FILE)
+    return success_response(message="Cookie 已删除")
+
+
 @router.get("/logs", summary="获取日志")
 async def get_logs():
     """获取系统日志"""

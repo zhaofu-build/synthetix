@@ -1400,23 +1400,61 @@ async def tool_add_audio(
 )
 async def tool_download_video(
     url: str,
+    _progress_dict: dict = None,
     **kwargs
 ) -> Dict[str, Any]:
     """下载视频工具"""
     from src.infrastructure.db.session import get_db_context
-    from src.application.services.video_service import VideoService
+    from src.infrastructure.repositories import VideoRepository
+    from src.application.services import video_downloader_adapter as video_downloader
+    from src.application.services import ffmpeg_adapter as ffmpeg
+    from src import config
 
     try:
         with get_db_context() as db:
-            service = VideoService(db)
-            result = service.download_video(url)
+            repo = VideoRepository(db)
+
+            # 直接下载到素材目录
+            dest_dir = config.source_videos_dir
+            os.makedirs(dest_dir, exist_ok=True)
+            title, duration = video_downloader.download_videos_from_url(url, dest_dir, progress_dict=_progress_dict)
+
+            file_path = os.path.join(dest_dir, title)
+            if not os.path.exists(file_path):
+                return {"success": False, "error": f"视频下载失败：文件未生成。可能是需要登录 Cookie 才能下载该视频。"}
+
+            # 获取视频信息
+            try:
+                video_info = ffmpeg.get_video_info(file_path) or {}
+                duration_hms = video_info.get("duration_hms", str(duration) if duration else "0")
+            except Exception:
+                video_info = {}
+                duration_hms = str(duration) if duration else "0"
+
+            new_video = repo.create(
+                video_name=title,
+                local_path=file_path,
+                web_path=f"/static/source_videos/{title}",
+                duration=video_info.get("duration", str(duration) if duration else "0"),
+                duration_hms=duration_hms,
+                is_temp=True,
+                file_type="video",
+            )
+
+            project_id = kwargs.get("project_id")
+            if project_id:
+                _add_material_to_project(project_id, new_video.id)
 
             return {
                 "success": True,
-                "video_id": result["id"],
-                "filename": result["filename"],
-                "output_path": result["local_path"],
-                "message": f"视频下载完成，已入库 ID={result['id']}"
+                "video_id": new_video.id,
+                "filename": title,
+                "output_path": file_path,
+                "web_path": f"/static/source_videos/{title}",
+                "output_type": "video",
+                "duration": duration,
+                "is_temp_asset": True,
+                "message": f"视频下载完成 ID={new_video.id}"
             }
 
     except Exception as e:

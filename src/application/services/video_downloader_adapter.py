@@ -34,11 +34,10 @@ def dlp_download_video(info, output_dir, resolution='1080p'):
         'writethumbnail': False,  # 关闭缩略图下载
         'outtmpl': os.path.join(output_dir, f"{series}{season}{title}.%(ext)s"),
         'ignoreerrors': True,
-        'cookiefile': 'cookies.txt' if os.path.exists("cookies.txt") else None,
         'noplaylist': True,  # 不下载播放列表（仅当前视频）,
         'no_check_certificate': True,  # 跳过 SSL 验证
-        'ssl_version': 'TLSv1_2',  # 强制 TLS 1.2
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36',
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+        **_get_cookie_source(),
     }
 
     # 执行下载
@@ -47,31 +46,80 @@ def dlp_download_video(info, output_dir, resolution='1080p'):
     return output_dir
 
 
-def download_videos_from_url(url, output_dir, resolution='1080p', limit=5):
-    """
-    从给定的URL列表中下载视频。
+def _get_cookie_source():
+    """按优先级获取 cookie 来源：cookies.txt > 浏览器 cookie"""
+    if os.path.exists("cookies.txt"):
+        return {'cookiefile': 'cookies.txt'}
+    try:
+        return {'cookies_from_browser': ('chrome',)}
+    except Exception:
+        return {}
 
-    :param url: 单个或多个视频/播放列表的URL列表
+
+def _site_headers(url):
+    """根据 URL 返回站点专用请求头"""
+    if 'bilibili.com' in url:
+        return {'Referer': 'https://www.bilibili.com', 'Origin': 'https://www.bilibili.com'}
+    if 'douyin.com' in url:
+        return {'Referer': 'https://www.douyin.com/', 'Cookie': 'msToken='}
+    return {}
+
+
+def download_videos_from_url(url, output_dir, resolution='1080p', limit=5, progress_dict=None):
+    """
+    从给定的URL下载视频（提取信息 + 下载合并为一次调用）。
+
+    :param url: 视频 URL
     :param output_dir: 输出目录
     :param resolution: 目标分辨率，默认为'1080p'
     :param limit: 如果是播放列表，则限制下载的视频数量
+    :param progress_dict: 可选 dict，yt-dlp 实时更新下载进度
     :return: (title, duration) 文件名和时长
     """
+    ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
 
-    # 设置用于提取视频信息的选项
-    extraction_options = {
+    def _progress_hook(d):
+        if progress_dict is None:
+            return
+        if d['status'] == 'downloading':
+            progress_dict['percent'] = d.get('_percent_str', '').strip()
+            progress_dict['speed'] = d.get('_speed_str', '').strip()
+            progress_dict['eta'] = d.get('_eta_str', '').strip()
+            progress_dict['total'] = d.get('_total_bytes_str', '').strip()
+        elif d['status'] == 'finished':
+            progress_dict['percent'] = '100%'
+            progress_dict['speed'] = ''
+            progress_dict['eta'] = ''
+            progress_dict['total'] = d.get('_total_bytes_str', '').strip()
+
+    site_headers = _site_headers(url)
+
+    ydl_opts = {
+        'format': f'bestvideo[ext=mp4][height<={resolution}]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'dump_single_json': True,
         'playlistend': limit,
         'ignoreerrors': True,
-        'cookies_from_browser': 'chrome'
+        'noplaylist': True,
+        'no_check_certificate': True,
+        'user_agent': ua,
+        'outtmpl': os.path.join(output_dir, '%(title)s.%(ext)s'),
+        'progress_hooks': [_progress_hook],
+        **_get_cookie_source(),
     }
+    if site_headers:
+        ydl_opts['http_headers'] = site_headers
 
-    # 收集所有要下载的视频信息
-    ydl = yt_dlp.YoutubeDL(extraction_options)
-    result = ydl.extract_info(url, download=False)
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        result = ydl.extract_info(url, download=True)
 
-    # 调用download_video进行下载
-    dlp_download_video(result, output_dir, resolution)
+    if result is None:
+        # 根据站点给出更具体的提示
+        if 'douyin.com' in url:
+            raise ValueError("抖音视频下载失败：需要登录 Cookie。请在浏览器登录抖音后导出 cookies.txt 放到项目根目录，或关闭 Chrome 后重试。")
+        if 'bilibili.com' in url:
+            raise ValueError("B站视频下载失败：需要登录 Cookie。请在浏览器登录B站后导出 cookies.txt 放到项目根目录，或关闭 Chrome 后重试。")
+        raise ValueError(f"无法获取视频信息，请检查 URL 是否有效: {url}")
+
     title = sanitize_title(result['title']) + ".mp4"
     return title, result['duration']
 
