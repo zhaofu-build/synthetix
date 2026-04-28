@@ -110,6 +110,7 @@ def generate_response(
     account_id: Optional[str] = None,
     temperature: float = 0.7,
     max_tokens: int = 2048,
+    provider_options: Optional[Dict] = None,
 ) -> str:
     """
     使用 core-nexus-ai API 进行文本生成（同步）
@@ -125,6 +126,7 @@ def generate_response(
         account_id: 保留参数（兼容性）
         temperature: 温度参数
         max_tokens: 最大 token 数
+        provider_options: 供应商特有参数（如 use_kv_cache, session_id）
 
     Returns:
         生成的文本内容
@@ -135,7 +137,8 @@ def generate_response(
             messages=messages,
             model=model_name,
             temperature=temperature,
-            max_tokens=max_tokens
+            max_tokens=max_tokens,
+            provider_options=provider_options,
         )
         return response
     except Exception as e:
@@ -148,6 +151,7 @@ def generate_response_stream(
     model_name: Optional[str] = None,
     temperature: float = 0.7,
     max_tokens: int = 2048,
+    provider_options: Optional[Dict] = None,
 ):
     """
     使用 core-nexus-ai API 进行流式文本生成（同步）
@@ -157,6 +161,7 @@ def generate_response_stream(
         model_name: 模型名称（可选）
         temperature: 温度参数
         max_tokens: 最大 token 数
+        provider_options: 供应商特有参数（如 use_kv_cache, session_id）
 
     Yields:
         生成的文本片段
@@ -167,7 +172,8 @@ def generate_response_stream(
             messages=messages,
             model=model_name,
             temperature=temperature,
-            max_tokens=max_tokens
+            max_tokens=max_tokens,
+            provider_options=provider_options,
         ):
             yield chunk
     except Exception as e:
@@ -180,6 +186,7 @@ async def generate_response_async(
     model_name: Optional[str] = None,
     temperature: float = 0.7,
     max_tokens: int = 2048,
+    provider_options: Optional[Dict] = None,
 ) -> str:
     """
     使用 core-nexus-ai API 进行异步文本生成（真异步，不阻塞事件循环）
@@ -189,6 +196,7 @@ async def generate_response_async(
         model_name: 模型名称（可选）
         temperature: 温度参数
         max_tokens: 最大 token 数
+        provider_options: 供应商特有参数（如 use_kv_cache, session_id）
 
     Returns:
         生成的文本内容
@@ -202,7 +210,8 @@ async def generate_response_async(
             messages=messages,
             model=model_name,
             temperature=temperature,
-            max_tokens=max_tokens
+            max_tokens=max_tokens,
+            provider_options=provider_options,
         )
         latency_ms = (_time.monotonic() - t0) * 1000
         record_ai_call(
@@ -304,6 +313,7 @@ async def generate_response_stream_async(
     model_name: Optional[str] = None,
     temperature: float = 0.7,
     max_tokens: int = 2048,
+    provider_options: Optional[Dict] = None,
 ) -> AsyncGenerator[str, None]:
     """
     使用 core-nexus-ai API 进行异步流式文本生成
@@ -313,6 +323,7 @@ async def generate_response_stream_async(
         model_name: 模型名称（可选）
         temperature: 温度参数
         max_tokens: 最大 token 数
+        provider_options: 供应商特有参数（如 use_kv_cache, session_id）
 
     Yields:
         生成的文本片段
@@ -323,7 +334,8 @@ async def generate_response_stream_async(
             messages=messages,
             model=model_name,
             temperature=temperature,
-            max_tokens=max_tokens
+            max_tokens=max_tokens,
+            provider_options=provider_options,
         ):
             yield chunk
     except Exception as e:

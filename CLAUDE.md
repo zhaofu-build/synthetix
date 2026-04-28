@@ -230,9 +230,10 @@ Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；
 
 ### 工具注册关键约定
 - `cut_video` 执行后会将结果注册为新素材入库（返回新 `video_id`），支持工具链式调用（剪切 → 分析）
-- `list_videos` 支持 `project_id` 参数，按项目筛选素材
+- `list_videos` 支持 `project_id` 参数，按项目筛选素材（含正式素材 + 临时素材）
 - `get_video_description` 无描述时提示用户使用 AI 分析
 - `analyze_video_vl` 从数据库读取 `video.duration` 传给 VL，约束片段时间戳不超出视频实际时长
+- `run_ffmpeg_cmd(cmd)` **已自动加 `ffmpeg` 前缀**，调用时不应再传 `'ffmpeg'`。三个变体：`run_ffmpeg_cmd`（同步）、`run_ffmpeg_cmd_async`（线程池）、`run_ffmpeg_cmd_atomic`（原子写入：先写临时文件再 rename）
 
 ### 扩展/插件系统
 - 扩展放在 `src/extensions/` 目录，每个扩展一个子目录，包含 `manifest.json` 和 Python 模块
@@ -268,6 +269,42 @@ Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；
 - `select_model()` 根据消息长度 + 工具调用检测 + 迭代轮次选择快/慢模型
 - 重试逻辑使用指数退避，同步用 `time.sleep()`，异步用 `await asyncio.sleep()`
 
+### API Key 配置流程
+
+core-nexus-ai 认证使用 `X-API-Key` header（格式 `cn-xxx`）。
+
+**配置来源优先级**：设置页 UI → `config/settings.json` → `.env` 文件
+
+数据流：
+```
+设置页 "AI 服务" tab → PATCH /api/tools/config {"core_nexus.api_key": "cn-xxx"}
+  → cfg_set() 持久化到 settings.json
+  → config.llm_key = api_key（注意：config.py 变量名是小写 llm_key）
+  → reset_client() → CoreNexusClient._init_key_pool() 从 config.llm_key 读取
+```
+
+**关键注意**：
+- `config.py` 中 API Key 变量名是小写 `llm_key`（非 `LLM_KEY`）。`_init_key_pool` 优先读 `config.llm_key`，兼容 `config.LLM_KEY`。
+- `_init_key_pool` 支持逗号分隔多 key 轮换，单个 key 也正常工作。
+- `core_nexus_api.py` 中 `list_models` 和 `test_connection` 使用裸 httpx 调用（非 CoreNexusClient），需手动注入 `X-API-Key` header。
+- 设置页 core_nexus API Key 同步时，也设置 `TTS_KEY`、`ASR_KEY`、`VL_KEY`（作为 fallback，各自独立配置时优先用独立 key）。
+
+### KV Cache（Prompt Caching）
+
+ReAct Agent 的 TAOR 循环启用了 KV Cache，每轮迭代自动复用已计算的 token 前缀：
+
+```python
+# react_agent.py 中的 TAOR 循环
+provider_options = {"use_kv_cache": True}
+if kv_session_id:
+    provider_options["session_id"] = kv_session_id
+response_text = await generate_response_async(messages, provider_options=provider_options)
+# 从响应提取 session_id 供下一轮复用
+kv_session_id = client.last_response.get("output", {}).get("session_id")
+```
+
+`CoreNexusClient` 的 4 个 LLM 方法均支持 `provider_options` 参数，`llm_adapter` 的 4 个 `generate_response*` 函数透传该参数。`client.last_response` 属性存储最近一次 LLM 调用的完整响应（含 `session_id`、`cached_tokens`）。
+
 ## 配置
 
 ### 环境变量 (.env)
@@ -283,7 +320,7 @@ CHROME_CDP_URL=          # CDP 浏览器地址（可选，默认 http://127.0.0.
 ```
 
 ### 分层配置
-`config/default.json` 提供默认值，`config/settings.json` 覆盖（gitignored）。通过 `config_manager.py` 管理，支持 API 热重载。
+`config/default.json` 提供默认值，`config/settings.json` 覆盖（注意：settings.json 含 API Key 等敏感信息，但**未加入 .gitignore**，手动加入或避免在公开仓库使用）。通过 `config_manager.py` 管理，支持 API 热重载。
 
 ## Docker 部署
 
@@ -308,6 +345,49 @@ docker-compose up --build
 - **健康检查**: `GET /health` 检查数据库、ffmpeg、core-nexus 连接、活跃会话数
 - **WebSocket**: 三个通道 `/ws`（Agent 对话）、`/ws/render`（渲染进度）、`/ws/system`（系统通知）
 - **国际化**: `vue-i18n@9`，locale 文件在 `synthetix-vue/src/locales/`，设置页可切换语言
+
+## 项目临时文件系统
+
+聊天上传和工具产出（剪切/合并/下载/图片处理等）存入**项目专属临时目录**，不进入素材库。
+
+### 目录结构
+```
+static/temp/{project_id}/           # 每个项目独立目录
+  ├── upload_xxx.jpg                # 聊天上传的文件
+  ├── cut_xxx_123.mp4               # 工具产出的文件
+  └── ...
+```
+
+### 数据库表 `project_temp_file`
+- 实体：`src/domain/entities/project_temp_file.py`
+- Repository：`src/infrastructure/repositories/temp_file_repository.py`
+- 字段：`project_id`（FK）、`session_id`、`file_name`、`file_path`、`web_path`、`file_type`、`file_size`、`source`（upload/cut/merge/download 等）
+
+### 双记录策略
+上传文件时同时创建两条记录：
+1. **`ProjectTempFile`** — 用于级联删除（删项目/清会话时自动清理）
+2. **`VideoSource`（`is_temp=True`）** — 用于工具通过 `video_id` 引用（图片处理、分析等工具需要 `video_id`）
+
+### 级联删除
+- 删除项目 → `TempFileRepository.delete_by_project()` + 删除 `static/temp/{project_id}/` 目录
+- 删除/清空会话 → `TempFileRepository.delete_by_session()`
+- 删除单个临时文件 → `DELETE /api/projects/temp-files/{id}`
+
+### 工具产出保存
+`tool_registry.py` 中的 `_save_temp_file(src_path, project_id, file_type, source)` helper：
+- 将工具产出文件移到 `static/temp/{project_id}/`
+- 创建 `ProjectTempFile` 记录
+- 返回 `{ temp_file_id, web_path, local_path, output_type, is_temp_asset: True }`
+- 被 `cut_video`、`merge_videos`、`download_video`、图片处理工具等调用
+- 无 `project_id` 时回退到素材库（创建 `VideoSource` 记录）
+
+### "存入库"操作
+`POST /api/projects/temp-files/{id}/save-to-library`：将临时文件复制到 `static/source_videos/`，创建正式 `VideoSource` 记录。
+
+### 前端适配
+- 上传返回 `video_id` + `temp_file_id`，附件上下文注入 LLM 时包含素材 ID
+- `TempAssetCard` 组件兼容 snake_case（SSE 直传）和 camelCase（API 重载后 `to_camel` 转换）
+- `_saveChatHistory()` 使用 `JSON.parse(JSON.stringify(...))` 深拷贝确保 reactive proxy 正确序列化
 
 ## 常见陷阱
 
@@ -337,7 +417,21 @@ docker-compose up --build
 
 `subprocess.run()` 在 Windows 上 `text=True` 默认使用系统编码（GBK/CP936），处理中文路径时会报 `UnicodeDecodeError`。所有 `subprocess.run/call` 应使用 `encoding='utf-8', errors='replace'`。目前 `run_ffmpeg_cmd()` 已修复，但 `ffmpeg_adapter.py`、`quality_service.py`、`ffmpeg_util.py` 中仍有遗漏。
 
-### 在线素材搜索（Pexels + Pixabay）
+### Element Plus 图标导入
+
+`@element-plus/icons-vue` 不包含 `Cookie` 图标。使用前需确认图标存在，可用 `Present`（礼物盒）等替代。导入不存在的图标会导致 `vite build` 失败（Rollup 报 `"X" is not exported`）。
+
+### run_ffmpeg_cmd 不要重复传 'ffmpeg'
+
+`run_ffmpeg_cmd(cmd)` 内部已自动加 `ffmpeg` 前缀（`command = ["ffmpeg"]` + `command.extend(cmd)`）。调用时只传参数部分：`run_ffmpeg_cmd(['-y', '-i', path, ...])`，不要传 `run_ffmpeg_cmd(['ffmpeg', '-y', ...])`。
+
+### 聊天历史保存时 reactive proxy 序列化
+
+`_saveChatHistory()` 必须用 `JSON.parse(JSON.stringify(...))` 深拷贝 `this.messages`，否则 Vue reactive proxy 对象经 axios 序列化可能丢失嵌套属性（如 `toolCalls[].mediaInfo`、`attachments`）。
+
+### API Key 冷启动同步
+
+`main.py` lifespan 中从 `settings.json` 读取 `core_nexus.api_key` 并同步到 `config.llm_key`（以及 `TTS_KEY`、`ASR_KEY`、`VL_KEY` fallback）。如果只通过设置页 UI 配置但不同步到运行时，重启后首次 LLM 调用会失败（key 为空）。
 
 `video_downloader_adapter.py` 提供统一搜索入口：
 - `search_videos(term, min_duration, source)` — `source` 为 `pexels`/`pixabay`/`all`

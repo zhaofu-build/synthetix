@@ -353,6 +353,19 @@ async def delete_session(session_id: str):
     manager = get_session_manager()
     success = manager.delete_session(session_id)
 
+    # 清理会话关联的临时文件
+    if success:
+        try:
+            from src.infrastructure.db.session import get_db_context
+            from src.infrastructure.repositories.temp_file_repository import TempFileRepository
+            with get_db_context() as db:
+                temp_repo = TempFileRepository(db)
+                temp_repo.delete_by_session(session_id)
+                db.commit()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"清理会话临时文件失败: {e}")
+
     if success:
         return success_response(message="会话已删除")
     else:

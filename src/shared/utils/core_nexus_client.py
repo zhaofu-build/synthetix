@@ -110,19 +110,24 @@ class CoreNexusClient:
         self._key_pool = ApiKeyPool()
         self._init_key_pool()
 
+        # 最近一次 LLM 响应的完整数据（用于 KV Cache session_id 提取等）
+        self._last_response: dict = {}
+
         logger.info(f"CoreNexusClient 初始化 | base_url: {self.base_url}")
 
     def _init_key_pool(self):
-        """从环境变量初始化 API Key 池（支持逗号分隔的多 key）"""
+        """从运行时配置初始化 API Key 池（支持逗号分隔的多 key）"""
+        # config.py 中 llm_key 为小写，也兼容大写属性（settings 页注入）
+        llm_key = getattr(config, "llm_key", "") or getattr(config, "LLM_KEY", "")
         key_map = {
-            "LLM": getattr(config, "LLM_KEY", ""),
-            "TTS": getattr(config, "TTS_KEY", "") or getattr(config, "LLM_KEY", ""),
-            "ASR": getattr(config, "ASR_KEY", "") or getattr(config, "LLM_KEY", ""),
-            "VL": getattr(config, "VL_KEY", "") or getattr(config, "LLM_KEY", ""),
+            "LLM": llm_key,
+            "TTS": getattr(config, "TTS_KEY", "") or llm_key,
+            "ASR": getattr(config, "ASR_KEY", "") or llm_key,
+            "VL": getattr(config, "VL_KEY", "") or llm_key,
         }
         for svc, raw_keys in key_map.items():
             keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
-            if len(keys) > 1:
+            if keys:
                 self._key_pool.set_keys(svc, keys)
 
     def set_api_keys(self, service: str, keys: List[str]):
@@ -132,6 +137,11 @@ class CoreNexusClient:
     @property
     def key_pool_stats(self) -> Dict[str, Any]:
         return self._key_pool.get_stats()
+
+    @property
+    def last_response(self) -> dict:
+        """最近一次 LLM 调用的完整响应（含 session_id、cached_tokens 等元数据）"""
+        return self._last_response or {}
 
     def set_fallback_urls(self, service: str, urls: List[str]):
         """配置备用服务商 URL
@@ -417,6 +427,7 @@ class CoreNexusClient:
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
+        provider_options: Optional[Dict] = None,
         **generation_params
     ) -> str:
         """
@@ -427,6 +438,7 @@ class CoreNexusClient:
             model: 模型名称（可选，使用默认模型）
             temperature: 温度参数
             max_tokens: 最大 token 数
+            provider_options: 供应商特有参数（如 use_kv_cache, session_id）
             **generation_params: 其他生成参数
 
         Returns:
@@ -442,8 +454,11 @@ class CoreNexusClient:
         }
         if model:
             payload["model"] = model
+        if provider_options:
+            payload["provider_options"] = provider_options
 
         response = self._request('POST', '/llm', json_data=payload)
+        self._last_response = response
         return response.get('output', {}).get('text', '')
 
     async def llm_generate_async(
@@ -452,6 +467,7 @@ class CoreNexusClient:
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
+        provider_options: Optional[Dict] = None,
         **generation_params
     ) -> str:
         """LLM 异步文本生成"""
@@ -465,12 +481,15 @@ class CoreNexusClient:
         }
         if model:
             payload["model"] = model
+        if provider_options:
+            payload["provider_options"] = provider_options
 
         import json as _json
         print(f"[CoreNexus] POST {self.base_url}/llm | model={model} | msgs={len(messages)}")
         print(f"[CoreNexus] body: {_json.dumps(payload, ensure_ascii=False)[:500]}")
 
         response = await self._request_async('POST', '/llm', json_data=payload)
+        self._last_response = response
         return response.get('output', {}).get('text', '')
 
     def llm_generate_stream(
@@ -479,6 +498,7 @@ class CoreNexusClient:
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
+        provider_options: Optional[Dict] = None,
         **generation_params
     ) -> Generator[str, None, None]:
         """
@@ -494,6 +514,8 @@ class CoreNexusClient:
         }
         if model:
             payload["model"] = model
+        if provider_options:
+            payload["provider_options"] = provider_options
 
         for chunk in self._request_stream('POST', '/llm/stream', json_data=payload):
             if 'text' in chunk:
@@ -505,6 +527,7 @@ class CoreNexusClient:
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
+        provider_options: Optional[Dict] = None,
         **generation_params
     ) -> AsyncGenerator[str, None]:
         """LLM 异步流式文本生成"""
@@ -518,6 +541,8 @@ class CoreNexusClient:
         }
         if model:
             payload["model"] = model
+        if provider_options:
+            payload["provider_options"] = provider_options
 
         import json as _json
         print(f"[CoreNexus] POST {self.base_url}/llm/stream | model={model} | msgs={len(messages)}")

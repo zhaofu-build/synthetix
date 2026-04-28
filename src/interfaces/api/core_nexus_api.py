@@ -78,13 +78,20 @@ async def list_models(
         return success_response(data=[], message="CORE_NEXUS_BASE_URL 未配置")
     url = url.strip().rstrip('/')
 
+    # 读取 API Key
+    api_key = cfg_get("core_nexus.api_key") or getattr(config, "LLM_KEY", "")
+
     try:
         params = {}
         if task_type:
             params["task_type"] = task_type
 
+        headers = {}
+        if api_key:
+            headers["X-API-Key"] = api_key
+
         async with httpx.AsyncClient(timeout=10.0) as http_client:
-            resp = await http_client.get(f"{url}/api/models", params=params)
+            resp = await http_client.get(f"{url}/api/models", params=params, headers=headers)
             resp.raise_for_status()
             data = resp.json()
 

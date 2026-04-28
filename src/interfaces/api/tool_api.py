@@ -8,7 +8,7 @@
 import os
 import logging
 from typing import Dict, Any
-from fastapi import APIRouter, UploadFile, File
+from fastapi import APIRouter, UploadFile, File, Form
 
 from src import config
 from src.application.services import use_ffmpeg
@@ -56,18 +56,18 @@ _ALLOWED_FILE_EXT = {
 
 
 @router.post("/upload/file", summary="上传通用文件")
-async def upload_file(file_stream: UploadFile = File(...)):
-    """上传通用文件到正式素材目录并入库"""
-    from src.infrastructure.repositories import VideoRepository
-
+async def upload_file(
+    file_stream: UploadFile = File(...),
+    project_id: int = Form(default=None),
+    session_id: str = Form(default=None),
+):
+    """上传文件到项目临时目录"""
     # 校验文件类型
     ext = os.path.splitext(file_stream.filename or "")[1].lower()
     if ext not in _ALLOWED_FILE_EXT:
         return error_response(error="UploadError", message=f"不支持的文件格式: {ext}", code=400)
 
     try:
-        file_info = await file_util.save_uploaded_file(file_stream, config.source_videos_dir)
-
         # 根据扩展名推断素材类型
         _VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm", ".mpg", ".mpeg", ".3gp", ".ts"}
         _AUDIO_EXT = {".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".wma"}
@@ -81,26 +81,61 @@ async def upload_file(file_stream: UploadFile = File(...)):
         else:
             file_type = "document"
 
-        # 入 DB 作为临时素材
-        from src.infrastructure.db.session import get_db_context
+        # 确定保存目录：优先项目临时目录，回退到通用目录
+        if project_id:
+            temp_dir = os.path.join(str(config.ROOT_DIR_WIN), "static", "temp", str(project_id))
+            os.makedirs(temp_dir, exist_ok=True)
+            prefix = "upload"
+        else:
+            temp_dir = str(config.source_videos_dir)
+            prefix = "upload"
+
+        file_info = await file_util.save_uploaded_file(file_stream, temp_dir)
         filename = file_info["filename"]
-        with get_db_context() as db:
-            repo = VideoRepository(db)
-            new_video = repo.create(
-                video_name=file_stream.filename or filename,
-                local_path=file_info["local_path"],
-                web_path=f"/static/source_videos/{filename}",
-                is_temp=True,
-                file_type=file_type,
-            )
-            video_id = new_video.id
-            db.commit()
+        local_path = file_info["local_path"]
+        web_path = f"/static/temp/{project_id}/{filename}" if project_id else f"/static/source_videos/{filename}"
+
+        # 存入项目临时文件表 + 创建 VideoSource 记录（供工具引用）
+        temp_file_id = None
+        video_id = None
+        if project_id:
+            from src.infrastructure.db.session import get_db_context
+            from src.infrastructure.repositories.temp_file_repository import TempFileRepository
+            from src.infrastructure.repositories import VideoRepository
+            file_size = os.path.getsize(local_path) if os.path.isfile(local_path) else 0
+            with get_db_context() as db:
+                # 临时文件记录（用于级联删除）
+                repo = TempFileRepository(db)
+                record = repo.create(
+                    project_id=project_id,
+                    session_id=session_id,
+                    file_name=file_stream.filename or filename,
+                    file_path=local_path,
+                    web_path=web_path,
+                    file_type=file_type,
+                    source="upload",
+                    file_size=file_size,
+                )
+                temp_file_id = record.id
+                # 同时创建 VideoSource 记录（is_temp=True），供工具通过 video_id 引用
+                video_repo = VideoRepository(db)
+                vs = video_repo.create(
+                    video_name=file_stream.filename or filename,
+                    local_path=local_path,
+                    web_path=web_path,
+                    is_temp=True,
+                    file_type=file_type,
+                )
+                video_id = vs.id
+                db.commit()
 
         return success_response(
             data={
+                "temp_file_id": temp_file_id,
                 "video_id": video_id,
-                "web_path": f"/static/source_videos/{filename}",
-                "local_path": file_info["local_path"],
+                "web_path": web_path,
+                "local_path": local_path,
+                "file_type": file_type,
             },
             message="上传成功"
         )
@@ -130,6 +165,19 @@ async def update_config(req: Dict[str, Any]):
         new_url = config_data["core_nexus.base_url"]
         if new_url:
             config.CORE_NEXUS_BASE_URL = new_url
+        from src.shared.utils.core_nexus_client import reset_client
+        reset_client()
+
+    # 同步 core_nexus API Key 到运行时配置和客户端
+    if "core_nexus.api_key" in config_data:
+        api_key = config_data["core_nexus.api_key"]
+        config.llm_key = api_key  # config.py 中定义的小写变量名
+        if not getattr(config, "TTS_KEY", ""):
+            config.TTS_KEY = api_key
+        if not getattr(config, "ASR_KEY", ""):
+            config.ASR_KEY = api_key
+        if not getattr(config, "VL_KEY", ""):
+            config.VL_KEY = api_key
         from src.shared.utils.core_nexus_client import reset_client
         reset_client()
 

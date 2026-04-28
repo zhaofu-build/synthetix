@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import json
+from src import config
 import time
 from typing import Dict, List, Optional, Callable, Any
 from dataclasses import dataclass, field
@@ -30,6 +31,59 @@ def _add_material_to_project(project_id: int, video_id: int):
                 ids.append(video_id)
                 project.material_ids = ids
                 db.commit()
+
+
+def _save_temp_file(src_path: str, project_id: int, file_type: str, source: str,
+                    session_id: str = None, file_name: str = None, duration: float = None) -> Dict[str, Any]:
+    """将工具产出的文件移到项目临时目录，创建 ProjectTempFile 记录。
+
+    返回兼容旧 is_temp_asset 格式的 dict（temp_file_id 替代 video_id）。
+    """
+    import shutil
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories.temp_file_repository import TempFileRepository
+
+    if not project_id:
+        # 无 project_id 时回退到素材库
+        return None
+
+    temp_dir = os.path.join(str(config.ROOT_DIR_WIN), "static", "temp", str(project_id))
+    os.makedirs(temp_dir, exist_ok=True)
+
+    filename = file_name or f"{source}_{int(time.time())}_{os.path.basename(src_path)}"
+    dest_path = os.path.join(temp_dir, filename)
+    shutil.move(src_path, dest_path)
+
+    file_size = os.path.getsize(dest_path) if os.path.isfile(dest_path) else 0
+    web_path = f"/static/temp/{project_id}/{filename}"
+
+    with get_db_context() as db:
+        repo = TempFileRepository(db)
+        record = repo.create(
+            project_id=project_id,
+            session_id=session_id,
+            file_name=filename,
+            file_path=dest_path,
+            web_path=web_path,
+            file_type=file_type,
+            source=source,
+            file_size=file_size,
+        )
+        db.commit()
+        temp_file_id = record.id
+
+    result = {
+        "success": True,
+        "temp_file_id": temp_file_id,
+        "video_id": None,
+        "web_path": web_path,
+        "local_path": dest_path,
+        "output_type": file_type,
+        "is_temp_asset": True,
+    }
+    if duration is not None:
+        result["duration"] = duration
+    return result
 
 
 # ==================== Pydantic 参数模型 ====================
@@ -186,6 +240,67 @@ class TranslateTextParams(BaseModel):
     target_lang: Opt[str] = Field(default="zh", description="目标语言")
 
 
+# --- 本机文件操作参数模型 ---
+
+class RenameItem(BaseModel):
+    old_path: str = Field(..., description="原文件完整路径")
+    new_path: str = Field(..., description="新文件完整路径")
+
+
+class MoveItem(BaseModel):
+    src: str = Field(..., description="源文件完整路径")
+    dst: str = Field(..., description="目标文件完整路径")
+
+
+class CopyItem(BaseModel):
+    src: str = Field(..., description="源文件完整路径")
+    dst: str = Field(..., description="目标文件完整路径")
+
+
+class RenameFilesParams(BaseModel):
+    renames: List[RenameItem] = Field(..., description="重命名列表")
+
+    @field_validator("renames")
+    @classmethod
+    def check_limit(cls, v):
+        if len(v) > 50:
+            raise ValueError("单次最多重命名 50 个文件")
+        return v
+
+
+class DeleteFilesParams(BaseModel):
+    file_paths: List[str] = Field(..., description="要删除的文件完整路径列表")
+
+    @field_validator("file_paths")
+    @classmethod
+    def check_limit(cls, v):
+        if len(v) > 50:
+            raise ValueError("单次最多删除 50 个文件")
+        return v
+
+
+class MoveFilesParams(BaseModel):
+    moves: List[MoveItem] = Field(..., description="移动列表")
+
+    @field_validator("moves")
+    @classmethod
+    def check_limit(cls, v):
+        if len(v) > 50:
+            raise ValueError("单次最多移动 50 个文件")
+        return v
+
+
+class CopyFilesParams(BaseModel):
+    copies: List[CopyItem] = Field(..., description="复制列表")
+
+    @field_validator("copies")
+    @classmethod
+    def check_limit(cls, v):
+        if len(v) > 50:
+            raise ValueError("单次最多复制 50 个文件")
+        return v
+
+
 # 参数模型映射
 PARAM_MODELS = {
     "cut_video": CutVideoParams,
@@ -207,6 +322,10 @@ PARAM_MODELS = {
     "convert_to_gif": ConvertToGifParams,
     "separate_vocal": SeparateVocalParams,
     "translate_text": TranslateTextParams,
+    "rename_files": RenameFilesParams,
+    "delete_files": DeleteFilesParams,
+    "move_files": MoveFilesParams,
+    "copy_files": CopyFilesParams,
 }
 
 
@@ -463,7 +582,18 @@ async def tool_cut_video(
             cut_info = ffmpeg.get_video_info(output_path) or {}
             cut_duration = float(cut_info.get("duration", 0)) or None
 
-            # 移动到正式素材目录，入 DB，关联项目
+            project_id = kwargs.get("project_id")
+
+            # 优先保存到项目临时目录
+            if project_id:
+                cut_filename = f"cut_{video_id}_{start_time.replace(':','')}{('_' + end_time.replace(':','')) if end_time else ''}{os.path.splitext(video.video_name or '.mp4')[1] or '.mp4'}"
+                result = _save_temp_file(output_path, project_id, "video", "cut",
+                                        file_name=cut_filename, duration=cut_duration)
+                if result:
+                    result["message"] = f"剪切完成: {start_time} - {end_time or '结尾'}"
+                    return result
+
+            # 回退：保存到素材库
             import shutil
             cut_filename = os.path.basename(str(output_path))
             dest_dir = config.source_videos_dir
@@ -480,7 +610,6 @@ async def tool_cut_video(
                 file_type="video",
             )
 
-            project_id = kwargs.get("project_id")
             if project_id:
                 _add_material_to_project(project_id, new_video.id)
 
@@ -549,7 +678,17 @@ async def tool_merge_videos(
             else:
                 ffmpeg.concatenate_videos_with_filter(video_paths, output_path)
 
-            # 移动到正式素材目录，入 DB，关联项目
+            project_id = kwargs.get("project_id")
+
+            # 优先保存到项目临时目录
+            if project_id:
+                merge_filename = f"merge_{len(video_paths)}_{int(time.time())}.mp4"
+                result = _save_temp_file(output_path, project_id, "video", "merge", file_name=merge_filename)
+                if result:
+                    result["message"] = f"成功合并 {len(video_paths)} 个视频（转场: {transition}）"
+                    return result
+
+            # 回退：保存到素材库
             import shutil
             output_filename = os.path.basename(str(output_path))
             dest_dir = config.source_videos_dir
@@ -565,7 +704,6 @@ async def tool_merge_videos(
                 file_type="video",
             )
 
-            project_id = kwargs.get("project_id")
             if project_id:
                 _add_material_to_project(project_id, new_video.id)
 
@@ -881,29 +1019,52 @@ async def tool_list_videos(**kwargs) -> Dict[str, Any]:
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.domain.entities.video_project import VideoProject
+    from src.domain.entities.video_source import VideoSource
 
     project_id = kwargs.get("project_id")
 
     try:
         with get_db_context() as db:
+            videos = []
+            label = "素材库中"
+
             if project_id:
-                # 按项目查询：只返回项目关联的素材
                 project = db.query(VideoProject).filter(VideoProject.id == int(project_id)).first()
+                project_name = project.name if project else str(project_id)
+                label = f"项目 '{project_name}' 中"
+
+                # 项目关联的正式素材
                 if project and project.material_ids:
                     repo = VideoRepository(db)
-                    videos = repo.get_by_ids(project.material_ids)
-                    label = f"项目 '{project.name}' 中"
-                else:
+                    videos.extend(repo.get_by_ids(project.material_ids))
+
+                # 项目临时文件对应的 VideoSource 记录
+                from src.domain.entities.project_temp_file import ProjectTempFile
+                temp_files = db.query(ProjectTempFile).filter(
+                    ProjectTempFile.project_id == int(project_id)
+                ).all()
+                if temp_files:
+                    temp_paths = [tf.file_path for tf in temp_files]
+                    temp_vs = db.query(VideoSource).filter(
+                        VideoSource.local_path.in_(temp_paths),
+                        VideoSource.is_temp == True,
+                    ).all()
+                    # 按路径建立索引去重
+                    existing_ids = {v.id for v in videos}
+                    for v in temp_vs:
+                        if v.id not in existing_ids:
+                            videos.append(v)
+
+                if not videos:
                     return {
                         "success": True,
                         "videos": [],
                         "count": 0,
-                        "message": "当前项目没有关联素材"
+                        "message": f"项目 '{project_name}' 暂无素材（正式 + 临时）"
                     }
             else:
                 repo = VideoRepository(db)
                 videos = repo.get_all(limit=20)
-                label = "素材库中"
 
             video_list = [
                 {
@@ -917,12 +1078,13 @@ async def tool_list_videos(**kwargs) -> Dict[str, Any]:
                 for v in videos
             ]
 
-            # 构建包含素材名称的详细消息
             lines = [f"{label}共 {len(video_list)} 个素材："]
             for i, v in enumerate(video_list):
                 name = v.get("name") or "未命名"
                 dur = v.get("duration") or ""
-                lines.append(f"{i+1}. {name} ({dur})")
+                temp_tag = " [临时]" if v.get("is_temp") else ""
+                ft_tag = f" ({v.get('file_type')})" if v.get("file_type") != "video" else ""
+                lines.append(f"{i+1}. {name}{temp_tag}{ft_tag} ({dur}) [ID: {v['id']}]")
 
             return {
                 "success": True,
@@ -1442,6 +1604,19 @@ async def tool_download_video(
             )
 
             project_id = kwargs.get("project_id")
+
+            # 如果有项目，优先保存到临时目录
+            if project_id:
+                import shutil
+                dl_filename = f"download_{new_video.id}_{title}"
+                temp_result = _save_temp_file(file_path, project_id, "video", "download",
+                                              file_name=dl_filename, duration=duration)
+                if temp_result:
+                    temp_result["video_id"] = new_video.id
+                    temp_result["filename"] = title
+                    temp_result["message"] = f"视频下载完成 ID={new_video.id}"
+                    return temp_result
+
             if project_id:
                 _add_material_to_project(project_id, new_video.id)
 
@@ -2191,35 +2366,86 @@ async def tool_set_cover(video_id: int, cover_image: str, **kwargs) -> Dict[str,
 async def tool_get_system_info(**kwargs) -> Dict[str, Any]:
     """获取系统信息"""
     import shutil
+    import platform
+    import psutil
     from src.shared.utils import ffmpeg_util
+    from src import config
 
     try:
-        gpu_info = "无 GPU"
+        # GPU 信息
+        gpu_name = "无 GPU"
+        gpu_vram = ""
+        cuda = False
         try:
             if ffmpeg_util.check_nvidia():
-                gpu_info = "NVIDIA GPU 可用"
-            else:
-                gpu_info = "未检测到 NVIDIA GPU"
+                cuda = ffmpeg_util.check_cuda_support()
+                # 尝试获取 GPU 型号
+                import subprocess as sp
+                result = sp.run(
+                    ['nvidia-smi', '--query-gpu=name,memory.total,memory.used,memory.free', '--format=csv,noheader,nounits'],
+                    capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5
+                )
+                if result.returncode == 0:
+                    parts = result.stdout.strip().split(',')
+                    gpu_name = parts[0].strip()
+                    total_vram = float(parts[1].strip())
+                    used_vram = float(parts[2].strip())
+                    free_vram = float(parts[3].strip())
+                    gpu_vram = f"{total_vram:.0f}MB (已用 {used_vram:.0f}MB, 空闲 {free_vram:.0f}MB)"
+                else:
+                    gpu_name = "NVIDIA GPU 可用"
         except Exception:
             pass
 
-        cuda = ffmpeg_util.check_cuda_support()
+        # CPU
+        cpu_count = os.cpu_count() or 0
+        cpu_percent = psutil.cpu_percent(interval=0.5)
 
-        # 磁盘空间
+        # 内存
+        mem = psutil.virtual_memory()
+        mem_total_gb = mem.total / (1024 ** 3)
+        mem_used_gb = mem.used / (1024 ** 3)
+        mem_avail_gb = mem.available / (1024 ** 3)
+
+        # 磁盘
         upload_dir = config.UPLOAD_DIR
-        if os.path.exists(upload_dir):
+        disk_parts = []
+        try:
             usage = shutil.disk_usage(upload_dir)
-            disk_info = f"总 {usage.total // (1024**3)}GB, 已用 {usage.used // (1024**3)}GB, 剩余 {usage.free // (1024**3)}GB"
-        else:
-            disk_info = "目录不存在"
+            disk_parts.append(f"系统盘: 总 {usage.total // (1024**3)}GB, 已用 {usage.used // (1024**3)}GB, 剩余 {usage.free // (1024**3)}GB")
+        except Exception:
+            disk_parts.append("系统盘: 无法读取")
+
+        # 所有磁盘概览
+        for part in psutil.disk_partitions():
+            try:
+                du = shutil.disk_usage(part.mountpoint)
+                disk_parts.append(f"{part.mountpoint} {du.free // (1024**3)}GB 可用 / {du.total // (1024**3)}GB")
+            except Exception:
+                pass
+
+        # 操作系统
+        os_name = platform.platform()
+        python_ver = platform.python_version()
 
         return {
             "success": True,
-            "gpu": gpu_info,
-            "cuda_support": cuda,
-            "disk": disk_info,
-            "platform": sys.platform,
-            "message": f"GPU: {gpu_info} | CUDA: {'支持' if cuda else '不支持'} | 磁盘: {disk_info}"
+            "os": os_name,
+            "python": python_ver,
+            "cpu": f"{cpu_count} 核, 使用率 {cpu_percent}%",
+            "memory": f"总 {mem_total_gb:.1f}GB, 已用 {mem_used_gb:.1f}GB ({mem.percent}%), 可用 {mem_avail_gb:.1f}GB",
+            "gpu": gpu_name,
+            "gpu_vram": gpu_vram or None,
+            "cuda": "支持" if cuda else "不支持",
+            "disk": disk_parts,
+            "message": (
+                f"OS: {os_name} | Python {python_ver}\n"
+                f"CPU: {cpu_count} 核 ({cpu_percent}%)\n"
+                f"内存: {mem_used_gb:.1f}/{mem_total_gb:.1f}GB ({mem.percent}%)\n"
+                f"GPU: {gpu_name}" + (f" | VRAM: {gpu_vram}" if gpu_vram else "") + f"\n"
+                f"CUDA: {'支持' if cuda else '不支持'}\n"
+                f"磁盘: {disk_parts[0]}"
+            )
         }
 
     except Exception as e:
@@ -2589,7 +2815,7 @@ async def tool_adjust_brightness(
 
             output_path = os.path.join(config.UPLOAD_DIR, f"adjusted_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-vf', f"eq=brightness={brightness}:contrast={contrast}:saturation={saturation}",
                 '-c:a', 'copy', output_path
             ])
@@ -2629,7 +2855,7 @@ async def tool_blur_video(video_id: int, sigma: float = 5.0, **kwargs) -> Dict[s
 
             output_path = os.path.join(config.UPLOAD_DIR, f"blurred_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-vf', f"gblur=sigma={sigma}",
                 '-c:a', 'copy', output_path
             ])
@@ -2669,7 +2895,7 @@ async def tool_sharpen_video(video_id: int, amount: float = 1.5, **kwargs) -> Di
 
             output_path = os.path.join(config.UPLOAD_DIR, f"sharpened_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-vf', f"unsharp=5:5:{amount}",
                 '-c:a', 'copy', output_path
             ])
@@ -2717,7 +2943,7 @@ async def tool_rotate_video(video_id: int, angle: int = 90, **kwargs) -> Dict[st
 
             output_path = os.path.join(config.UPLOAD_DIR, f"rotated_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-vf', vf,
                 '-c:a', 'copy', output_path
             ])
@@ -2757,7 +2983,7 @@ async def tool_flip_video(video_id: int, direction: str = "horizontal", **kwargs
 
             output_path = os.path.join(config.UPLOAD_DIR, f"flipped_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-vf', vf,
                 '-c:a', 'copy', output_path
             ])
@@ -2810,7 +3036,7 @@ async def tool_crop_video(
 
             output_path = os.path.join(config.UPLOAD_DIR, f"cropped_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-vf', f"crop={width}:{height}:{x}:{y}",
                 '-c:a', 'copy', output_path
             ])
@@ -2857,7 +3083,7 @@ async def tool_fade_video(
 
             output_path = os.path.join(config.UPLOAD_DIR, f"faded_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-vf', vf,
                 '-c:a', 'copy', output_path
             ])
@@ -2908,7 +3134,7 @@ async def tool_picture_in_picture(
 
             output_path = os.path.join(config.UPLOAD_DIR, f"pip_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y',
+                '-y',
                 '-i', main_video.local_path,
                 '-i', overlay_video.local_path,
                 '-filter_complex', f"[1:v]scale={sw}:{sh}[pi];[0:v][pi]overlay={x}:{y}",
@@ -2972,7 +3198,7 @@ async def tool_add_watermark(
 
             output_path = os.path.join(config.UPLOAD_DIR, f"watermarked_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y',
+                '-y',
                 '-i', video.local_path,
                 '-i', watermark_path,
                 '-filter_complex', filter_complex,
@@ -3024,7 +3250,7 @@ async def tool_add_text_overlay(
 
             output_path = os.path.join(config.UPLOAD_DIR, f"text_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-vf', drawtext,
                 '-c:a', 'copy', output_path
             ])
@@ -3061,7 +3287,7 @@ async def tool_reverse_video(video_id: int, **kwargs) -> Dict[str, Any]:
 
             output_path = os.path.join(config.UPLOAD_DIR, f"reversed_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-filter_complex', '[0:v]reverse[v];[0:a]areverse[a]',
                 '-map', '[v]', '-map', '[a]', output_path
             ])
@@ -3105,14 +3331,14 @@ async def tool_stabilize_video(video_id: int, smoothing: int = 10, **kwargs) -> 
                 trf_path = tmp.name
 
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-vf', f'vidstabdetect=stepsize=6:shakiness=5:result={trf_path}',
                 '-f', 'null', '-'
             ])
 
             # 第二步：应用稳定
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-vf', f"vidstabtransform=input={trf_path}:smoothing={smoothing}",
                 '-c:a', 'copy', output_path
             ])
@@ -3158,7 +3384,7 @@ async def tool_scene_detect(video_id: int, threshold: float = 0.4, **kwargs) -> 
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
             result = ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-i', video.local_path,
+                '-i', video.local_path,
                 '-filter:v', f"select='gt(scene,{threshold})',showinfo",
                 '-f', 'null', '-'
             ])
@@ -3214,7 +3440,7 @@ async def tool_slow_motion(video_id: int, factor: float = 4.0, **kwargs) -> Dict
             fps = min(60, int(30 * factor))
 
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-filter_complex',
                 f"[0:v]minterpolate='mi_mode=mci:mc_mode=aobmc:vsbmc=1:fps={fps}',setpts={factor}*PTS[v];"
                 f"[0:a]atempo={1.0/factor}[a]",
@@ -3265,7 +3491,7 @@ async def tool_color_adjust(
 
             output_path = os.path.join(config.UPLOAD_DIR, f"color_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-vf', f"eq=brightness={brightness}:contrast={contrast}:saturation={saturation}:gamma={gamma}",
                 '-c:a', 'copy', output_path
             ])
@@ -3314,12 +3540,12 @@ async def tool_convert_format(video_id: int, target_format: str = "mp4", **kwarg
             # 尝试流复制（无重编码），失败则重编码
             try:
                 ffmpeg.run_ffmpeg_cmd([
-                    'ffmpeg', '-y', '-i', video.local_path,
+                    '-y', '-i', video.local_path,
                     '-c', 'copy', output_path
                 ])
             except Exception:
                 ffmpeg.run_ffmpeg_cmd([
-                    'ffmpeg', '-y', '-i', video.local_path,
+                    '-y', '-i', video.local_path,
                     '-c:v', 'libx264', '-c:a', 'aac', output_path
                 ])
 
@@ -3358,7 +3584,7 @@ async def tool_normalize_audio(video_id: int, target_loudness: float = -16.0, **
 
             output_path = os.path.join(config.UPLOAD_DIR, f"normalized_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-af', f"loudnorm=I={target_loudness}:TP=-1.5:LRA=11",
                 '-c:v', 'copy', output_path
             ])
@@ -3400,7 +3626,7 @@ async def tool_equalize_audio(
 
             output_path = os.path.join(config.UPLOAD_DIR, f"eq_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-af', f"equalizer=f={frequency}:t=q:w={width}:g={gain}",
                 '-c:v', 'copy', output_path
             ])
@@ -3447,7 +3673,7 @@ async def tool_fade_audio(
 
             output_path = os.path.join(config.UPLOAD_DIR, f"afaded_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-af', af,
                 '-c:v', 'copy', output_path
             ])
@@ -3490,7 +3716,7 @@ async def tool_add_echo(
 
             output_path = os.path.join(config.UPLOAD_DIR, f"echo_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-af', f"aecho=0.8:0.88:{delay}:{decay}",
                 '-c:v', 'copy', output_path
             ])
@@ -3530,7 +3756,7 @@ async def tool_denoise_audio(video_id: int, noise_level: float = -25.0, **kwargs
 
             output_path = os.path.join(config.UPLOAD_DIR, f"denoised_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-af', f"afftdn=nf={noise_level}",
                 '-c:v', 'copy', output_path
             ])
@@ -3574,7 +3800,7 @@ async def tool_pitch_shift(video_id: int, semitones: int = 0, **kwargs) -> Dict[
             output_path = os.path.join(config.UPLOAD_DIR, f"pitch_{video_id}_{int(time.time())}.mp4")
             # asetrate 改变采样率实现变调，aresample 恢复原始采样率
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-af', f"asetrate=44100*{ratio},aresample=44100,atempo={1.0/ratio}",
                 '-c:v', 'copy', output_path
             ])
@@ -3612,7 +3838,7 @@ async def tool_reverse_audio(video_id: int, **kwargs) -> Dict[str, Any]:
 
             output_path = os.path.join(config.UPLOAD_DIR, f"areversed_{video_id}_{int(time.time())}.mp4")
             ffmpeg.run_ffmpeg_cmd([
-                'ffmpeg', '-y', '-i', video.local_path,
+                '-y', '-i', video.local_path,
                 '-af', 'areverse',
                 '-c:v', 'copy', output_path
             ])
@@ -4829,7 +5055,14 @@ def _get_image_info(video):
 
 
 def _save_image_result(src_path, video_id, suffix, ext, project_id=None):
-    """将处理后的图片入库并关联项目"""
+    """将处理后的图片保存（优先项目临时目录，回退素材库）"""
+    if project_id:
+        filename = f"img_{suffix}_{video_id}_{int(time.time())}{ext}"
+        result = _save_temp_file(src_path, project_id, "image", suffix, file_name=filename)
+        if result:
+            result["message"] = f"图片{suffix}完成"
+            return result
+    # 回退：保存到素材库
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     filename = f"img_{suffix}_{video_id}_{int(time.time())}{ext}"
@@ -5234,4 +5467,422 @@ async def tool_add_text_to_image(video_id: int, text: str, font_size: int = 36,
             return _save_image_result(tmp_out, video_id, "加文字", ext, kwargs.get("project_id"))
     except Exception as e:
         logger.error(f"图片加文字失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ==================== 本机文件操作工具 ====================
+
+def _format_size(size_bytes: int) -> str:
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} TB"
+
+
+@registry.register(
+    name="list_local_files",
+    description="列出本机指定目录下的文件和文件夹，可查看任意路径",
+    parameters={
+        "path": {"type": "string", "description": "目录路径"},
+        "pattern": {"type": "string", "description": "文件名过滤，支持通配符如 *.mp4（可选）"},
+        "recursive": {"type": "boolean", "description": "是否递归列出子目录内容（默认否）"},
+    },
+    examples=["E:\\aupi\\2 有什么文件", "列出 D:\\videos 下所有 mp4 文件"],
+    permission="read_only"
+)
+async def tool_list_local_files(
+    path: str,
+    pattern: str = None,
+    recursive: bool = False,
+    **kwargs
+) -> Dict[str, Any]:
+    import fnmatch
+    from pathlib import Path as FilePath
+
+    try:
+        target = FilePath(path).resolve()
+        if not target.is_dir():
+            return {"success": False, "error": f"目录不存在: {path}"}
+
+        items = []
+        if recursive:
+            for root, dirs, files in os.walk(str(target)):
+                for name in files + dirs:
+                    full = FilePath(root) / name
+                    if pattern and not fnmatch.fnmatch(name.lower(), pattern.lower()):
+                        continue
+                    items.append({
+                        "name": name,
+                        "path": str(full),
+                        "type": "directory" if full.is_dir() else "file",
+                        "size": _format_size(full.stat().st_size) if full.is_file() else "-",
+                    })
+        else:
+            for item in target.iterdir():
+                if pattern and not fnmatch.fnmatch(item.name.lower(), pattern.lower()):
+                    continue
+                items.append({
+                    "name": item.name,
+                    "path": str(item),
+                    "type": "directory" if item.is_dir() else "file",
+                    "size": _format_size(item.stat().st_size) if item.is_file() else "-",
+                })
+
+        return {
+            "success": True,
+            "path": str(target),
+            "items": items[:200],
+            "count": len(items),
+            "message": f"共 {len(items)} 个项目" + (f"（已截断前 200 项）" if len(items) > 200 else ""),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="read_local_file",
+    description="读取本机文本文件的内容",
+    parameters={
+        "file_path": {"type": "string", "description": "文件完整路径"},
+        "max_lines": {"type": "integer", "description": "最多读取的行数（默认 100）"},
+    },
+    examples=["读取 E:\\config\\settings.json 的内容", "看看 D:\\log.txt 最后 50 行"],
+    permission="read_only"
+)
+async def tool_read_local_file(
+    file_path: str,
+    max_lines: int = 100,
+    **kwargs
+) -> Dict[str, Any]:
+    from pathlib import Path as FilePath
+
+    try:
+        target = FilePath(file_path).resolve()
+        if not target.is_file():
+            return {"success": False, "error": f"文件不存在: {file_path}"}
+
+        size = target.stat().st_size
+        if size > 100 * 1024:
+            return {"success": False, "error": f"文件过大（{_format_size(size)}），仅支持 100KB 以内的文本文件"}
+
+        try:
+            content = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            try:
+                content = target.read_text(encoding="gbk")
+            except UnicodeDecodeError:
+                return {"success": False, "error": "无法解码文件，可能是二进制文件"}
+
+        lines = content.splitlines()
+        truncated = len(lines) > max_lines
+        shown_lines = lines[:max_lines]
+
+        return {
+            "success": True,
+            "file_path": str(target),
+            "content": "\n".join(shown_lines),
+            "total_lines": len(lines),
+            "shown_lines": len(shown_lines),
+            "size": _format_size(size),
+            "truncated": truncated,
+            "message": f"共 {len(lines)} 行，显示前 {len(shown_lines)} 行" if truncated else f"共 {len(lines)} 行",
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="search_local_files",
+    description="在本机指定目录中递归搜索文件",
+    parameters={
+        "path": {"type": "string", "description": "搜索根目录路径"},
+        "keyword": {"type": "string", "description": "文件名关键词"},
+        "file_type": {"type": "string", "description": "文件扩展名过滤，如 mp4、txt（可选）"},
+    },
+    examples=["在 E:\\aupi 里搜索所有 mp4 文件", "找找 D:\\projects 里有没有 readme"],
+    permission="read_only"
+)
+async def tool_search_local_files(
+    path: str,
+    keyword: str = "",
+    file_type: str = "",
+    **kwargs
+) -> Dict[str, Any]:
+    import fnmatch
+    from pathlib import Path as FilePath
+
+    try:
+        target = FilePath(path).resolve()
+        if not target.is_dir():
+            return {"success": False, "error": f"目录不存在: {path}"}
+
+        results = []
+        for root, dirs, files in os.walk(str(target)):
+            for name in files:
+                if keyword and keyword.lower() not in name.lower():
+                    continue
+                if file_type and not name.lower().endswith(f".{file_type.lower().lstrip('.')}"):
+                    continue
+                full = FilePath(root) / name
+                results.append({
+                    "name": name,
+                    "path": str(full),
+                    "size": _format_size(full.stat().st_size),
+                })
+                if len(results) >= 200:
+                    break
+            if len(results) >= 200:
+                break
+
+        return {
+            "success": True,
+            "path": str(target),
+            "keyword": keyword,
+            "file_type": file_type,
+            "files": results,
+            "count": len(results),
+            "message": f"找到 {len(results)} 个文件" + ("（已达上限 200）" if len(results) >= 200 else ""),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="get_file_info",
+    description="获取本机文件或目录的详细信息（大小、修改时间等）",
+    parameters={
+        "file_path": {"type": "string", "description": "文件或目录的完整路径"},
+    },
+    examples=["查看 E:\\video.mp4 的文件信息"],
+    permission="read_only"
+)
+async def tool_get_file_info(
+    file_path: str,
+    **kwargs
+) -> Dict[str, Any]:
+    import datetime
+    from pathlib import Path as FilePath
+
+    try:
+        target = FilePath(file_path).resolve()
+        if not target.exists():
+            return {"success": False, "error": f"路径不存在: {file_path}"}
+
+        stat = target.stat()
+        info = {
+            "name": target.name,
+            "path": str(target),
+            "type": "directory" if target.is_dir() else "file",
+            "size": _format_size(stat.st_size) if target.is_file() else "-",
+            "size_bytes": stat.st_size,
+            "modified": datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            "created": datetime.datetime.fromtimestamp(stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+        if target.is_file() and target.suffix:
+            info["extension"] = target.suffix
+
+        if target.is_dir():
+            child_count = sum(1 for _ in target.iterdir())
+            info["child_count"] = child_count
+
+        return {"success": True, "info": info, "message": f"文件信息: {target.name}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="rename_files",
+    description="批量重命名本机文件",
+    parameters={
+        "renames": {"type": "array", "description": "重命名列表，每项包含 old_path 和 new_path"},
+    },
+    examples=["把这些文件批量重命名", "把 E:\\photos 里的 IMG_ 改成 旅行_"],
+    param_model=RenameFilesParams,
+    permission="destructive"
+)
+async def tool_rename_files(
+    renames: list,
+    **kwargs
+) -> Dict[str, Any]:
+    from pathlib import Path as FilePath
+
+    results = []
+    for item in renames:
+        old = FilePath(item["old_path"]).resolve()
+        new = FilePath(item["new_path"]).resolve()
+        try:
+            if not old.exists():
+                results.append({"path": str(old), "success": False, "error": "文件不存在"})
+                continue
+            if new.exists():
+                results.append({"path": str(old), "success": False, "error": f"目标已存在: {new.name}"})
+                continue
+            old.rename(new)
+            results.append({"path": str(old), "success": True, "new_path": str(new)})
+        except Exception as e:
+            results.append({"path": str(old), "success": False, "error": str(e)})
+
+    ok = sum(1 for r in results if r["success"])
+    return {
+        "success": ok > 0,
+        "results": results,
+        "success_count": ok,
+        "fail_count": len(results) - ok,
+        "message": f"重命名完成: {ok} 成功, {len(results) - ok} 失败",
+    }
+
+
+@registry.register(
+    name="delete_files",
+    description="批量删除本机文件（仅删除文件，不删除目录）",
+    parameters={
+        "file_paths": {"type": "array", "description": "要删除的文件完整路径列表"},
+    },
+    examples=["删除这些临时文件", "清理 E:\\temp 下的 log 文件"],
+    param_model=DeleteFilesParams,
+    permission="destructive"
+)
+async def tool_delete_files(
+    file_paths: list,
+    **kwargs
+) -> Dict[str, Any]:
+    from pathlib import Path as FilePath
+
+    results = []
+    for fp in file_paths:
+        target = FilePath(fp).resolve()
+        try:
+            if not target.exists():
+                results.append({"path": str(target), "success": False, "error": "文件不存在"})
+                continue
+            if target.is_dir():
+                results.append({"path": str(target), "success": False, "error": "不允许删除目录"})
+                continue
+            os.remove(str(target))
+            results.append({"path": str(target), "success": True})
+        except Exception as e:
+            results.append({"path": str(target), "success": False, "error": str(e)})
+
+    ok = sum(1 for r in results if r["success"])
+    return {
+        "success": ok > 0,
+        "results": results,
+        "success_count": ok,
+        "fail_count": len(results) - ok,
+        "message": f"删除完成: {ok} 成功, {len(results) - ok} 失败",
+    }
+
+
+@registry.register(
+    name="move_files",
+    description="批量移动本机文件到新位置",
+    parameters={
+        "moves": {"type": "array", "description": "移动列表，每项包含 src（源路径）和 dst（目标路径）"},
+    },
+    examples=["把这些文件移到 D:\\sorted 目录", "移动 mp4 文件到视频文件夹"],
+    param_model=MoveFilesParams,
+    permission="destructive"
+)
+async def tool_move_files(
+    moves: list,
+    **kwargs
+) -> Dict[str, Any]:
+    import shutil
+    from pathlib import Path as FilePath
+
+    results = []
+    for item in moves:
+        src = FilePath(item["src"]).resolve()
+        dst = FilePath(item["dst"]).resolve()
+        try:
+            if not src.is_file():
+                results.append({"path": str(src), "success": False, "error": "源文件不存在"})
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.exists():
+                results.append({"path": str(src), "success": False, "error": f"目标已存在: {dst}"})
+                continue
+            shutil.move(str(src), str(dst))
+            results.append({"path": str(src), "success": True, "new_path": str(dst)})
+        except Exception as e:
+            results.append({"path": str(src), "success": False, "error": str(e)})
+
+    ok = sum(1 for r in results if r["success"])
+    return {
+        "success": ok > 0,
+        "results": results,
+        "success_count": ok,
+        "fail_count": len(results) - ok,
+        "message": f"移动完成: {ok} 成功, {len(results) - ok} 失败",
+    }
+
+
+@registry.register(
+    name="copy_files",
+    description="批量复制本机文件到新位置",
+    parameters={
+        "copies": {"type": "array", "description": "复制列表，每项包含 src（源路径）和 dst（目标路径）"},
+    },
+    examples=["复制这些文件到备份目录", "把选中的图片复制到 D:\\backup"],
+    param_model=CopyFilesParams,
+    permission="destructive"
+)
+async def tool_copy_files(
+    copies: list,
+    **kwargs
+) -> Dict[str, Any]:
+    import shutil
+    from pathlib import Path as FilePath
+
+    results = []
+    for item in copies:
+        src = FilePath(item["src"]).resolve()
+        dst = FilePath(item["dst"]).resolve()
+        try:
+            if not src.is_file():
+                results.append({"path": str(src), "success": False, "error": "源文件不存在"})
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.exists():
+                results.append({"path": str(src), "success": False, "error": f"目标已存在: {dst}"})
+                continue
+            shutil.copy2(str(src), str(dst))
+            results.append({"path": str(src), "success": True, "new_path": str(dst)})
+        except Exception as e:
+            results.append({"path": str(src), "success": False, "error": str(e)})
+
+    ok = sum(1 for r in results if r["success"])
+    return {
+        "success": ok > 0,
+        "results": results,
+        "success_count": ok,
+        "fail_count": len(results) - ok,
+        "message": f"复制完成: {ok} 成功, {len(results) - ok} 失败",
+    }
+
+
+@registry.register(
+    name="create_directory",
+    description="在本机创建新目录（支持多级）",
+    parameters={
+        "path": {"type": "string", "description": "要创建的目录完整路径"},
+    },
+    examples=["创建目录 D:\\projects\\new_folder", "在 E:\\aupi 下建一个 backup 文件夹"],
+    permission="destructive"
+)
+async def tool_create_directory(
+    path: str,
+    **kwargs
+) -> Dict[str, Any]:
+    from pathlib import Path as FilePath
+
+    try:
+        target = FilePath(path).resolve()
+        if target.exists():
+            return {"success": False, "error": f"路径已存在: {target}"}
+        target.mkdir(parents=True, exist_ok=False)
+        return {"success": True, "path": str(target), "message": f"目录已创建: {target}"}
+    except Exception as e:
         return {"success": False, "error": str(e)}

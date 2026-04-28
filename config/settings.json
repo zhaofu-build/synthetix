@@ -4,11 +4,12 @@
   "ffmpeg": {},
   "core_nexus": {
     "base_url": "http://127.0.0.1:9666/",
-    "llm_model": "core-nexus-ai",
+    "llm_model": "qwen3.6-plus",
     "tts_model": "",
     "asr_model": "",
-    "vl_model": "",
-    "music_model": ""
+    "vl_model": "qwen-vl-plus",
+    "music_model": "",
+    "api_key": "cn-b405176f6d26a191ef7b15dfd2a5045ea42b87eeb7fbf8f3"
   },
   "video_type": "pexels",
   "video_api_keys": "",

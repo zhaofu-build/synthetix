@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
-import os, uuid, logging, json
+import os, uuid, logging, json, shutil
 from datetime import datetime
 
 from src.shared.models.response import success_response, error_response
@@ -441,6 +441,44 @@ async def delete_temp_material(video_id: int, db: Session = Depends(get_db)):
         return error_response(error="DeleteError", message=str(e), code=500)
 
 
+@router.delete("/temp-files/{temp_file_id}", summary="删除临时文件")
+def delete_temp_file(temp_file_id: int, db: Session = Depends(get_db)):
+    from src.infrastructure.repositories.temp_file_repository import TempFileRepository
+    repo = TempFileRepository(db)
+    if repo.delete_by_id(temp_file_id):
+        db.commit()
+        return success_response(message="临时文件已删除")
+    return error_response(error="NotFound", message="临时文件不存在", code=404)
+
+
+@router.post("/temp-files/{temp_file_id}/save-to-library", summary="临时文件存入素材库")
+def save_temp_to_library(temp_file_id: int, db: Session = Depends(get_db)):
+    from src.infrastructure.repositories.temp_file_repository import TempFileRepository
+    from src.infrastructure.repositories import VideoRepository
+    import shutil
+    repo = TempFileRepository(db)
+    record = repo.get_by_id(temp_file_id)
+    if not record:
+        return error_response(error="NotFound", message="临时文件不存在", code=404)
+
+    dest_dir = str(config.source_videos_dir) if hasattr(config, 'source_videos_dir') else "static/source_videos"
+    os.makedirs(dest_dir, exist_ok=True)
+    dest_path = os.path.join(dest_dir, record.file_name)
+    if not os.path.isfile(dest_path):
+        shutil.copy2(record.file_path, dest_path)
+
+    video_repo = VideoRepository(db)
+    new_video = video_repo.create(
+        video_name=record.file_name,
+        local_path=dest_path,
+        web_path=f"/static/source_videos/{record.file_name}",
+        is_temp=False,
+        file_type=record.file_type,
+    )
+    db.commit()
+    return success_response(data={"video_id": new_video.id, "web_path": new_video.web_path}, message="已存入素材库")
+
+
 @router.get("/{project_id}", summary="获取项目详情")
 def get_project(
     project_id: int,
@@ -605,6 +643,10 @@ def delete_project(
     try:
         # 同时删除相关的剪辑方案项
         db.query(ClipPlanItem).filter(ClipPlanItem.project_id == project_id).delete()
+        # 清理项目临时文件
+        from src.infrastructure.repositories.temp_file_repository import TempFileRepository
+        temp_repo = TempFileRepository(db)
+        temp_repo.delete_by_project(project_id)
         db.delete(project)
         db.commit()
 
@@ -613,6 +655,16 @@ def delete_project(
     except Exception as e:
         db.rollback()
         return error_response(error="DeleteError", message=str(e), code=500)
+
+
+# ==================== 临时文件操作 ====================
+
+@router.get("/{project_id}/temp-files", summary="获取项目临时文件列表")
+def get_temp_files(project_id: int, db: Session = Depends(get_db)):
+    from src.infrastructure.repositories.temp_file_repository import TempFileRepository
+    repo = TempFileRepository(db)
+    records = repo.get_by_project(project_id)
+    return success_response(data=[r.to_dict() for r in records])
 
 
 # ==================== 时间线操作 ====================

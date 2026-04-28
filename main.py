@@ -96,6 +96,16 @@ async def lifespan(app: FastAPI):
         _va_keys = cfg_get('video_api_keys', '')
         if _va_keys:
             config.video_api_keys = _va_keys
+        # 同步 core-nexus API Key，确保首次启动即可用
+        _cn_key = cfg_get('core_nexus.api_key', '')
+        if _cn_key:
+            config.llm_key = _cn_key
+            if not getattr(config, 'TTS_KEY', ''):
+                config.TTS_KEY = _cn_key
+            if not getattr(config, 'ASR_KEY', ''):
+                config.ASR_KEY = _cn_key
+            if not getattr(config, 'VL_KEY', ''):
+                config.VL_KEY = _cn_key
     except Exception as e:
         logger.warning(f"配置同步失败: {e}")
 

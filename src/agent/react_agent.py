@@ -16,6 +16,7 @@ from src.agent.session_manager import DialogState, SessionStatus, get_session_ma
 from src.agent.project_memory import get_project_memory, extract_preferences_from_messages
 from src.agent.skill_loader import get_skills_prompt_section
 from src.application.services.llm_adapter import generate_response_async, select_model
+from src.shared.utils.core_nexus_client import get_client
 
 logger = logging.getLogger(__name__)
 
@@ -269,17 +270,30 @@ class ReActAgent:
 
             has_temp_asset = False
             all_tool_results = []  # 收集所有轮次的工具结果
+            kv_session_id = None  # KV Cache session_id
 
             for iteration in range(self.MAX_ITERATIONS):
                 yield {"type": "thinking", "iteration": iteration + 1}
 
                 model = select_model(messages, iteration=iteration)
+                provider_options = {"use_kv_cache": True}
+                if kv_session_id:
+                    provider_options["session_id"] = kv_session_id
+
                 response_text = await generate_response_async(
                     messages=messages,
                     model_name=model,
                     temperature=0.7,
                     max_tokens=2048,
+                    provider_options=provider_options,
                 )
+
+                # 提取 session_id 供下一轮 KV Cache 使用
+                client = get_client()
+                kv_session_id = client.last_response.get("output", {}).get("session_id") or kv_session_id
+                cached_tokens = client.last_response.get("usage", {}).get("cached_tokens", 0)
+                if cached_tokens:
+                    logger.info(f"[ReAct-Stream] KV Cache 命中 {cached_tokens} tokens")
 
                 tool_calls = self._parse_tool_calls(response_text)
 
@@ -347,6 +361,13 @@ class ReActAgent:
                     if tool_name == "list_videos" and result.get("videos"):
                         state.last_video_list = result["videos"]
 
+                    # 跟踪最近引用的素材 ID
+                    vid_param = tool_params.get("video_id")
+                    if vid_param and isinstance(vid_param, int):
+                        state.last_referenced_video_id = vid_param
+                    if result.get("video_id"):
+                        state.last_referenced_video_id = result["video_id"]
+
                     # 截断结果用于推送
                     result_preview = json.dumps(result, ensure_ascii=False, default=str)
                     if len(result_preview) > 500:
@@ -361,6 +382,7 @@ class ReActAgent:
                             "output_type": result.get("output_type", "video"),
                             "duration": result.get("duration"),
                             "video_id": result.get("video_id"),
+                            "temp_file_id": result.get("temp_file_id"),
                         }
 
                     yield {
@@ -473,13 +495,26 @@ class ReActAgent:
 
                 # 运行 TAOR 循环
                 stage_reply = ""
+                kv_session_id = None
                 for iteration in range(self.MAX_ITERATIONS):
                     yield {"type": "thinking", "iteration": iteration + 1, "stage": stage_name}
 
                     model = select_model(messages, iteration=iteration)
+                    provider_options = {"use_kv_cache": True}
+                    if kv_session_id:
+                        provider_options["session_id"] = kv_session_id
+
                     response_text = await generate_response_async(
                         messages=messages, model_name=model, temperature=0.7, max_tokens=2048,
+                        provider_options=provider_options,
                     )
+
+                    # 提取 session_id 供下一轮 KV Cache 使用
+                    client = get_client()
+                    kv_session_id = client.last_response.get("output", {}).get("session_id") or kv_session_id
+                    cached_tokens = client.last_response.get("usage", {}).get("cached_tokens", 0)
+                    if cached_tokens:
+                        logger.info(f"[DeepResearch] KV Cache 命中 {cached_tokens} tokens")
 
                     tool_calls = self._parse_tool_calls(response_text)
                     if not tool_calls:
@@ -504,6 +539,7 @@ class ReActAgent:
                                 "output_type": result.get("output_type", "video"),
                                 "duration": result.get("duration"),
                                 "video_id": result.get("video_id"),
+                                "temp_file_id": result.get("temp_file_id"),
                             }
 
                         yield {"type": "tool_result", "tool": tc["name"], "success": result.get("success", True), "media_info": dr_media_info}
@@ -560,18 +596,32 @@ class ReActAgent:
         messages = self._build_messages(state)
         has_temp_asset = False
         all_tool_results = []  # 收集所有轮次的工具结果
+        kv_session_id = None  # KV Cache session_id，跨迭代复用
 
         for iteration in range(self.MAX_ITERATIONS):
             logger.info(f"[ReAct] 第{iteration+1}轮循环")
 
-            # Think: 调用 LLM（快慢双脑路由）
+            # Think: 调用 LLM（快慢双脑路由 + KV Cache）
             model = select_model(messages, iteration=iteration)
+            provider_options = {"use_kv_cache": True}
+            if kv_session_id:
+                provider_options["session_id"] = kv_session_id
+
             response_text = await generate_response_async(
                 messages=messages,
                 model_name=model,
                 temperature=0.7,
                 max_tokens=2048,
+                provider_options=provider_options,
             )
+
+            # 提取 session_id 供下一轮 KV Cache 使用
+            client = get_client()
+            kv_session_id = client.last_response.get("output", {}).get("session_id") or kv_session_id
+            cached_tokens = client.last_response.get("usage", {}).get("cached_tokens", 0)
+            if cached_tokens:
+                logger.info(f"[ReAct] KV Cache 命中 {cached_tokens} tokens")
+
             logger.info(f"[ReAct] LLM响应 (前200字): {response_text[:200]}")
 
             # 解析工具调用
@@ -610,6 +660,13 @@ class ReActAgent:
                 # 缓存视频列表供序数解析
                 if tc["name"] == "list_videos" and result.get("videos"):
                     state.last_video_list = result["videos"]
+
+                # 跟踪最近引用的素材 ID
+                vid_param = tc["params"].get("video_id")
+                if vid_param and isinstance(vid_param, int):
+                    state.last_referenced_video_id = vid_param
+                if result.get("video_id"):
+                    state.last_referenced_video_id = result["video_id"]
 
             # Observe: 将 LLM 回复 + 工具结果加入消息历史
             messages.append({"role": "assistant", "content": response_text})
@@ -682,6 +739,13 @@ class ReActAgent:
         for msg in history:
             messages.append({"role": msg["role"], "content": msg["content"]})
 
+        # 注入当前上下文（最近操作的素材 ID 等）
+        context_parts = []
+        if state.last_referenced_video_id:
+            context_parts.append(f"最近操作的素材ID: {state.last_referenced_video_id}（用户说'这张图片'、'这个视频'等指代时默认使用此ID）")
+        if context_parts:
+            messages.append({"role": "system", "content": "[当前上下文]\n" + "\n".join(context_parts)})
+
         # 注入用户上传的附件信息
         pending = state.metadata.pop("pending_attachments", None)
         if pending:
@@ -690,8 +754,13 @@ class ReActAgent:
                 file_type = att.get("type", "file")
                 name = att.get("name", "未知文件")
                 local_path = att.get("localPath", "")
-                att_desc += f"- {file_type}文件: {name} (本地路径: {local_path})\n"
-            att_desc += "请根据用户的需求，使用对应工具对素材进行操作。"
+                vid = att.get("videoId") or att.get("video_id")
+                line = f"- {file_type}文件: {name} (本地路径: {local_path}"
+                if vid:
+                    line += f", 素材ID: {vid}"
+                line += ")\n"
+                att_desc += line
+            att_desc += "请根据用户的需求，使用对应工具对素材进行操作。素材ID可直接作为工具的 video_id 参数使用。"
             messages.append({"role": "user", "content": att_desc})
 
         return messages
