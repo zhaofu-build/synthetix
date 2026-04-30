@@ -4,9 +4,9 @@
   "ffmpeg": {},
   "core_nexus": {
     "base_url": "http://127.0.0.1:9666/",
-    "llm_model": "qwen3.6-plus",
+    "llm_model": "qwen3.6-35b-a3b",
     "tts_model": "",
-    "asr_model": "",
+    "asr_model": "core-nexus-ai",
     "vl_model": "qwen-vl-plus",
     "music_model": "",
     "api_key": "cn-b405176f6d26a191ef7b15dfd2a5045ea42b87eeb7fbf8f3"

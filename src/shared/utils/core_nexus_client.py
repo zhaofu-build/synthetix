@@ -117,8 +117,11 @@ class CoreNexusClient:
 
     def _init_key_pool(self):
         """从运行时配置初始化 API Key 池（支持逗号分隔的多 key）"""
-        # config.py 中 llm_key 为小写，也兼容大写属性（settings 页注入）
-        llm_key = getattr(config, "llm_key", "") or getattr(config, "LLM_KEY", "")
+        from src.shared.utils.config_manager import get as cfg_get
+
+        # 优先级: config_manager(settings.json) > config.py(.env)
+        api_key = cfg_get("core_nexus.api_key") or ""
+        llm_key = api_key or getattr(config, "llm_key", "") or getattr(config, "LLM_KEY", "")
         key_map = {
             "LLM": llm_key,
             "TTS": getattr(config, "TTS_KEY", "") or llm_key,
