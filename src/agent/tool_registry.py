@@ -1523,7 +1523,7 @@ async def tool_analyze_video_vl(
     prompt: str = "请详细描述这个视频的内容、场景和风格",
     **kwargs
 ) -> Dict[str, Any]:
-    """AI 视觉理解工具"""
+    """AI 视觉理解工具（优化版：优先使用镜头索引 + 文本 LLM，降级到 VL）"""
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import qwen_vl_adapter
@@ -1553,8 +1553,45 @@ async def tool_analyze_video_vl(
         ext = os.path.splitext(local_path)[1].lower()
         if ext in {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'}:
             analysis = qwen_vl_adapter.image_summary(tmp_path=local_path, prompt=prompt)
+        elif video_id:
+            # 视频文件 + 有 video_id → 优先尝试索引分析
+            try:
+                from src.application.services.video_indexer import VideoIndexer
+                from src.application.services.llm_adapter import generate_response_async
+
+                indexer = VideoIndexer()
+                context = indexer.build_structured_context(video_id, prompt)
+                if context:
+                    messages = [
+                        {"role": "system", "content": "你是一个视频分析专家。根据以下视频的镜头级索引数据回答用户问题，给出详细、准确的分析。"},
+                        {"role": "user", "content": f"以下是视频的结构化分析数据：\n\n{context}\n\n用户提问：{prompt}"}
+                    ]
+                    analysis = await generate_response_async(
+                        messages, temperature=0.5, max_tokens=2048
+                    )
+                    return {
+                        "success": True,
+                        "analysis": {
+                            "video_id": video_id,
+                            "video_name": video_name,
+                            "ai_summary": analysis,
+                            "index_based": True
+                        },
+                        "message": "AI 分析完成（基于镜头索引）"
+                    }
+            except Exception as e:
+                logger.warning(f"[VL] 索引分析失败，降级到 VL 直接分析: {e}")
+
+            # 降级：原 VL 流程
+            proxy_path = ffmpeg.generate_proxy(local_path)
+            analysis = qwen_vl_adapter.video_summary(
+                tmp_path=local_path,
+                prompt=prompt,
+                duration=duration_sec,
+                proxy_path=proxy_path
+            )
         else:
-            # 视频文件
+            # 无 video_id（直接文件路径），走原 VL 流程
             proxy_path = ffmpeg.generate_proxy(local_path)
             analysis = qwen_vl_adapter.video_summary(
                 tmp_path=local_path,
@@ -1568,7 +1605,8 @@ async def tool_analyze_video_vl(
             "analysis": {
                 "video_id": video_id,
                 "video_name": video_name,
-                "ai_summary": analysis
+                "ai_summary": analysis,
+                "index_based": False
             },
             "message": "AI 分析完成"
         }

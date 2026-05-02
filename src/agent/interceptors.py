@@ -3,6 +3,7 @@
 
 全局拦截器链，在工具执行前后自动处理横切关注点。
 """
+import asyncio
 import logging
 import time
 from typing import Dict, Callable
@@ -103,11 +104,29 @@ def execution_log_interceptor(result: Dict, tool_name: str) -> Dict:
     return result
 
 
+def auto_index_interceptor(result: Dict, tool_name: str) -> Dict:
+    """视频素材注册后自动触发后台索引构建"""
+    if not result.get("success"):
+        return result
+    material_id = result.get("material_id")
+    if not material_id:
+        return result
+    try:
+        from src.application.services.video_indexer import VideoIndexer
+        indexer = VideoIndexer()
+        asyncio.create_task(indexer.index_video_async(material_id))
+        logger.info(f"[Interceptor] 后台索引已触发: video_id={material_id}")
+    except Exception as e:
+        logger.warning(f"[Interceptor] 后台索引触发失败: {e}")
+    return result
+
+
 def register_default_interceptors(registry):
     """注册默认拦截器"""
     registry.add_pre_interceptor(param_injection_interceptor)
     registry.add_pre_interceptor(cache_interceptor)
     registry.add_post_interceptor(material_registration_interceptor)
+    registry.add_post_interceptor(auto_index_interceptor)
     registry.add_post_interceptor(execution_log_interceptor)
     registry.add_post_interceptor(ws_notification_interceptor)
-    logger.info(f"已注册 {2} 个前置拦截器 + {3} 个后置拦截器")
+    logger.info(f"已注册 {2} 个前置拦截器 + {4} 个后置拦截器")
