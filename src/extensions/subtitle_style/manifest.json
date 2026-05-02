@@ -1,8 +1,9 @@
 {
-    "name": "subtitle_style",
-    "version": "1.0.0",
-    "description": "字幕样式增强扩展：提供预设字幕风格模板（综艺、新闻、电影等），优化字幕生成效果",
-    "entry": "extensions.subtitle_style.main",
-    "system_prompt": "字幕样式增强已启用。你可以使用 subtitle_style_preset 工具为字幕应用预设风格模板。支持的预设风格：variety（综艺）、news（新闻）、movie（电影）、social（社交媒体）、default（默认）。在调用 add_subtitle 时可以额外指定 style 参数来应用预设。",
-    "enabled": true
+  "name": "subtitle_style",
+  "version": "1.0.0",
+  "description": "字幕样式增强扩展：提供预设字幕风格模板（综艺、新闻、电影等），优化字幕生成效果",
+  "entry": "extensions.subtitle_style.main",
+  "system_prompt": "字幕样式增强已启用。你可以使用 subtitle_style_preset 工具为字幕应用预设风格模板。支持的预设风格：variety（综艺）、news（新闻）、movie（电影）、social（社交媒体）、default（默认）。在调用 add_subtitle 时可以额外指定 style 参数来应用预设。",
+  "enabled": false,
+  "mode": "all"
 }

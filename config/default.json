@@ -31,11 +31,15 @@
   "ffmpeg": {
     "default_crf": 23,
     "default_preset": "medium",
-    "gpu_acceleration": true
+    "gpu_acceleration": true,
+    "standardize_on_ingest": true
   },
   "video": {
     "source_type": "pexels",
     "max_upload_size_mb": 500
+  },
+  "web_search": {
+    "enabled": false
   },
   "ui": {
     "theme": "dark",

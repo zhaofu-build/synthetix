@@ -1,0 +1,9 @@
+{
+  "name": "comic_workflow",
+  "version": "1.0.0",
+  "description": "漫剧创作流程、画风映射和漫剧专用规则",
+  "entry": "",
+  "system_prompt": "## 漫剧创作流程\n\n### 阶段 1: 脚本生成\n- 使用 `comic_generate_script` 根据用户创意生成完整脚本\n- 确认角色数量、分镜数量、目标时长\n\n### 阶段 2: 角色设计\n- 使用 `comic_add_character` 添加角色定义\n- 角色描述要具体到能用于AI绘图（发色、发型、眼色、服装等）\n\n### 阶段 3: 分镜画面生成\n- 逐个分镜调用 `comic_generate_image` 生成画面\n\n### 阶段 4: 语音合成\n- 对白: `comic_generate_audio`（按角色分配不同 voice_id）\n\n### 阶段 5: BGM 生成\n- `comic_select_bgm` 选择或生成背景音乐\n\n### 阶段 6: 视频合成\n- `comic_compose` 将所有素材合成最终视频\n\n## 画风映射\n- 动漫 → \"anime style, high quality, detailed\"\n- 写实 → \"photorealistic, cinematic lighting, 8k\"\n- 水墨 → \"chinese ink painting style, elegant\"\n- 像素 → \"pixel art style, retro game aesthetic\"\n- 美漫 → \"western comic style, bold lines, vibrant colors\"\n\n## 漫剧专用规则\n- 逐个分镜处理，不要一次性生成所有分镜\n- 角色外貌描述要足够详细，确保图片生成一致性\n- 对于会修改/删除的操作，先向用户确认再调用工具",
+  "enabled": true,
+  "mode": "comic"
+}

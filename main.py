@@ -23,7 +23,6 @@ from src.interfaces.api.llm_clip_api import router as ai_api
 from src.interfaces.api.core_nexus_api import router as core_nexus_api
 from src.interfaces.api.agent_api import router as agent_api
 from src.interfaces.api.project_api import router as project_api
-from src.interfaces.api.task_api import router as task_api
 from src.interfaces.api.ws_api import router as ws_api
 from src.interfaces.api.mcp_api import router as mcp_api
 from src.interfaces.api.extension_api import router as extension_api
@@ -141,7 +140,6 @@ app.include_router(ai_api, prefix="/api/ai", tags=["AI服务"])
 app.include_router(core_nexus_api, prefix="/api/nexus", tags=["Core-Nexus-AI"])
 app.include_router(agent_api, prefix="/api/agent", tags=["对话Agent"])
 app.include_router(project_api, prefix="/api/projects", tags=["视频项目"])
-app.include_router(task_api, prefix="/api/tasks", tags=["任务管理"])
 app.include_router(ws_api, tags=["WebSocket"])
 app.include_router(mcp_api, prefix="/api/mcp", tags=["MCP工具"])
 app.include_router(extension_api, prefix="/api/extensions", tags=["扩展管理"])

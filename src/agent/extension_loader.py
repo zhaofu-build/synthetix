@@ -27,6 +27,7 @@ class Extension:
     system_prompt: str = ""
     enabled: bool = True
     tools_registered: bool = False
+    mode: str = "all"  # video / comic / all
 
 
 _extensions: Dict[str, Extension] = {}
@@ -58,6 +59,7 @@ def load_extensions() -> List[Extension]:
                 entry=data.get("entry", ""),
                 system_prompt=data.get("system_prompt", ""),
                 enabled=data.get("enabled", True),
+                mode=data.get("mode", "all"),
             )
             _extensions[ext.name] = ext
             logger.info(f"加载扩展: {ext.name} v{ext.version}")
@@ -86,14 +88,15 @@ def register_extension_tools():
             logger.warning(f"扩展 {ext.name} 工具注册失败: {e}")
 
 
-def get_extensions_prompt_section() -> str:
-    """生成扩展注入的提示词段落"""
+def get_extensions_prompt_section(current_mode: str = "video") -> str:
+    """生成扩展注入的提示词段落，按 mode 过滤"""
     if not _extensions:
         load_extensions()
     parts = []
     for ext in _extensions.values():
         if ext.enabled and ext.system_prompt:
-            parts.append(f"### 扩展: {ext.name}\n{ext.system_prompt}")
+            if ext.mode == "all" or ext.mode == current_mode:
+                parts.append(f"### 扩展: {ext.name}\n{ext.system_prompt}")
     return "\n\n".join(parts) if parts else ""
 
 
@@ -102,15 +105,110 @@ def list_extensions() -> List[Dict[str, Any]]:
     if not _extensions:
         load_extensions()
     return [
-        {"name": e.name, "version": e.version, "description": e.description, "enabled": e.enabled}
+        {"name": e.name, "version": e.version, "description": e.description,
+         "enabled": e.enabled, "system_prompt": e.system_prompt, "mode": e.mode}
         for e in _extensions.values()
     ]
 
 
 def toggle_extension(name: str, enabled: bool) -> bool:
-    """启用/禁用扩展"""
+    """启用/禁用扩展（持久化到 manifest.json）"""
     ext = _extensions.get(name)
     if not ext:
         return False
     ext.enabled = enabled
+    # 写回 manifest.json
+    manifest_path = EXTENSIONS_DIR / name / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            data["enabled"] = enabled
+            with open(manifest_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"持久化扩展状态失败: {e}")
+    return True
+
+
+def create_extension(name: str, description: str, system_prompt: str, mode: str = "all") -> Dict[str, Any]:
+    """创建新扩展"""
+    import shutil
+    ext_dir = EXTENSIONS_DIR / name
+    if ext_dir.exists():
+        return {"success": False, "error": f"扩展 {name} 已存在"}
+
+    ext_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "name": name,
+        "version": "1.0.0",
+        "description": description,
+        "entry": "",
+        "system_prompt": system_prompt,
+        "enabled": True,
+        "mode": mode,
+    }
+    manifest_path = ext_dir / "manifest.json"
+    with open(manifest_path, 'w', encoding='utf-8') as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+    ext = Extension(
+        name=name,
+        version="1.0.0",
+        description=description,
+        entry="",
+        system_prompt=system_prompt,
+        enabled=True,
+        mode=mode,
+    )
+    _extensions[name] = ext
+    logger.info(f"创建扩展: {name}")
+    return {"success": True, "name": name, "description": description}
+
+
+def update_extension(name: str, description: str = None, system_prompt: str = None, mode: str = None) -> bool:
+    """更新扩展的描述、提示词和模式"""
+    ext = _extensions.get(name)
+    if not ext:
+        return False
+
+    if description is not None:
+        ext.description = description
+    if system_prompt is not None:
+        ext.system_prompt = system_prompt
+    if mode is not None:
+        ext.mode = mode
+
+    # 持久化到 manifest.json
+    manifest_path = EXTENSIONS_DIR / name / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if description is not None:
+                data["description"] = description
+            if system_prompt is not None:
+                data["system_prompt"] = system_prompt
+            if mode is not None:
+                data["mode"] = mode
+            with open(manifest_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"持久化扩展更新失败: {e}")
+    return True
+
+
+def delete_extension(name: str) -> bool:
+    """删除扩展"""
+    import shutil
+    ext = _extensions.get(name)
+    if not ext:
+        return False
+
+    ext_dir = EXTENSIONS_DIR / name
+    if ext_dir.is_dir():
+        shutil.rmtree(ext_dir, ignore_errors=True)
+
+    del _extensions[name]
+    logger.info(f"删除扩展: {name}")
     return True

@@ -1,6 +1,7 @@
 import os
 import random
 import logging
+import time
 import yt_dlp
 from src.shared.utils.string_util import sanitize_title
 from src.shared.utils import time_util
@@ -284,48 +285,88 @@ def search_videos(search_term: str, minimum_duration: int = 3, source: str = Non
     return results
 
 
-def download_video(video_info):
-    # 设置保存目录
-    save_dir = config.ROOT_DIR_WIN / config.source_videos_dir
+def _make_display_name(tags, video_id, ext):
+    """用搜索关键词 + video_id 生成有意义的文件名"""
+    import re
+    # 取第一个关键词，清洗特殊字符
+    keyword = (tags or "").split(",")[0].strip() if tags else "video"
+    keyword = re.sub(r'[^\w\u4e00-\u9fff]', '_', keyword)[:30].strip('_')
+    if not keyword:
+        keyword = "video"
+    return f"{keyword}_{video_id}{ext}"
+
+
+def download_video(video_info, project_id=None, tags=None):
+    """下载单个视频到正式素材库，有项目时关联到项目。
+
+    Args:
+        video_info: 搜索结果 dict（含 url, duration, duration_hms）
+        project_id: 项目 ID，有值时同时关联到项目（material_ids）
+        tags: 搜索关键词，保存为素材标签
+    """
     url = video_info['url']
-    # search_term = video_info['search_term']
-    """下载单个视频到指定目录"""
-    # 创建目录（如果不存在）
+    ext = os.path.splitext(url.split('/')[-1])[1] or '.mp4'
+
+    # 统一保存到正式素材库目录
+    save_dir = str(config.ROOT_DIR_WIN / config.source_videos_dir)
     os.makedirs(save_dir, exist_ok=True)
-    # 从URL提取文件名
-    filename = url.split('/')[-1]
-    # 发送请求并下载
+
+    # 先用临时名下载
+    tmp_filename = f"_dl_{int(time.time())}_{os.getpid()}{ext}"
+    filepath = os.path.join(save_dir, tmp_filename)
+
     response = requests.get(url, stream=True)
-    response.raise_for_status()  # 检查请求状态
-    filepath = os.path.join(save_dir, filename)
-    # 写入文件
+    response.raise_for_status()
     with open(filepath, 'wb') as f:
         for chunk in response.iter_content(chunk_size=8192):
             if chunk:
                 f.write(chunk)
-    # 保存到数据库
+
+    # 视频入库时统一编码标准化
     from src.application.services import ffmpeg_adapter as use_ffmpeg
-    video_info_detail = use_ffmpeg.get_video_info(filepath)
-    video_data = {
-        "video_name": filename,
-        "web_path": config.source_videos_dir + filename,
-        "local_path": filepath,
-        "duration": str(video_info['duration']),
-        "duration_hms": video_info["duration_hms"],
-    }
+    use_ffmpeg.standardize_video(filepath)
+
     with get_db_context() as db:
-        video_obj = VideoSource(
-            video_name=video_data["video_name"],
-            web_path=video_data["web_path"],
-            local_path=video_data["local_path"],
-            duration=video_data["duration"],
-            duration_hms=video_data["duration_hms"],
+        from src.infrastructure.repositories import VideoRepository
+        video_repo = VideoRepository(db)
+
+        # 创建正式素材（is_temp=False → 素材库可见）
+        vs = video_repo.create(
+            video_name=tmp_filename,
+            local_path=filepath,
+            web_path=config.source_videos_dir + tmp_filename,
+            is_temp=False,
+            file_type="video",
+            duration=str(video_info.get('duration', 0)),
+            duration_hms=video_info.get('duration_hms', ''),
+            tags=tags,
         )
-        db.add(video_obj)
+        db.flush()  # 拿到 vs.id
+
+        # 用关键词+ID 重命名
+        display_name = _make_display_name(tags, vs.id, ext)
+        new_filepath = os.path.join(save_dir, display_name)
+        web_path = config.source_videos_dir + display_name
+        os.rename(filepath, new_filepath)
+
+        vs.video_name = display_name
+        vs.local_path = new_filepath
+        vs.web_path = web_path
+
+        # 关联到项目素材
+        if project_id:
+            from src.domain.entities.video_project import VideoProject
+            project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
+            if project:
+                mat_ids = project.material_ids or []
+                if vs.id not in mat_ids:
+                    mat_ids.append(vs.id)
+                    project.material_ids = mat_ids
+
         db.commit()
-        db.refresh(video_obj)
-    logger.info(f"已下载：{filename}")
-    return True
+        logger.info(f"已下载: {display_name} (video_id={vs.id})" +
+                    (f" → 项目 {project_id}" if project_id else ""))
+        return {"video_id": vs.id, "web_path": web_path, "local_path": new_filepath}
 
 
 def keywords_download(keywords):

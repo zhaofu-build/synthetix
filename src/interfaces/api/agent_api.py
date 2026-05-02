@@ -376,6 +376,15 @@ async def delete_session(session_id: str):
         )
 
 
+@router.delete("/sessions/project/{project_id}", summary="删除项目所有会话")
+async def delete_project_sessions(project_id: int):
+    """删除指定项目的所有会话（清除聊天记录时调用）"""
+    from src.agent.session_manager import get_session_manager
+    manager = get_session_manager()
+    count = manager.delete_sessions_by_project(project_id)
+    return success_response(message=f"已删除 {count} 个会话")
+
+
 @router.get("/sessions", summary="获取活跃会话列表")
 async def list_sessions():
     """

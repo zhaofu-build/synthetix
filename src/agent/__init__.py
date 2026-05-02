@@ -6,7 +6,6 @@
 
 from .session_manager import SessionManager, DialogState, get_session_manager
 from .tool_registry import ToolRegistry, Tool, registry
-from .prompts import AgentPrompts
 
 __all__ = [
     "DialogState",
@@ -15,5 +14,4 @@ __all__ = [
     "ToolRegistry",
     "Tool",
     "registry",
-    "AgentPrompts",
 ]

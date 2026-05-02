@@ -42,6 +42,7 @@ class DialogState:
     project_id: Optional[int] = None
     last_video_list: List[Dict] = field(default_factory=list)
     last_referenced_video_id: Optional[int] = None
+    mode: str = "video"  # "video" | "comic"
 
     def add_message(self, role: str, content: str):
         """添加消息到历史（带截断保护）"""
@@ -154,6 +155,26 @@ class SessionManager:
         self._delete_from_db(session_id)
         return True
 
+    def delete_sessions_by_project(self, project_id: int) -> int:
+        """删除指定项目的所有会话（内存 + 数据库）"""
+        # 内存中删除
+        to_delete = [sid for sid, s in self._sessions.items() if s.project_id == project_id]
+        for sid in to_delete:
+            del self._sessions[sid]
+        # 数据库中删除
+        try:
+            from src.infrastructure.db.session import get_db_context
+            from src.domain.entities.dialog_session import DialogSession
+            with get_db_context(commit=True) as db:
+                count = db.query(DialogSession).filter(
+                    DialogSession.metadata_["project_id"].as_integer() == project_id
+                ).delete(synchronize_session=False)
+            logger.info(f"已删除项目 {project_id} 的 {len(to_delete) + count} 个会话")
+            return len(to_delete) + count
+        except Exception as e:
+            logger.warning(f"按项目删除会话失败: {e}")
+            return len(to_delete)
+
     def cleanup_expired_sessions(self) -> int:
         """
         清理过期会话（内存 + 数据库）
@@ -233,6 +254,11 @@ class SessionManager:
             from src.infrastructure.db.session import get_db_context
             from src.domain.entities.dialog_session import DialogSession
 
+            # 将内存中的上下文字段写入 metadata，以便重启后恢复
+            state.metadata["last_referenced_video_id"] = state.last_referenced_video_id
+            state.metadata["last_video_list"] = state.last_video_list
+            state.metadata["mode"] = state.mode
+
             with get_db_context(commit=True) as db:
                 existing = db.query(DialogSession).filter_by(
                     session_id=state.session_id
@@ -288,6 +314,17 @@ class SessionManager:
                     updated_at=row.updated_at.timestamp() if row.updated_at else time.time(),
                     metadata=row.metadata_ or {},
                 )
+                # 从 metadata 恢复 project_id 和上下文字段
+                meta = row.metadata_ or {}
+                if not state.project_id and meta.get("project_id"):
+                    state.project_id = int(meta["project_id"])
+                if "last_referenced_video_id" in meta and meta["last_referenced_video_id"] is not None:
+                    state.last_referenced_video_id = meta["last_referenced_video_id"]
+                if "last_video_list" in meta and meta["last_video_list"]:
+                    state.last_video_list = meta["last_video_list"]
+                if "mode" in meta:
+                    state.mode = meta["mode"]
+                state.metadata["_restored_from_db"] = True
                 return state
         except Exception as e:
             logger.warning(f"从数据库加载会话失败: {e}")

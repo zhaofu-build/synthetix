@@ -428,6 +428,7 @@ class CoreNexusClient:
         temperature: float = 0.7,
         max_tokens: int = 2048,
         provider_options: Optional[Dict] = None,
+        enable_search: bool = False,
         **generation_params
     ) -> str:
         """
@@ -439,6 +440,7 @@ class CoreNexusClient:
             temperature: 温度参数
             max_tokens: 最大 token 数
             provider_options: 供应商特有参数（如 use_kv_cache, session_id）
+            enable_search: 启用联网搜索（需服务端配置搜索服务）
             **generation_params: 其他生成参数
 
         Returns:
@@ -456,6 +458,8 @@ class CoreNexusClient:
             payload["model"] = model
         if provider_options:
             payload["provider_options"] = provider_options
+        if enable_search:
+            payload["enable_search"] = True
 
         response = self._request('POST', '/llm', json_data=payload)
         self._last_response = response
@@ -468,6 +472,7 @@ class CoreNexusClient:
         temperature: float = 0.7,
         max_tokens: int = 2048,
         provider_options: Optional[Dict] = None,
+        enable_search: bool = False,
         **generation_params
     ) -> str:
         """LLM 异步文本生成"""
@@ -483,9 +488,11 @@ class CoreNexusClient:
             payload["model"] = model
         if provider_options:
             payload["provider_options"] = provider_options
+        if enable_search:
+            payload["enable_search"] = True
 
         import json as _json
-        print(f"[CoreNexus] POST {self.base_url}/llm | model={model} | msgs={len(messages)}")
+        print(f"[CoreNexus] POST {self.base_url}/llm | model={model} | msgs={len(messages)}{' | search=ON' if enable_search else ''}")
         print(f"[CoreNexus] body: {_json.dumps(payload, ensure_ascii=False)[:500]}")
 
         response = await self._request_async('POST', '/llm', json_data=payload)
@@ -968,8 +975,26 @@ class CoreNexusClient:
 
         # 检查是否是文件路径
         if Path(audio).exists():
-            with open(audio, 'rb') as f:
-                audio_bytes = f.read()
+            file_size = Path(audio).stat().st_size
+            max_size = 100 * 1024 * 1024  # 100MB 限制，防止 OOM
+            if file_size > max_size:
+                raise ValueError(f"音频文件过大 ({file_size / 1024 / 1024:.1f}MB)，超过 100MB 限制，请先压缩或截取")
+
+            # 对大于 20MB 的文件分块读取编码，降低峰值内存
+            if file_size > 20 * 1024 * 1024:
+                import io
+                chunks = []
+                with open(audio, 'rb') as f:
+                    while True:
+                        chunk = f.read(8 * 1024 * 1024)  # 8MB chunks
+                        if not chunk:
+                            break
+                        chunks.append(base64.b64encode(chunk).decode('utf-8'))
+                base64_data = ''.join(chunks)
+            else:
+                with open(audio, 'rb') as f:
+                    audio_bytes = f.read()
+                base64_data = base64.b64encode(audio_bytes).decode('utf-8')
 
             # 检测音频格式
             ext = Path(audio).suffix.lower().lstrip('.')
@@ -981,7 +1006,6 @@ class CoreNexusClient:
                 'm4a': 'audio/mp4',
             }
             mime_type = mime_types.get(ext, 'audio/wav')
-            base64_data = base64.b64encode(audio_bytes).decode('utf-8')
             return f"data:{mime_type};base64,{base64_data}"
 
         # 纯 base64 字符串，添加 data URL 前缀
@@ -1008,8 +1032,25 @@ class CoreNexusClient:
             return image
 
         # 文件路径，读取并转换为 base64
-        with open(image, 'rb') as f:
-            image_bytes = f.read()
+        file_size = Path(image).stat().st_size
+        max_size = 50 * 1024 * 1024  # 50MB 限制
+        if file_size > max_size:
+            raise ValueError(f"媒体文件过大 ({file_size / 1024 / 1024:.1f}MB)，超过 50MB 限制")
+
+        if file_size > 20 * 1024 * 1024:
+            import io
+            chunks = []
+            with open(image, 'rb') as f:
+                while True:
+                    chunk = f.read(8 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(base64.b64encode(chunk).decode('utf-8'))
+            base64_data = ''.join(chunks)
+        else:
+            with open(image, 'rb') as f:
+                image_bytes = f.read()
+            base64_data = base64.b64encode(image_bytes).decode('utf-8')
 
         # 检测媒体格式（图片 + 视频）
         ext = Path(image).suffix.lower().lstrip('.')
@@ -1027,7 +1068,6 @@ class CoreNexusClient:
         }
         mime_type = mime_types.get(ext, 'application/octet-stream')
 
-        base64_data = base64.b64encode(image_bytes).decode('utf-8')
         return f"data:{mime_type};base64,{base64_data}"
 
 

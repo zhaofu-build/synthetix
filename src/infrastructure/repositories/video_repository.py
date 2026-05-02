@@ -99,6 +99,30 @@ class VideoRepository(BaseRepository[VideoSource]):
 
         return query.scalar() or 0
 
+    def get_library_videos(self, skip: int = 0, limit: int = 50, video_type=None) -> list:
+        """获取素材库视频（排除临时素材和聊天上传的临时文件）"""
+        from sqlalchemy import or_
+        query = self._session.query(VideoSource).filter(
+            VideoSource.del_flag == 0,
+            ~VideoSource.web_path.like('/static/temp/%'),
+            or_(VideoSource.is_temp == False, VideoSource.is_temp.is_(None)),
+        )
+        if video_type is not None:
+            query = query.filter(VideoSource.video_type == video_type)
+        return query.order_by(VideoSource.create_time.desc()).offset(skip).limit(limit).all()
+
+    def count_library_videos(self, video_type=None) -> int:
+        """统计素材库视频数量（排除临时素材和聊天上传的临时文件）"""
+        from sqlalchemy import or_
+        query = self._session.query(func.count(VideoSource.id)).filter(
+            VideoSource.del_flag == 0,
+            ~VideoSource.web_path.like('/static/temp/%'),
+            or_(VideoSource.is_temp == False, VideoSource.is_temp.is_(None)),
+        )
+        if video_type is not None:
+            query = query.filter(VideoSource.video_type == video_type)
+        return query.scalar() or 0
+
     def get_by_name(self, name: str) -> Optional[VideoSource]:
         """
         根据视频名称查询视频

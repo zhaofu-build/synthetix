@@ -48,10 +48,10 @@ def detect_best_encoder() -> str:
     return _best_encoder_cache
 
 
-async def run_ffmpeg_cmd_async(cmd):
+async def run_ffmpeg_cmd_async(cmd, cwd=None):
     """在 ThreadPoolExecutor 中异步运行 FFmpeg 命令"""
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_ffmpeg_executor, run_ffmpeg_cmd, cmd)
+    return await loop.run_in_executor(_ffmpeg_executor, lambda: run_ffmpeg_cmd(cmd, cwd=cwd))
 
 
 async def extract_clips_parallel(clip_specs: List[Dict]) -> List[str]:
@@ -456,16 +456,19 @@ def process_video(input_path, output_path=None,
     # 输出文件
     cmd.append(output_path)
     try:
-        subprocess.run(cmd, check=True)
+        # 去掉 cmd 中的 'ffmpeg' 前缀，使用 run_ffmpeg_cmd 统一执行（带 timeout + 安全检查）
+        cmd_args = cmd[1:] if cmd and cmd[0] == 'ffmpeg' else cmd
+        run_ffmpeg_cmd(cmd_args, timeout=600)
         return output_path
-    except subprocess.CalledProcessError as e:
-        return f"处理失败：{e.stderr}"
+    except RuntimeError as e:
+        return f"处理失败：{e}"
 
 
 # 设置封面
 def set_video_cover(input_video, cover_image):
     output_path = get_download_folder() + get_file_name_no_suffix(input_video) + "(封面)" + get_file_suffix(input_video)
     command = [
+        '-y',
         '-i', input_video,  # 输入视频文件
         '-i', cover_image,  # 封面图片文件
         '-map', '0',  # 映射第一个输入的所有流（视频和音频）
@@ -505,6 +508,7 @@ def extract_frames(input_video_path, output_dir, start_time, end_time):
         output_image_path = os.path.join(output_dir, f"frame_{i + 1:04d}.jpg")
 
         command = [
+            '-y',
             '-i', input_video_path,  # 输入视频文件
             '-ss', current_time,  # 指定开始时间（HH:MM:SS格式）
             '-vframes', '1',  # 只提取一帧
@@ -576,15 +580,13 @@ def extract_keyframes(input_path, output_dir, mode="fixed", interval=2.0,
 
 
 # 生成gif文件
-def video_to_gif(input_video, start_time=None, duration=None, fps=10, scale='320:-1'):
-    # 可选参数
-    # input_video_path = 'path/to/your/input_video.mp4'
-    # start_time = '00:00:05'  # 开始时间（HH:MM:SS格式），例如从第5秒开始
-    # duration = '00:00:10'  # 持续时间（HH:MM:SS格式），例如10秒
-    # fps = 10  # 帧率，每秒10帧
-    # scale = '320:-1'  # 缩放比例，宽度320像素，高度按比例缩放
-    output_gif_path = get_download_folder() + get_file_name_no_suffix(input_video) + ".gif"
+def video_to_gif(input_video, start_time=None, duration=None, fps=10, scale='320:-1', output_path=None):
+    if output_path:
+        output_gif_path = str(output_path)
+    else:
+        output_gif_path = get_download_folder() + get_file_name_no_suffix(input_video) + ".gif"
     command = [
+        '-y',
         '-i', input_video,  # 输入视频文件
     ]
     if start_time:
@@ -630,6 +632,7 @@ def extract_video_clips(input_video_path, output_dir, interval=5):
         start_time = i * interval
         clip_output_path = os.path.join(output_dir, f'clip_{i + 1:04d}.mp4')
         command = [
+            '-y',
             '-i', input_video_path,  # 输入视频文件
             '-ss', str(start_time),  # 开始时间
             '-t', str(interval),  # 持续时间
@@ -646,6 +649,7 @@ def extract_video_clips(input_video_path, output_dir, interval=5):
 # 提取音频
 def get_audio(video_path, output_path):
     command = [
+        '-y',
         '-i', video_path,  # 输入文件
         '-q:a', '0',  # 音频质量（0是最好的）
         '-map', 'a',  # 只选择音频流
@@ -657,6 +661,7 @@ def get_audio(video_path, output_path):
 # # 添加音频
 def add_audio_to_video(video_path, audio_path, output_path):
     command = [
+        '-y',
         '-i', video_path,  # 输入视频文件
         '-i', audio_path,  # 输入音频文件
         '-c:v', 'copy',  # 复制视频流，不重新编码
@@ -728,49 +733,330 @@ def mix_audios_to_video(video_path, tts_path=None, bgm_path=None, bgm_volume=0.3
 
 
 # 合并视频
-def concatenate_videos_with_filter(video_paths, output_path):
-    # 构建filter_complex选项
-    filter_complex = f'concat=n={len(video_paths)}:v=1:a=1 [v] [a]'
-    command = []
-    for video in video_paths:
-        command.extend(['-i', video])
+def _has_audio_stream(video_path):
+    """检测视频文件是否包含音频流"""
+    try:
+        cmd = [
+            'ffprobe', '-v', 'error',
+            '-select_streams', 'a',
+            '-show_entries', 'stream=codec_type',
+            '-of', 'csv=p=0',
+            str(video_path)
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        return bool(result.stdout.strip())
+    except Exception:
+        return False
 
-    command.extend([
-        '-filter_complex', filter_complex,
-        '-map', '[v]',
-        '-map', '[a]',
-        '-c:v', 'libx264',  # 使用H.264编码器
-        '-c:a', 'aac',  # 使用AAC编码器
-        output_path  # 输出文件
+
+def _get_video_codec_info(video_path):
+    """获取视频的编码格式和分辨率信息，用于判断是否可以 stream copy"""
+    try:
+        cmd = [
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'stream=codec_name,width,height,pix_fmt,codec_type',
+            '-of', 'json',
+            str(video_path)
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10,
+                                creationflags=0 if sys.platform != 'win32' else subprocess.CREATE_NO_WINDOW)
+        info = json.loads(result.stdout)
+        streams = info.get('streams', [])
+        video_codec = width = height = pix_fmt = audio_codec = None
+        for s in streams:
+            codec_type = s.get('codec_type')
+            if codec_type == 'video':
+                video_codec = s.get('codec_name')
+                width = s.get('width')
+                height = s.get('height')
+                pix_fmt = s.get('pix_fmt')
+            elif codec_type == 'audio':
+                audio_codec = s.get('codec_name')
+        return {
+            'video_codec': video_codec,
+            'width': width,
+            'height': height,
+            'pix_fmt': pix_fmt,
+            'audio_codec': audio_codec,
+            'has_audio': audio_codec is not None,
+        }
+    except Exception:
+        return None
+
+
+def _can_stream_copy(video_paths):
+    """检查所有视频是否编码兼容，可以 stream copy 合并"""
+    infos = [_get_video_codec_info(p) for p in video_paths]
+    if any(i is None for i in infos):
+        return False
+    codecs = {i['video_codec'] for i in infos}
+    widths = {i['width'] for i in infos}
+    heights = {i['height'] for i in infos}
+    # 编码和分辨率必须一致才能 stream copy
+    if len(codecs) != 1 or len(widths) != 1 or len(heights) != 1:
+        return False
+    # 所有视频必须都有音频，或者都没有（否则需要标准化）
+    has_audio_set = {i['has_audio'] for i in infos}
+    if len(has_audio_set) != 1:
+        return False
+    # 只支持 h264/h265/hevc + aac 的 stream copy
+    vc = codecs.pop()
+    if vc not in ('h264', 'hevc', 'h265', 'mpeg4', 'vp8', 'vp9'):
+        return False
+    return True
+
+
+def _normalize_video_for_concat(video_path, output_path):
+    """将单个视频标准化为 h264+aac 统一格式（顺序处理，低内存）"""
+    has_audio = _has_audio_stream(video_path)
+    encoder = detect_best_encoder()
+    cmd = ['-y', '-i', str(video_path)]
+    if has_audio:
+        cmd.extend([
+            '-c:v', encoder, '-preset', 'fast', '-crf', '23',
+            '-c:a', 'aac', '-b:a', '192k',
+        ])
+    else:
+        cmd.extend([
+            '-c:v', encoder, '-preset', 'fast', '-crf', '23',
+            '-an',
+        ])
+    cmd.extend([
+        '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart',
+        str(output_path)
     ])
-    run_ffmpeg_cmd(command)
+    run_ffmpeg_cmd(cmd, timeout=600)
+
+
+def standardize_video(input_path: str) -> str:
+    """入库时将视频标准化为 h264+aac+yuv420p 格式。
+
+    已是标准格式则跳过（仅一次 ffprobe，~10ms），否则原子替换重编码。
+    非 video 文件、失败时均保留原文件不动。
+    """
+    path = str(input_path)
+
+    # 检查开关
+    try:
+        from src.shared.utils.config_manager import get as cfg_get
+        if not cfg_get("ffmpeg.standardize_on_ingest", True):
+            return path
+    except Exception:
+        pass
+
+    # 按扩展名跳过非视频文件
+    ext = os.path.splitext(path)[1].lower()
+    _VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm",
+                  ".mpg", ".mpeg", ".3gp", ".ts", ".mts", ".m2ts"}
+    if ext not in _VIDEO_EXT:
+        return path
+
+    # 探测当前格式
+    info = _get_video_codec_info(path)
+    if info is None or info.get("video_codec") is None:
+        logger.warning(f"[standardize] Cannot probe {path}, skipping")
+        return path
+
+    # 判断是否已是标准格式
+    already_standard = (
+        info["video_codec"] == "h264"
+        and info.get("pix_fmt") == "yuv420p"
+        and (not info.get("has_audio", False) or info.get("audio_codec") in ("aac", None))
+    )
+    if already_standard:
+        logger.debug(f"[standardize] Already standard: {os.path.basename(path)}")
+        return path
+
+    # 需要重编码：原子替换
+    logger.info(f"[standardize] Re-encoding {os.path.basename(path)}: "
+                f"codec={info['video_codec']} pix_fmt={info.get('pix_fmt')} "
+                f"audio={info.get('audio_codec')} -> h264/aac/yuv420p")
+
+    import tempfile
+    tmp_dir = os.path.dirname(path)
+    suffix = os.path.splitext(path)[1]
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix, dir=tmp_dir, prefix="std_")
+    os.close(fd)
+
+    try:
+        has_audio = info.get("has_audio", False)
+        encoder = detect_best_encoder()
+        cmd = ["-y", "-i", path]
+        if has_audio:
+            cmd.extend(["-c:v", encoder, "-preset", "fast", "-crf", "23",
+                        "-c:a", "aac", "-b:a", "192k"])
+        else:
+            cmd.extend(["-c:v", encoder, "-preset", "fast", "-crf", "23", "-an"])
+        cmd.extend(["-pix_fmt", "yuv420p", "-movflags", "+faststart", tmp_path])
+        run_ffmpeg_cmd(cmd, timeout=600)
+        os.replace(tmp_path, path)
+        logger.info(f"[standardize] Done: {os.path.basename(path)}")
+    except Exception as e:
+        logger.warning(f"[standardize] Failed for {path}: {e}. Keeping original.")
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
+    return path
+
+
+def _merge_with_concat_demuxer(video_paths, output_path):
+    """使用 concat demuxer 合并（顺序读取，低内存）"""
+    import tempfile
+    file_list = tempfile.NamedTemporaryFile(
+        mode='w', suffix='.txt', delete=False, prefix='concat_'
+    )
+    try:
+        for path in video_paths:
+            escaped = str(path).replace('\\', '/').replace("'", "'\\''")
+            file_list.write(f"file '{escaped}'\n")
+        file_list.close()
+        command = [
+            '-y', '-f', 'concat', '-safe', '0',
+            '-i', file_list.name,
+            '-c', 'copy',
+            '-movflags', '+faststart',
+            str(output_path)
+        ]
+        run_ffmpeg_cmd(command, timeout=600)
+    finally:
+        try:
+            os.unlink(file_list.name)
+        except Exception:
+            pass
+
+
+def _normalize_and_merge(video_paths, output_path):
+    """逐个标准化视频后再用 concat demuxer 合并（用于 stream copy 失败时的回退）"""
+    import tempfile
+    temp_files = []
+    try:
+        for i, path in enumerate(video_paths):
+            tmp = tempfile.NamedTemporaryFile(
+                suffix='.mp4', delete=False, prefix=f'norm_{i}_'
+            )
+            tmp.close()
+            temp_files.append(tmp.name)
+            logger.info(f"标准化视频 {i + 1}/{len(video_paths)}: {os.path.basename(path)}")
+            _normalize_video_for_concat(path, tmp.name)
+        _merge_with_concat_demuxer(temp_files, output_path)
+    finally:
+        for f in temp_files:
+            try:
+                os.unlink(f)
+            except Exception:
+                pass
+
+
+def concatenate_videos_with_filter(video_paths, output_path):
+    """合并视频 — 使用 concat demuxer（顺序处理，低内存占用）
+
+    策略：先尝试 stream copy（零重编码），不兼容则逐个标准化后再合并。
+    避免 -filter_complex concat 同时打开所有输入导致内存爆炸。
+    """
+    import tempfile
+
+    n = len(video_paths)
+    if n == 0:
+        raise ValueError("没有提供视频文件")
+
+    logger.info(f"合并 {n} 个视频，检查编码兼容性...")
+
+    # 尝试 stream copy（最快，内存最低）
+    if _can_stream_copy(video_paths):
+        logger.info("编码兼容，使用 stream copy 合并")
+        _merge_with_concat_demuxer(video_paths, output_path)
+    else:
+        # 逐个标准化（顺序处理，每次只打开一个视频）
+        logger.info("编码不兼容，逐个标准化后再合并")
+        temp_files = []
+        try:
+            for i, path in enumerate(video_paths):
+                tmp = tempfile.NamedTemporaryFile(
+                    suffix='.mp4', delete=False, prefix=f'norm_{i}_'
+                )
+                tmp.close()
+                temp_files.append(tmp.name)
+                logger.info(f"标准化视频 {i + 1}/{n}: {os.path.basename(path)}")
+                _normalize_video_for_concat(path, tmp.name)
+
+            # 标准化完成后用 concat demuxer 合并
+            # 此时所有文件编码一致，可以 stream copy
+            _merge_with_concat_demuxer(temp_files, output_path)
+        finally:
+            for f in temp_files:
+                try:
+                    os.unlink(f)
+                except Exception:
+                    pass
+
     return "视频合并成功，文件地址为：" + output_path
+
+
+def _is_srt_format(content):
+    """检查内容是否已是 SRT 格式（含序号 + 时间轴）"""
+    import re
+    return bool(re.search(r'\d{2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,.]\d{3}', content))
+
+
+def _plain_text_to_srt(text, video_path):
+    """将纯文本按句号/换行分段，均匀分配到视频时长，生成 SRT 格式"""
+    import re
+    duration = 0
+    try:
+        info = get_video_info(video_path)
+        if info and info.get('duration'):
+            duration = float(info['duration'])
+    except Exception:
+        pass
+    if duration <= 0:
+        duration = 30  # 默认 30 秒
+
+    # 按句号、问号、感叹号、换行分段
+    segments = re.split(r'(?<=[。！？\n])\s*', text.strip())
+    segments = [s.strip() for s in segments if s.strip()]
+    if not segments:
+        segments = [text.strip()]
+
+    seg_duration = duration / len(segments)
+    lines = []
+    for i, seg in enumerate(segments):
+        start = i * seg_duration
+        end = (i + 1) * seg_duration
+        sh, sm, ss = int(start // 3600), int(start % 3600 // 60), start % 60
+        eh, em, es = int(end // 3600), int(end % 3600 // 60), end % 60
+        lines.append(f"{i + 1}")
+        lines.append(f"{sh:02d}:{sm:02d}:{ss:06.3f} --> {eh:02d}:{em:02d}:{es:06.3f}")
+        lines.append(seg)
+        lines.append("")
+    return "\n".join(lines)
 
 
 def add_subtitle(video_path, subtitle_content, subtitle_type,
                  fontname="楷体", fontsize=16, fontcolor="&Hffffff",
-                 fontbordercolor="&H000000", subtitle_bottom=20
+                 fontbordercolor="&H000000", subtitle_bottom=20,
+                 output_path=None
                  ):
-    """添加字幕到视频文件
-    Args:
-        video_path:  视频url
-        subtitle_content: 字幕内容
-        subtitle_type: 字幕类型：硬字幕 如按字母
-        font_name: 支持系统已安装的任何字体
-        fontsize: 字体大小
-        font_color: ASS格式颜色代码，默认白色，黑色
-        subtitle_bottom: 底部边距像素值
-    """
+    """添加字幕到视频文件"""
     cmd = ["-hide_banner",
            "-ignore_unknown",
            '-y',
            '-i',
            os.path.normpath(video_path)
            ]
-    # 获取文件名称
-    name = get_file_name_no_suffix(video_path)
+    # 获取文件名称（sanitize 避免 FFmpeg 处理中文/特殊字符失败）
+    import re
+    name = re.sub(r'[^\w\-.]', '_', get_file_name_no_suffix(video_path))
     srt_file = f'{name}.srt'
-    # 保存str文件
+
+    # 纯文本自动转 SRT 格式
+    if not _is_srt_format(subtitle_content):
+        subtitle_content = _plain_text_to_srt(subtitle_content, video_path)
+
+    # 保存srt文件
     with open(srt_file, "w", encoding="utf-8") as file:
         file.write(subtitle_content)
     if subtitle_type:
@@ -797,12 +1083,16 @@ def add_subtitle(video_path, subtitle_content, subtitle_type,
             '-crf', '13',
             '-preset', "slow"
         ]
-    output_video = config.ROOT_DIR_WIN / config.UPLOAD_DIR / f'video_add_subtitle.mp4'
+    if not output_path:
+        import tempfile
+        output_path = os.path.join(tempfile.gettempdir(), f"subtitle_{int(time.time())}{get_file_suffix(video_path)}")
+    output_video = output_path
     cmd.append(output_video)
     run_ffmpeg_cmd(cmd)
     del_file(srt_file)
-    del_file(ass_file)
-    return f'video_add_subtitle.mp4'
+    if ass_file and os.path.exists(ass_file):
+        del_file(ass_file)
+    return str(output_video)
 
 
 # 字幕文件SRT转ASS
@@ -817,7 +1107,7 @@ def str_to_ass(srt_file, ass_file):
 # 分割视频
 def cut_video(input_path, start_time, end_time=None, duration=None,
               margin_before: float = 0.0, margin_after: float = 0.0,
-              output_suffix="(剪切)"):
+              output_suffix="_cut", output_path=None):
     """剪切视频片段
 
     Args:
@@ -841,7 +1131,12 @@ def cut_video(input_path, start_time, end_time=None, duration=None,
             end_sec += margin_after
             end_time = time_util.seconds_to_hms(end_sec)
 
-    output_path = config.ROOT_DIR_WIN / "static/uploads" / f"{get_file_name_no_suffix(input_path)}{output_suffix}{get_file_suffix(input_path)}"
+    # 输出路径：优先使用调用方指定的路径，否则写到系统临时目录
+    import re
+    if not output_path:
+        import tempfile
+        base_name = re.sub(r'[^\w\-.]', '_', get_file_name_no_suffix(input_path))
+        output_path = os.path.join(tempfile.gettempdir(), f"{base_name}{output_suffix}{get_file_suffix(input_path)}")
     command = [
         '-y',
         '-ss', str(start_time),
@@ -864,9 +1159,13 @@ def cut_video(input_path, start_time, end_time=None, duration=None,
     return output_path
 
 
-def cut_video_silence(input_path, start_time, end_time, output_suffix):
+def cut_video_silence(input_path, start_time, end_time, output_suffix, output_path=None):
     """剪切视频并强制静音"""
-    output_path = config.ROOT_DIR_WIN / "static/uploads" / f"{get_file_name_no_suffix(input_path)}{output_suffix}{get_file_suffix(input_path)}"
+    if not output_path:
+        import tempfile
+        import re
+        base_name = re.sub(r'[^\w\-.]', '_', get_file_name_no_suffix(input_path))
+        output_path = os.path.join(tempfile.gettempdir(), f"{base_name}{output_suffix}{get_file_suffix(input_path)}")
     command = [
         '-y',
         '-i', str(input_path),
@@ -893,8 +1192,6 @@ def cut_video_silence(input_path, start_time, end_time, output_suffix):
 def concatenate_videos_with_transitions(clip_infos, output_path):
     logger.info("========================剪切生成中间文件=================================")
     intermediate_files = []
-    # 总时长
-    cut_total_duration = 0
     n = len(clip_infos)
 
     # 批量查询所有需要的视频（修复 N+1 查询问题）
@@ -928,63 +1225,43 @@ def concatenate_videos_with_transitions(clip_infos, output_path):
             end_time=str(end),
             output_suffix=f"({len(intermediate_files)})"
         )
-        # duration 可能是字符串，需要转换为浮点数
-        duration_val = float(video_source["duration"]) if video_source.get("duration") else 0
-        cut_total_duration += duration_val
         intermediate_files.append(output_file)
     logger.info("视频合成前处理完成，开始合成...")
-    inputs = []
-    for file in intermediate_files:
-        inputs.extend(['-i', str(file)])
-    # 构建过滤器链（增强兼容性）
-    filter_script = []
-    # 步骤1：预处理（统一分辨率、时间基、帧率）
-    for i in range(len(intermediate_files)):
-        filter_script.append(
-            f"[{i}:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-            f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,"
-            f"settb=AVTB,"  # 强制时间基为1/1000000
-            f"fps=30,"  # 统一帧率为30
-            f"setpts=PTS-STARTPTS,"  # 重置时间戳
-            f"format=yuv420p[v{i}];"
-        )
-    # 步骤2：正确级联所有视频流
-    current_stream = "v0"
-    for i in range(len(intermediate_files) - 1):
-        next_stream = f"v{i + 1}"
-        filter_script.append(
-            f"[{current_stream}][{next_stream}]"
-            f"concat=n=2:v=1:a=0[out{i}];"
-        )
-        current_stream = f"out{i}"  # 更新当前流为输出
-    # 计算总时长
-    # cut_total_duration = sum(
-    #     ffmpeg_util.get_video_duration(file) for file in intermediate_files
-    # )
-    # 步骤3：添加音频流和最终输出
-    filter_script.append(
-        f"aevalsrc=0:d={cut_total_duration}[aout];"
-        f"[{current_stream}]format=yuv420p[vout]"
-    )
-    logger.info("开始视频合成...")
-    # 构建完整命令（增加硬件加速支持）
+    # 中间文件已由 cut_video_silence 统一为 1280x720/30fps/h264/-an
+    # 直接用 concat demuxer 顺序合并（低内存），再补静音轨
+    import tempfile
+
+    # Step 1: concat demuxer 合并视频流（stream copy，零重编码）
+    video_only_path = tempfile.mktemp(suffix='.mp4', prefix='merge_vonly_')
+    try:
+        _merge_with_concat_demuxer(intermediate_files, video_only_path)
+    except Exception:
+        # stream copy 失败时重编码合并
+        logger.warning("stream copy 合并失败，回退重编码")
+        _normalize_and_merge(intermediate_files, video_only_path)
+
+    # Step 2: 补充静音音频轨（单输入，内存低）
     command = [
-        '-y',
-        '-hwaccel', 'auto',  # 启用硬件加速
-        *inputs,
-        '-filter_complex', ''.join(filter_script),
-        '-map', '[vout]',
-        '-map', '[aout]',
-        '-c:v', detect_best_encoder(),
-        '-preset', 'fast',
-        '-profile:v', 'main',
-        '-movflags', '+faststart',
-        '-c:a', 'aac',
-        '-b:a', '192k',
+        '-y', '-i', video_only_path,
+        '-f', 'lavfi', '-i', f'anullsrc=channel_layout=stereo:sample_rate=44100',
+        '-c:v', 'copy',
+        '-c:a', 'aac', '-b:a', '192k',
         '-shortest',
+        '-movflags', '+faststart',
         str(output_path)
     ]
     run_ffmpeg_cmd(command)
+
+    # 清理中间文件
+    for f in intermediate_files:
+        try:
+            os.unlink(f)
+        except Exception:
+            pass
+    try:
+        os.unlink(video_only_path)
+    except Exception:
+        pass
     return "合并成功"
 
 
@@ -1010,7 +1287,10 @@ def compress_video_h265(
     - gpu_accelerator: 强制指定加速类型(可选: nvidia, amd, qsv, videotoolbox)
     """
     input_path = Path(input_path)
-    output_path = input_path.parent / f"{input_path.stem}_h256.mp4"
+    if not output_path:
+        output_path = input_path.parent / f"{input_path.stem}_h256.mp4"
+    else:
+        output_path = Path(output_path)
     # 获取原始视频信息
     original_info = get_video_info(input_path)
     original_size = input_path.stat().st_size
@@ -1214,7 +1494,7 @@ def batch_compress_videos(
     logger.info(f"平均速度: {stats['total_files'] / (elapsed_time / 60):.1f} 文件/分钟")
 
 
-def run_ffmpeg_cmd(cmd, timeout=300):
+def run_ffmpeg_cmd(cmd, timeout=300, cwd=None):
     """执行 ffmpeg 命令，带超时保护和安全检查"""
     # Security: reject dangerous flags
     cmd_str = " ".join(str(c) for c in cmd)
@@ -1234,6 +1514,7 @@ def run_ffmpeg_cmd(cmd, timeout=300):
                                 encoding="utf-8",
                                 check=True,
                                 timeout=timeout,
+                                cwd=cwd,
                                 creationflags=0 if sys.platform != 'win32' else subprocess.CREATE_NO_WINDOW
                                 )
         return result

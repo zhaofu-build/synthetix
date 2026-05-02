@@ -85,6 +85,9 @@ class VideoService:
             logger.error(f"文件写入失败: {e}")
             raise IOError(f"文件写入失败: {e}")
 
+        # 视频入库时统一编码标准化
+        use_ffmpeg.standardize_video(file_path)
+
         # 获取视频信息
         access_url_path = Path(file_path)
         try:
@@ -156,6 +159,9 @@ class VideoService:
             logger.error(f"文件写入失败: {e}")
             raise IOError(f"文件写入失败: {e}")
 
+        # 视频入库时统一编码标准化
+        use_ffmpeg.standardize_video(file_path)
+
         # 获取视频信息
         access_url_path = Path(file_path)
         try:
@@ -210,13 +216,15 @@ class VideoService:
             logger.error(f"视频下载失败: {e}")
             raise ValueError(f"视频下载失败: {e}")
 
+        # 视频入库时统一编码标准化
+        access_url_path = Path(output_dir) / title
+        use_ffmpeg.standardize_video(str(access_url_path))
+
         # 转换时长格式
         try:
             duration_hms = time_util.seconds_to_hms(duration)
         except (ValueError, TypeError):
             duration_hms = "00:00:00"
-
-        access_url_path = Path(output_dir) / title
 
         # 获取视频详细信息
         try:
@@ -563,7 +571,8 @@ class VideoService:
         self,
         page: int = 1,
         page_size: int = 10,
-        video_type: Optional[int] = None
+        video_type: Optional[int] = None,
+        include_temp: bool = False
     ) -> Dict[str, Any]:
         """
         获取分页视频列表
@@ -572,17 +581,22 @@ class VideoService:
             page: 页码
             page_size: 每页大小
             video_type: 视频类型过滤（可选）
+            include_temp: 是否包含临时素材（默认不包含）
 
         Returns:
             包含 items, total, page, page_size, total_pages 的字典
         """
-        filters = {}
-        if video_type is not None:
-            filters['video_type'] = video_type
-
-        total = self._repository.count(filters=filters)
-        skip = (page - 1) * page_size
-        items = self._repository.get_all(skip=skip, limit=page_size, filters=filters)
+        if include_temp:
+            filters = {}
+            if video_type is not None:
+                filters['video_type'] = video_type
+            total = self._repository.count(filters=filters)
+            skip = (page - 1) * page_size
+            items = self._repository.get_all(skip=skip, limit=page_size, filters=filters)
+        else:
+            skip = (page - 1) * page_size
+            items = self._repository.get_library_videos(skip=skip, limit=page_size, video_type=video_type)
+            total = self._repository.count_library_videos(video_type=video_type)
 
         total_pages = (total + page_size - 1) // page_size if page_size > 0 else 0
 

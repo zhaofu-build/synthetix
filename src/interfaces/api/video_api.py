@@ -8,7 +8,10 @@
 注意：路由顺序很重要！静态路由必须在动态路由（/{video_id}）之前定义。
 """
 import os
+import json
+import time
 import logging
+import tempfile
 from typing import Optional
 from pathlib import Path
 
@@ -45,10 +48,11 @@ def get_videos(
     page: int = Query(default=1, ge=1, description="页码"),
     page_size: int = Query(default=10, ge=1, le=100, description="每页大小"),
     video_type: Optional[int] = Query(None, description="视频类型"),
+    include_temp: bool = Query(default=False, description="是否包含临时素材"),
     service: VideoService = Depends(get_video_service)
 ):
-    """获取视频素材列表（分页）"""
-    result = service.get_paginated_videos(page=page, page_size=page_size, video_type=video_type)
+    """获取视频素材列表（分页，默认不含临时素材）"""
+    result = service.get_paginated_videos(page=page, page_size=page_size, video_type=video_type, include_temp=include_temp)
     return success_response(data=result, message="获取素材列表成功")
 
 
@@ -313,24 +317,148 @@ def get_video_description(
     service: VideoService = Depends(get_video_service)
 ):
     """获取视频描述（通过 AI 分析）"""
+    print(f"[AI预处理] video_id={video_id}", flush=True)
     video_data = service.get_video_by_id(video_id)
     if not video_data:
         return error_response(error="NotFound", message=f"视频 {video_id} 不存在", code=404)
 
-    try:
-        from src.application.services.qwen_vl_adapter import video_summary
-        description = video_summary(video_data.get("local_path"), None)
-        # 清洗 LLM 返回的 markdown 代码块标记
-        if description:
-            description = description.strip()
-            if description.startswith("```"):
-                description = description.split("\n", 1)[-1]
-            if description.endswith("```"):
-                description = description[:-3]
-            description = description.strip()
-    except ImportError:
-        logger.warning(f"video_summary 模块不可用，跳过描述生成")
-        description = ""
+    local_path = video_data.get("local_path")
+    if not local_path or not os.path.isfile(local_path):
+        return error_response(error="FileNotFound", message="文件不存在，无法分析", code=400)
+
+    ext = os.path.splitext(local_path)[1].lower()
+    is_image = ext in {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'}
+    is_audio = ext in {'.mp3', '.wav', '.aac', '.flac', '.m4a', '.ogg', '.wma'}
+    is_video = not is_image and not is_audio
+
+    # 1. VL 画面分析（图片和视频）
+    vl_description = ""
+    asr_skipped_reason = "纯音频文件" if is_audio else None
+    if is_image:
+        try:
+            from src.application.services.qwen_vl_adapter import image_summary
+            prompt = "各用一句话精简描述这张图片的核心内容（场景、主体、风格）。直接输出文本，不要输出JSON。"
+            vl_description = image_summary(tmp_path=local_path, prompt=prompt)
+            if vl_description:
+                vl_description = vl_description.strip()
+                if vl_description.startswith("```"):
+                    vl_description = vl_description.split("\n", 1)[-1]
+                if vl_description.endswith("```"):
+                    vl_description = vl_description[:-3]
+                vl_description = vl_description.strip()
+        except Exception as e:
+            print(f"[AI预处理] 图片VL失败: {e}", flush=True)
+    elif is_video:
+        # 获取视频时长
+        duration = None
+        try:
+            from src.application.services import ffmpeg_adapter as ffmpeg
+            info = ffmpeg.get_video_info(local_path) or {}
+            duration = float(info.get("duration", 0)) if info.get("duration") else None
+        except Exception:
+            pass
+
+        try:
+            from src.application.services.qwen_vl_adapter import video_summary
+            prompt = (
+                "请分析这个视频，按时间顺序描述每个连续画面片段的内容。" +
+                (f"\n重要：该视频总时长为 {duration:.1f}秒，所有片段的end时间不得超过 {duration:.1f}。" if duration else "") +
+                "\n要求：\n"
+                "1. start和end必须是视频的真实秒数，严格对齐视频实际时长\n"
+                "2. 所有片段时间必须连续且覆盖完整时长\n"
+                "3. desc简述该时间段的真实画面内容，包括场景、人物动作、文字、风格等\n"
+                "4. 严格按以下JSON格式输出，不要输出任何其他文字：\n"
+                '{"segments":[{"start":0,"end":5,"desc":"画面描述"},{"start":5,"end":12,"desc":"画面描述"}]}'
+            )
+            vl_description = video_summary(local_path, prompt, duration=duration)
+            if vl_description:
+                vl_description = vl_description.strip()
+                if vl_description.startswith("```"):
+                    vl_description = vl_description.split("\n", 1)[-1]
+                if vl_description.endswith("```"):
+                    vl_description = vl_description[:-3]
+                vl_description = vl_description.strip()
+        except Exception as e:
+            print(f"[AI预处理] VL失败: {e}", flush=True)
+
+    # 2. ASR 字幕提取（视频和音频文件）
+    subtitle = ""
+    if is_video or is_audio:
+        if not asr_skipped_reason:
+            asr_skipped_reason = None
+        try:
+            from src.application.services import whisper_adapter, ffmpeg_adapter
+            asr_input = local_path
+            # 视频文件需要提取音频为 MP3；音频文件直接使用
+            if is_video:
+                audio_tmp = os.path.join(tempfile.gettempdir(), f"synthetix_asr_{video_id}_{int(time.time())}.mp3")
+                try:
+                    ffmpeg_adapter.run_ffmpeg_cmd([
+                        '-y', '-i', local_path,
+                        '-vn', '-acodec', 'libmp3lame', '-q:a', '9',
+                        audio_tmp
+                    ])
+                    if os.path.exists(audio_tmp) and os.path.getsize(audio_tmp) > 0:
+                        asr_input = audio_tmp
+                    else:
+                        asr_skipped_reason = "无音轨"
+                        asr_input = None
+                except Exception:
+                    asr_skipped_reason = "无音轨"
+                    asr_input = None
+            # 音频文件：如果是 WAV/FLAC 等大文件，转为 MP3 压缩
+            elif is_audio and ext in ('.wav', '.flac'):
+                audio_tmp = os.path.join(tempfile.gettempdir(), f"synthetix_asr_{video_id}_{int(time.time())}.mp3")
+                try:
+                    ffmpeg_adapter.run_ffmpeg_cmd([
+                        '-y', '-i', local_path,
+                        '-acodec', 'libmp3lame', '-q:a', '9',
+                        audio_tmp
+                    ])
+                    if os.path.exists(audio_tmp) and os.path.getsize(audio_tmp) > 0:
+                        asr_input = audio_tmp
+                except Exception:
+                    pass  # 回退用原文件
+            if asr_input:
+                subtitle = whisper_adapter.transcribe(asr_input, output_format_type="srt", subtitle_language="zh")
+                if asr_input != local_path and os.path.exists(asr_input):
+                    try:
+                        os.remove(asr_input)
+                    except OSError:
+                        pass
+        except Exception as e:
+            print(f"[AI预处理] ASR失败: {e}", flush=True)
+            if not asr_skipped_reason:
+                asr_skipped_reason = f"提取失败: {e}"
+
+    # 3. 合并存储
+    if is_image:
+        # 图片直接存纯文本描述
+        description = vl_description or ""
+        if not description:
+            return error_response(error="AnalysisFailed", message="AI 分析失败：图片描述生成未返回结果", code=500)
+    else:
+        # 视频/音频存结构化 JSON
+        combined = {}
+        if vl_description:
+            try:
+                parsed = json.loads(vl_description)
+                if isinstance(parsed, dict) and "segments" in parsed:
+                    combined["segments"] = parsed["segments"]
+                else:
+                    combined["vl_text"] = vl_description
+            except (json.JSONDecodeError, ValueError):
+                combined["vl_text"] = vl_description
+        if subtitle:
+            combined["transcription"] = subtitle
+        elif asr_skipped_reason:
+            combined["transcription"] = ""
+        if asr_skipped_reason:
+            combined["asr_status"] = asr_skipped_reason
+
+        if not combined:
+            return error_response(error="AnalysisFailed", message="AI 分析失败：VL 画面分析和 ASR 字幕提取均未返回结果，请检查 AI 服务配置", code=500)
+        description = json.dumps(combined, ensure_ascii=False)
 
     service.update_video_description(video_id, description)
-    return success_response(data={"description": description}, message="获取描述成功")
+    return success_response(data={"description": description}, message="分析完成")

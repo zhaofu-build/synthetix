@@ -14,7 +14,6 @@ from typing import Dict, List, Optional, Any
 from src.agent.tool_registry import registry
 from src.agent.session_manager import DialogState, SessionStatus, get_session_manager
 from src.agent.project_memory import get_project_memory, extract_preferences_from_messages
-from src.agent.skill_loader import get_skills_prompt_section
 from src.application.services.llm_adapter import generate_response_async, select_model
 from src.shared.utils.core_nexus_client import get_client
 
@@ -59,9 +58,41 @@ def build_system_prompt(tools_description: str, project_id, project_name: str) -
         "2. 工具调用后你会收到 <tool_result> 结果，然后继续回复",
         "3. 回复用中文，简洁自然",
         '4. 如果用户问"第X个"视频/素材，先调用 list_videos 获取列表，再根据序号找到对应 ID 调用其他工具',
-        "5. 如果素材没有描述，主动询问用户是否需要 AI 分析",
-        "6. 对于只读查询（查看、搜索、分析），直接执行不需要确认",
-        "7. 对于会修改/删除/渲染的操作，先向用户确认再调用工具",
+        "5. 剪辑任务时，必须先调用 list_videos 查看项目已有素材，优先使用已有素材。只有素材不足或没有合适的时，才调用 search_material 下载新素材",
+        "",
+        "## 当前上下文",
+        "",
+        "- 项目 ID: " + str(pid),
+        "- 项目名: " + str(pname),
+        "",
+    ]
+    return "\n".join(parts)
+
+
+def build_comic_system_prompt(tools_description: str, project_id, project_name: str) -> str:
+    """构建漫剧模式的系统提示词（最小骨架，流程由扩展注入）"""
+    pid = project_id or "无"
+    pname = project_name or "无"
+    parts = [
+        "你是一个 AI 漫剧创作助手。你可以使用以下工具来帮助用户创作漫剧（Comic Drama）。",
+        "",
+        "## 可用工具",
+        "",
+        tools_description,
+        "",
+        "## 工具调用格式",
+        "",
+        "当你需要调用工具时，必须使用以下格式：",
+        "",
+        '<tool_call name="工具名">',
+        "参数JSON",
+        END_CALL,
+        "",
+        "## 规则",
+        "",
+        "1. 可以在同一条回复中调用多个工具，也可以不调用任何工具直接回复",
+        "2. 工具调用后你会收到 <tool_result> 结果，然后继续回复",
+        "3. 回复用中文，简洁自然",
         "",
         "## 当前上下文",
         "",
@@ -75,7 +106,7 @@ def build_system_prompt(tools_description: str, project_id, project_name: str) -
 class ReActAgent:
     """基于 TAOR 循环的对话代理"""
 
-    MAX_ITERATIONS = 5  # 最大循环次数，防止无限循环
+    MAX_ITERATIONS = 10  # 最大循环次数，防止无限循环
     DEEP_RESEARCH_STAGES = ["分析素材", "规划方案", "执行操作"]
     CHECKPOINT_DIR = os.path.join(os.path.expanduser("~"), ".synthetix", "checkpoints")
     ARTIFACTS_DIR = os.path.join(os.path.expanduser("~"), ".synthetix", "artifacts")
@@ -175,6 +206,19 @@ class ReActAgent:
         if os.path.exists(path):
             os.remove(path)
 
+    def _resolve_session(self, session_id: Optional[str], project_id: Optional[int] = None) -> DialogState:
+        """获取或创建会话，优先按 project_id 恢复历史会话"""
+        if session_id:
+            state = self.sessions.get_session(session_id)
+            if state:
+                return state
+        if project_id:
+            state = self.sessions.restore_last_session(project_id)
+            if state:
+                logger.info(f"[ReAct] 恢复项目 {project_id} 的历史会话 {state.session_id}")
+                return state
+        return self.sessions.create_session()
+
     async def process_message(
         self,
         session_id: Optional[str],
@@ -192,8 +236,9 @@ class ReActAgent:
         Returns:
             响应结果
         """
-        # 获取或创建会话
-        state = self.sessions.get_or_create_session(session_id)
+        # 获取或创建会话（优先恢复历史会话）
+        project_id = context.get("project_id") if context else None
+        state = self._resolve_session(session_id, project_id)
         state.add_message("user", user_input)
 
         # 合并上下文
@@ -201,9 +246,14 @@ class ReActAgent:
             pid = context.get("project_id")
             if pid:
                 state.project_id = int(pid)
+                state.metadata["project_id"] = state.project_id
             attachments = context.get("attachments")
             if attachments:
                 state.metadata["pending_attachments"] = attachments
+            # 首次设置模式（默认 video 不被覆盖）
+            mode_val = context.get("mode")
+            if mode_val and state.mode == "video":
+                state.mode = mode_val
 
         logger.info(f"[ReAct] 用户输入: '{user_input}', project_id={state.project_id}")
 
@@ -250,16 +300,22 @@ class ReActAgent:
         - done: 处理完成
         - error: 处理出错
         """
-        state = self.sessions.get_or_create_session(session_id)
+        project_id = context.get("project_id") if context else None
+        state = self._resolve_session(session_id, project_id)
         state.add_message("user", user_input)
 
         if context:
             pid = context.get("project_id")
             if pid:
                 state.project_id = int(pid)
+                state.metadata["project_id"] = state.project_id
             attachments = context.get("attachments")
             if attachments:
                 state.metadata["pending_attachments"] = attachments
+            # 首次设置模式（默认 video 不被覆盖）
+            mode_val = context.get("mode")
+            if mode_val and state.mode == "video":
+                state.mode = mode_val
 
         yield {"type": "session", "session_id": state.session_id}
         logger.info(f"[ReAct-Stream] 用户输入: '{user_input}', project_id={state.project_id}")
@@ -306,92 +362,128 @@ class ReActAgent:
                     yield {"type": "reply", "content": final_reply}
                     break
 
-                # 逐个执行工具并推送状态
+                # 执行工具并推送状态
+                import asyncio
                 tool_results = []
-                for tc in tool_calls:
-                    tool_name = tc["name"]
-                    tool_params = tc["params"]
 
-                    # 检查工具权限
-                    tool = registry.get_tool(tool_name)
-                    perm = tool.permission if tool else "modify"
+                # 判断是否可以并行执行（需要特殊处理的工具走串行）
+                needs_special = any(tc["name"] == "download_video" for tc in tool_calls)
 
-                    yield {
-                        "type": "tool_start",
-                        "tool": tool_name,
-                        "params": tool_params,
-                        "permission": perm,
-                    }
+                if len(tool_calls) > 1 and not needs_special:
+                    # 并行执行：先推送所有 tool_start，再 gather，再依次推送结果
+                    for tc in tool_calls:
+                        tool = registry.get_tool(tc["name"])
+                        perm = tool.permission if tool else "modify"
+                        yield {"type": "tool_start", "tool": tc["name"], "params": tc["params"], "permission": perm}
+                        print(f"[ToolExec] >>> {tc['name']}({json.dumps(tc['params'], ensure_ascii=False)[:300]}) [parallel]")
 
-                    print(f"[ToolExec] >>> {tool_name}({json.dumps(tool_params, ensure_ascii=False)[:300]})")
+                    tasks = [self._execute_tool(tc["name"], tc["params"], state) for tc in tool_calls]
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                    # 支持进度的工具：后台执行 + 轮询进度
-                    if tool_name == "download_video":
-                        import asyncio
-                        progress_dict = {}
-                        tool_task = asyncio.ensure_future(
-                            self._execute_tool(tool_name, tool_params, state, progress_dict=progress_dict)
-                        )
-                        while not tool_task.done():
-                            p = {k: v for k, v in progress_dict.items() if v}
-                            if p:
-                                yield {"type": "tool_progress", "tool": tool_name, **p}
-                            await asyncio.sleep(0.8)
-                        result = tool_task.result()
-                    else:
-                        result = await self._execute_tool(tool_name, tool_params, state)
+                    for tc, result in zip(tool_calls, results):
+                        if isinstance(result, Exception):
+                            result = {"success": False, "error": str(result)}
+                        tool_name = tc["name"]
+                        tool_params = tc["params"]
 
-                    _res_preview = json.dumps(result, ensure_ascii=False, default=str)[:300]
-                    print(f"[ToolExec] <<< {tool_name} success={result.get('success', True)} | {_res_preview}")
+                        _res_preview = json.dumps(result, ensure_ascii=False, default=str)[:300]
+                        print(f"[ToolExec] <<< {tool_name} success={result.get('success', True)} | {_res_preview}")
 
-                    if result.get("is_temp_asset"):
-                        has_temp_asset = True
+                        if result.get("is_temp_asset"):
+                            has_temp_asset = True
 
-                    tool_results.append({
-                        "name": tool_name,
-                        "params": tool_params,
-                        "result": result,
-                    })
-                    all_tool_results.append({
-                        "name": tool_name,
-                        "params": tool_params,
-                        "result": result,
-                    })
+                        tool_results.append({"name": tool_name, "params": tool_params, "result": result})
+                        all_tool_results.append({"name": tool_name, "params": tool_params, "result": result})
 
-                    if tool_name == "list_videos" and result.get("videos"):
-                        state.last_video_list = result["videos"]
+                        if tool_name == "list_videos" and result.get("videos"):
+                            state.last_video_list = result["videos"]
+                        vid_param = tool_params.get("video_id")
+                        if vid_param and isinstance(vid_param, int):
+                            state.last_referenced_video_id = vid_param
+                        if result.get("video_id"):
+                            state.last_referenced_video_id = result["video_id"]
 
-                    # 跟踪最近引用的素材 ID
-                    vid_param = tool_params.get("video_id")
-                    if vid_param and isinstance(vid_param, int):
-                        state.last_referenced_video_id = vid_param
-                    if result.get("video_id"):
-                        state.last_referenced_video_id = result["video_id"]
+                        result_preview = json.dumps(result, ensure_ascii=False, default=str)
+                        if len(result_preview) > 500:
+                            result_preview = result_preview[:500] + "...(已截断)"
 
-                    # 截断结果用于推送
-                    result_preview = json.dumps(result, ensure_ascii=False, default=str)
-                    if len(result_preview) > 500:
-                        result_preview = result_preview[:500] + "...(已截断)"
+                        media_info = None
+                        if result.get("is_temp_asset") or result.get("web_path"):
+                            media_info = {
+                                "web_path": result.get("web_path"),
+                                "output_path": result.get("output_path"),
+                                "output_type": result.get("output_type", "video"),
+                                "duration": result.get("duration"),
+                                "video_id": result.get("video_id"),
+                                "temp_file_id": result.get("temp_file_id"),
+                            }
 
-                    # 提取临时素材信息供前端渲染预览卡片
-                    media_info = None
-                    if result.get("is_temp_asset") or result.get("web_path"):
-                        media_info = {
-                            "web_path": result.get("web_path"),
-                            "output_path": result.get("output_path"),
-                            "output_type": result.get("output_type", "video"),
-                            "duration": result.get("duration"),
-                            "video_id": result.get("video_id"),
-                            "temp_file_id": result.get("temp_file_id"),
-                        }
+                        yield {"type": "tool_result", "tool": tool_name, "success": result.get("success", True), "preview": result_preview, "media_info": media_info}
+                else:
+                    # 串行执行（download_video 等需要特殊处理的工具）
+                    for tc in tool_calls:
+                        tool_name = tc["name"]
+                        tool_params = tc["params"]
 
-                    yield {
-                        "type": "tool_result",
-                        "tool": tool_name,
-                        "success": result.get("success", True),
-                        "preview": result_preview,
-                        "media_info": media_info,
-                    }
+                        tool = registry.get_tool(tool_name)
+                        perm = tool.permission if tool else "modify"
+
+                        yield {"type": "tool_start", "tool": tool_name, "params": tool_params, "permission": perm}
+                        print(f"[ToolExec] >>> {tool_name}({json.dumps(tool_params, ensure_ascii=False)[:300]})")
+
+                        if tool_name == "download_video":
+                            progress_dict = {}
+                            tool_task = asyncio.ensure_future(
+                                self._execute_tool(tool_name, tool_params, state, progress_dict=progress_dict)
+                            )
+                            while not tool_task.done():
+                                p = {k: v for k, v in progress_dict.items() if v}
+                                if p:
+                                    yield {"type": "tool_progress", "tool": tool_name, **p}
+                                await asyncio.sleep(0.8)
+                            result = tool_task.result()
+                        else:
+                            tool_task = asyncio.ensure_future(
+                                self._execute_tool(tool_name, tool_params, state)
+                            )
+                            while not tool_task.done():
+                                yield {"type": "heartbeat"}
+                                await asyncio.sleep(3)
+                            result = tool_task.result()
+
+                        _res_preview = json.dumps(result, ensure_ascii=False, default=str)[:300]
+                        print(f"[ToolExec] <<< {tool_name} success={result.get('success', True)} | {_res_preview}")
+
+                        if result.get("is_temp_asset"):
+                            has_temp_asset = True
+
+                        tool_results.append({"name": tool_name, "params": tool_params, "result": result})
+                        all_tool_results.append({"name": tool_name, "params": tool_params, "result": result})
+
+                        if tool_name == "list_videos" and result.get("videos"):
+                            state.last_video_list = result["videos"]
+                        vid_param = tool_params.get("video_id")
+                        if vid_param and isinstance(vid_param, int):
+                            state.last_referenced_video_id = vid_param
+                        if result.get("video_id"):
+                            state.last_referenced_video_id = result["video_id"]
+
+                        result_preview = json.dumps(result, ensure_ascii=False, default=str)
+                        if len(result_preview) > 500:
+                            result_preview = result_preview[:500] + "...(已截断)"
+
+                        media_info = None
+                        if result.get("is_temp_asset") or result.get("web_path"):
+                            media_info = {
+                                "web_path": result.get("web_path"),
+                                "output_path": result.get("output_path"),
+                                "output_type": result.get("output_type", "video"),
+                                "duration": result.get("duration"),
+                                "video_id": result.get("video_id"),
+                                "temp_file_id": result.get("temp_file_id"),
+                            }
+
+                        yield {"type": "tool_result", "tool": tool_name, "success": result.get("success", True), "preview": result_preview, "media_info": media_info}
 
                 # Observe
                 messages.append({"role": "assistant", "content": response_text})
@@ -439,18 +531,23 @@ class ReActAgent:
         每阶段独立运行 TAOR 循环，阶段间传递总结。
         适用于复杂剪辑需求（如"做一个完整的短视频"）。
         """
-        state = self.sessions.get_or_create_session(session_id)
+        project_id = context.get("project_id") if context else None
+        state = self._resolve_session(session_id, project_id)
         state.add_message("user", user_input)
 
         if context:
             pid = context.get("project_id")
             if pid:
                 state.project_id = int(pid)
+                state.metadata["project_id"] = state.project_id
             attachments = context.get("attachments")
             if attachments:
                 state.metadata["pending_attachments"] = attachments
+            # 首次设置模式（默认 video 不被覆盖）
+            mode_val = context.get("mode")
+            if mode_val and state.mode == "video":
+                state.mode = mode_val
 
-        yield {"type": "session", "session_id": state.session_id}
         yield {"type": "deep_research", "stage": "start", "total_stages": len(self.DEEP_RESEARCH_STAGES)}
 
         # Check for existing checkpoint to resume
@@ -680,8 +777,9 @@ class ReActAgent:
 
     def _build_messages(self, state: DialogState) -> List[Dict[str, str]]:
         """构建发送给 LLM 的消息列表"""
-        # 系统提示词
-        tools_desc = registry.get_tools_description()
+        # 按模式过滤工具
+        mode = getattr(state, 'mode', 'video')
+        tools_desc = registry.get_tools_description_by_category(mode)
         project_name = ""
         if state.project_id:
             try:
@@ -694,7 +792,10 @@ class ReActAgent:
             except Exception:
                 pass
 
-        system_prompt = build_system_prompt(tools_desc, state.project_id, project_name)
+        if mode == "comic":
+            system_prompt = build_comic_system_prompt(tools_desc, state.project_id, project_name)
+        else:
+            system_prompt = build_system_prompt(tools_desc, state.project_id, project_name)
 
         # 注入项目偏好记忆
         if state.project_id:
@@ -706,18 +807,10 @@ class ReActAgent:
             except Exception:
                 pass
 
-        # 注入技能描述
-        try:
-            skills_section = get_skills_prompt_section()
-            if skills_section:
-                system_prompt += f"\n\n{skills_section}"
-        except Exception:
-            pass
-
-        # 注入扩展提示词
+        # 注入扩展提示词（按 mode 过滤）
         try:
             from src.agent.extension_loader import get_extensions_prompt_section
-            ext_section = get_extensions_prompt_section()
+            ext_section = get_extensions_prompt_section(current_mode=mode)
             if ext_section:
                 system_prompt += f"\n\n{ext_section}"
         except Exception:
@@ -739,12 +832,30 @@ class ReActAgent:
         for msg in history:
             messages.append({"role": msg["role"], "content": msg["content"]})
 
-        # 注入当前上下文（最近操作的素材 ID 等）
+        # 注入当前上下文（最近操作的素材 ID、素材清单等）
         context_parts = []
         if state.last_referenced_video_id:
             context_parts.append(f"最近操作的素材ID: {state.last_referenced_video_id}（用户说'这张图片'、'这个视频'等指代时默认使用此ID）")
+        if state.last_video_list:
+            asset_lines = []
+            for i, v in enumerate(state.last_video_list[-10:]):
+                name = v.get("name", v.get("video_name", "未命名"))
+                vid = v.get("id", "?")
+                ft = v.get("file_type", "video")
+                asset_lines.append(f"  {i+1}. {name} (ID: {vid}, 类型: {ft})")
+            if asset_lines:
+                context_parts.append("项目素材清单:\n" + "\n".join(asset_lines))
         if context_parts:
             messages.append({"role": "system", "content": "[当前上下文]\n" + "\n".join(context_parts)})
+
+        # 会话恢复提示（重启后注入一次）
+        if state.metadata.get("_restored_from_db"):
+            messages.append({"role": "system", "content": (
+                "注意：本次会话是从之前的对话中恢复的（服务可能重启过）。"
+                "上方历史记录和当前上下文中包含了之前的素材信息，"
+                "请据此继续对话，不要重复询问已有信息。"
+            )})
+            state.metadata.pop("_restored_from_db", None)
 
         # 注入用户上传的附件信息
         pending = state.metadata.pop("pending_attachments", None)

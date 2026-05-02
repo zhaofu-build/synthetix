@@ -14,6 +14,11 @@ from src import config
 logger = logging.getLogger(__name__)
 
 
+def _default_model() -> Optional[str]:
+    """获取用户在设置中配置的默认模型名，无配置时返回 None（由 core-nexus 服务端决定）。"""
+    return cfg_get("core_nexus.llm_model") or config.SLOW_MODEL or None
+
+
 def _estimate_complexity(messages: List[Dict[str, str]]) -> str:
     """Estimate task complexity from message content.
 
@@ -111,6 +116,7 @@ def generate_response(
     temperature: float = 0.7,
     max_tokens: int = 2048,
     provider_options: Optional[Dict] = None,
+    enable_search: bool = False,
 ) -> str:
     """
     使用 core-nexus-ai API 进行文本生成（同步）
@@ -127,18 +133,21 @@ def generate_response(
         temperature: 温度参数
         max_tokens: 最大 token 数
         provider_options: 供应商特有参数（如 use_kv_cache, session_id）
+        enable_search: 启用联网搜索
 
     Returns:
         生成的文本内容
     """
     try:
         client = get_client()
+        model = model_name or _default_model()
         response = client.llm_generate(
             messages=messages,
-            model=model_name,
+            model=model,
             temperature=temperature,
             max_tokens=max_tokens,
             provider_options=provider_options,
+            enable_search=enable_search,
         )
         return response
     except Exception as e:
@@ -168,9 +177,10 @@ def generate_response_stream(
     """
     try:
         client = get_client()
+        model = model_name or _default_model()
         for chunk in client.llm_generate_stream(
             messages=messages,
-            model=model_name,
+            model=model,
             temperature=temperature,
             max_tokens=max_tokens,
             provider_options=provider_options,
@@ -187,6 +197,7 @@ async def generate_response_async(
     temperature: float = 0.7,
     max_tokens: int = 2048,
     provider_options: Optional[Dict] = None,
+    enable_search: bool = False,
 ) -> str:
     """
     使用 core-nexus-ai API 进行异步文本生成（真异步，不阻塞事件循环）
@@ -206,16 +217,18 @@ async def generate_response_async(
         from src.shared.utils.observability import record_ai_call
         t0 = _time.monotonic()
         client = get_client()
+        model = model_name or _default_model()
         response = await client.llm_generate_async(
             messages=messages,
-            model=model_name,
+            model=model,
             temperature=temperature,
             max_tokens=max_tokens,
             provider_options=provider_options,
+            enable_search=enable_search,
         )
         latency_ms = (_time.monotonic() - t0) * 1000
         record_ai_call(
-            service="LLM", model=model_name or "default",
+            service="LLM", model=model or "default",
             tokens_in=sum(len(m.get("content", "")) // 4 for m in messages),
             tokens_out=len(response) // 4 if response else 0,
             latency_ms=latency_ms, success=True,
@@ -224,7 +237,7 @@ async def generate_response_async(
     except Exception as e:
         try:
             from src.shared.utils.observability import record_ai_call
-            record_ai_call(service="LLM", model=model_name or "default", success=False, error=str(e))
+            record_ai_call(service="LLM", model=(model_name or _default_model()) or "default", success=False, error=str(e))
         except Exception:
             pass
         logger.error(f"LLM 异步调用异常: {str(e)}")

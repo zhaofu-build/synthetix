@@ -95,6 +95,10 @@ async def upload_file(
         local_path = file_info["local_path"]
         web_path = f"/static/temp/{project_id}/{filename}" if project_id else f"/static/source_videos/{filename}"
 
+        # 视频入库时统一编码标准化
+        if file_type == "video":
+            use_ffmpeg.standardize_video(local_path)
+
         # 存入项目临时文件表 + 创建 VideoSource 记录（供工具引用）
         temp_file_id = None
         video_id = None

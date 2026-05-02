@@ -54,6 +54,11 @@ def _save_temp_file(src_path: str, project_id: int, file_type: str, source: str,
     dest_path = os.path.join(temp_dir, filename)
     shutil.move(src_path, dest_path)
 
+    # 视频入库时统一编码标准化
+    if file_type == "video":
+        from src.application.services import ffmpeg_adapter as _ffmpeg
+        _ffmpeg.standardize_video(dest_path)
+
     file_size = os.path.getsize(dest_path) if os.path.isfile(dest_path) else 0
     web_path = f"/static/temp/{project_id}/{filename}"
 
@@ -69,13 +74,24 @@ def _save_temp_file(src_path: str, project_id: int, file_type: str, source: str,
             source=source,
             file_size=file_size,
         )
+        # 同时创建 VideoSource（is_temp=True），供工具通过 video_id 引用
+        from src.infrastructure.repositories import VideoRepository
+        video_repo = VideoRepository(db)
+        vs = video_repo.create(
+            video_name=filename,
+            local_path=dest_path,
+            web_path=web_path,
+            is_temp=True,
+            file_type=file_type,
+        )
         db.commit()
         temp_file_id = record.id
+        video_id = vs.id
 
     result = {
         "success": True,
         "temp_file_id": temp_file_id,
-        "video_id": None,
+        "video_id": video_id,
         "web_path": web_path,
         "local_path": dest_path,
         "output_type": file_type,
@@ -84,6 +100,79 @@ def _save_temp_file(src_path: str, project_id: int, file_type: str, source: str,
     if duration is not None:
         result["duration"] = duration
     return result
+
+
+def _make_temp_output(suffix: str, video_id: int) -> str:
+    """创建临时文件路径供 FFmpeg 输出，避免写入素材库目录。"""
+    import tempfile
+    tmp_dir = tempfile.gettempdir()
+    return os.path.join(tmp_dir, f"synthetix_{video_id}_{int(time.time())}_{os.getpid()}{suffix}")
+
+
+_font_cache = None
+
+def _prepare_font_for_file(file_path: str) -> str:
+    """将中文字体复制到指定文件同目录，返回字体文件名。
+
+    FFmpeg drawtext 在 Windows 上无法解析含盘符冒号的绝对路径，
+    但能找到与输入文件同目录的字体（相对文件名）。
+    将字体复制到输入文件同目录即可。
+    """
+    global _font_cache
+    import platform, shutil
+
+    if not _font_cache:
+        candidates = []
+        if platform.system() == 'Windows':
+            fonts_dir = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
+            candidates = [
+                os.path.join(fonts_dir, 'simhei.ttf'),
+                os.path.join(fonts_dir, 'simkai.ttf'),
+            ]
+        elif platform.system() == 'Darwin':
+            candidates = [
+                '/System/Library/Fonts/PingFang.ttc',
+                '/Library/Fonts/Arial Unicode.ttf',
+            ]
+        else:
+            candidates = [
+                '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
+                '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+                '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',
+            ]
+        for path in candidates:
+            if os.path.exists(path):
+                _font_cache = path
+                break
+
+    if not _font_cache:
+        return ''
+
+    font_name = os.path.basename(_font_cache)
+    target_dir = os.path.dirname(os.path.abspath(file_path))
+    dest = os.path.join(target_dir, font_name)
+    if not os.path.exists(dest):
+        try:
+            shutil.copy2(_font_cache, dest)
+        except Exception:
+            return ''
+    return font_name
+
+
+def _save_tool_output(output_path: str, video_id: int, source: str,
+                      project_id, file_type: str = "video",
+                      file_name: str = None, message: str = None) -> Dict[str, Any]:
+    """工具产出保存：优先存入项目临时目录（聊天框展示），无 project_id 时原样返回。"""
+    if project_id:
+        result = _save_temp_file(output_path, project_id, file_type, source,
+                                 file_name=file_name)
+        if result:
+            if message:
+                result["message"] = message
+            return result
+    if message:
+        return {"success": True, "output_path": output_path, "message": message}
+    return {"success": True, "output_path": output_path}
 
 
 # ==================== Pydantic 参数模型 ====================
@@ -129,6 +218,7 @@ class AddSubtitleParams(BaseModel):
     video_id: int = Field(..., description="视频 ID")
     subtitle_content: str = Field(..., description="字幕内容或文件路径")
     hard_subtitle: bool = Field(default=True, description="是否硬字幕")
+    project_id: Opt[int] = Field(default=None, description="项目 ID")
 
 
 class ChangeSpeedParams(BaseModel):
@@ -190,6 +280,7 @@ class AddAudioParams(BaseModel):
     video_id: int = Field(..., description="视频 ID")
     audio_path: str = Field(..., description="音频文件路径")
     audio_type: str = Field(default="bgm", description="类型: dubbing(配音)/bgm(背景音乐)")
+    project_id: Opt[int] = Field(default=None, description="项目 ID")
 
 
 class DownloadVideoParams(BaseModel):
@@ -232,12 +323,6 @@ class ConvertToGifParams(BaseModel):
 class SeparateVocalParams(BaseModel):
     """人声分离参数"""
     video_id: int = Field(..., description="视频 ID")
-
-
-class TranslateTextParams(BaseModel):
-    """翻译参数"""
-    text: str = Field(..., description="要翻译的文本")
-    target_lang: Opt[str] = Field(default="zh", description="目标语言")
 
 
 # --- 本机文件操作参数模型 ---
@@ -321,7 +406,6 @@ PARAM_MODELS = {
     "extract_frames": ExtractFramesParams,
     "convert_to_gif": ConvertToGifParams,
     "separate_vocal": SeparateVocalParams,
-    "translate_text": TranslateTextParams,
     "rename_files": RenameFilesParams,
     "delete_files": DeleteFilesParams,
     "move_files": MoveFilesParams,
@@ -341,6 +425,7 @@ class Tool:
     before_execute: Optional[Callable] = None
     after_execute: Optional[Callable] = None
     permission: str = "modify"  # read_only / modify / destructive
+    category: str = "video"     # "common" | "video" | "comic"
 
     def __post_init__(self):
         if self.examples is None:
@@ -400,7 +485,8 @@ class ToolRegistry:
         param_model: Optional[type] = None,
         before_execute: Optional[Callable] = None,
         after_execute: Optional[Callable] = None,
-        permission: str = "modify"
+        permission: str = "modify",
+        category: str = "video"
     ) -> Callable:
         """
         注册工具装饰器
@@ -427,7 +513,8 @@ class ToolRegistry:
                 param_model=param_model,
                 before_execute=before_execute,
                 after_execute=after_execute,
-                permission=permission
+                permission=permission,
+                category=category
             )
             logger.info(f"注册工具: {name}")
             return func
@@ -455,6 +542,18 @@ class ToolRegistry:
                 f"- {tool.name}: {tool.description}\n"
                 f"  参数: {params_str}"
             )
+        return "\n".join(descriptions)
+
+    def get_tools_description_by_category(self, mode: str = "video") -> str:
+        """按模式过滤工具描述：common 工具 + 当前模式的工具"""
+        descriptions = []
+        for tool in self._tools.values():
+            if tool.category == "common" or tool.category == mode:
+                params_str = ", ".join(tool.parameters.keys())
+                descriptions.append(
+                    f"- {tool.name}: {tool.description}\n"
+                    f"  参数: {params_str}"
+                )
         return "\n".join(descriptions)
 
     def has_tool(self, name: str) -> bool:
@@ -671,7 +770,7 @@ async def tool_merge_videos(
                 }
 
             # 执行合并
-            output_path = f"{config.UPLOAD_DIR}merged_{len(video_paths)}_videos.mp4"
+            output_path = _make_temp_output("_merged.mp4", video_ids[0])
             if transition == "dissolve":
                 clip_infos = [{"path": p} for p in video_paths]
                 ffmpeg.concatenate_videos_with_transitions(clip_infos, output_path)
@@ -732,6 +831,7 @@ async def tool_merge_videos(
         "video_id": {"type": "integer", "description": "视频 ID"},
         "subtitle_content": {"type": "string", "description": "字幕内容或文件路径"},
         "hard_subtitle": {"type": "boolean", "description": "是否硬字幕"},
+        "project_id": {"type": "integer", "description": "项目 ID"},
     },
     examples=["给视频添加字幕", "添加硬字幕"],
     param_model=AddSubtitleParams,
@@ -741,6 +841,7 @@ async def tool_add_subtitle(
     video_id: int,
     subtitle_content: str,
     hard_subtitle: bool = True,
+    project_id: int = None,
     **kwargs
 ) -> Dict[str, Any]:
     """添加字幕工具"""
@@ -759,18 +860,20 @@ async def tool_add_subtitle(
                     "error": f"视频 {video_id} 不存在"
                 }
 
-            # 添加字幕
-            output_path = ffmpeg.add_subtitle(
+            # subtitle_type: True=软字幕, False=硬字幕
+            output_name = ffmpeg.add_subtitle(
                 video_path=video.local_path,
                 subtitle_content=subtitle_content,
-                is_soft=not hard_subtitle
+                subtitle_type=not hard_subtitle,
             )
 
-            return {
-                "success": True,
-                "output_path": output_path,
-                "message": "字幕添加完成"
-            }
+            return _save_tool_output(
+                output_name, video_id, "add_subtitle",
+                project_id,
+                file_type="video",
+                file_name=f"subtitle_{video_id}_{int(time.time())}{os.path.splitext(output_name)[1]}",
+                message="字幕添加完成",
+            )
 
     except Exception as e:
         logger.error(f"添加字幕失败: {e}")
@@ -819,11 +922,13 @@ async def tool_change_speed(
             )
 
             speed_desc = "慢放" if speed_factor < 1 else "快放"
-            return {
-                "success": True,
-                "output_path": str(output_path),
-                "message": f"已调整为 {speed_factor} 倍速{speed_desc}"
-            }
+            return _save_tool_output(
+                str(output_path), video_id, "change_speed",
+                kwargs.get("project_id"),
+                file_type="video",
+                file_name=f"speed_{video_id}_{speed_factor}{os.path.splitext(str(output_path))[1]}",
+                message=f"已调整为 {speed_factor} 倍速{speed_desc}",
+            )
 
     except Exception as e:
         logger.error(f"调整速度失败: {e}")
@@ -873,15 +978,18 @@ async def tool_smart_clip(
                     videos = db.query(VideoSource).filter(VideoSource.video_type == 1).all()
 
                 transcripts = []
-                for v in videos[:5]:  # 最多处理 5 个素材
-                    proxy_path = ffmpeg_adapter.generate_proxy(v.local_path)
-                    srt = whisper_adapter.transcribe(
-                        audio_path=v.local_path,
-                        output_format_type="srt",
-                        proxy_path=proxy_path,
-                    )
-                    if srt and len(srt.strip()) > 10:
-                        transcripts.append(f"[视频 {v.id}: {v.video_name or '未命名'}]\n{srt[:2000]}")
+                for v in videos[:2]:  # 最多处理 2 个素材，防止内存溢出
+                    try:
+                        proxy_path = ffmpeg_adapter.generate_proxy(v.local_path)
+                        srt = whisper_adapter.transcribe(
+                            audio_path=v.local_path,
+                            output_format_type="srt",
+                            proxy_path=proxy_path,
+                        )
+                        if srt and len(srt.strip()) > 10:
+                            transcripts.append(f"[视频 {v.id}: {v.video_name or '未命名'}]\n{srt[:2000]}")
+                    except Exception as te:
+                        logger.warning(f"视频 {v.id} 转录失败，跳过: {te}")
 
                 if transcripts:
                     combined_transcript = "\n\n".join(transcripts)
@@ -968,13 +1076,14 @@ async def tool_analyze_video(
 
 @registry.register(
     name="generate_tts",
-    description="文本转语音，生成配音",
+    description="文本转语音，生成配音。使用前先调用 list_audios 查看可用音色及对应 ID，speaker_id 必须是数字 ID",
     parameters={
         "text": {"type": "string", "description": "要合成的文本"},
-        "speaker_id": {"type": "integer", "description": "说话人/音色 ID"},
+        "speaker_id": {"type": "integer", "description": "音色 ID（数字），先用 list_audios 查看可用音色"},
     },
-    examples=["生成配音", "把这个文案读出来"],
-    param_model=GenerateTtsParams
+    examples=["生成配音", "把这个文案读出来", "用1号音色生成语音"],
+    param_model=GenerateTtsParams,
+    category="common",
 )
 async def tool_generate_tts(
     text: str,
@@ -982,37 +1091,50 @@ async def tool_generate_tts(
     **kwargs
 ) -> Dict[str, Any]:
     """生成 TTS 工具"""
-    from src.application.services.fish_speech_adapter import generate_audio
-    from src import config
+    from src.application.services.audio_service import AudioService
+    from src.infrastructure.db.session import get_db_context
 
     try:
-        # 生成语音
-        output_path = generate_audio(
-            text=text,
-            audio_source_id=speaker_id
-        )
+        with get_db_context() as db:
+            audio_service = AudioService(db)
+            result = audio_service.generate_fish_speech_tts(
+                text=text,
+                audio_source_id=speaker_id or -1,
+            )
+
+        project_id = kwargs.get("project_id")
+        local_path = result.get("local_path")
+        if local_path and os.path.isfile(local_path):
+            save_result = _save_tool_output(
+                local_path, speaker_id or 0, "tts",
+                project_id, file_type="audio",
+                file_name=f"tts_{int(time.time())}.wav",
+                message="语音生成完成",
+            )
+            if save_result.get("is_temp_asset"):
+                return save_result
 
         return {
             "success": True,
-            "output_path": output_path,
-            "web_path": config.UPLOAD_DIR + output_path.split("/")[-1],
-            "message": "语音生成完成"
+            "web_path": result.get("web_path"),
+            "local_path": result.get("local_path"),
+            "message": "语音生成完成",
         }
 
     except Exception as e:
         logger.error(f"语音生成失败: {e}")
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        return {"success": False, "error": str(e)}
 
 
 @registry.register(
     name="list_videos",
-    description="列出可用的视频素材",
-    parameters={},
+    description="列出当前项目已使用的素材（仅项目关联的正式素材和临时文件，不包含素材库中未使用的素材）",
+    parameters={
+        "project_id": {"type": "integer", "description": "项目 ID（自动注入）"},
+    },
     examples=["有什么素材", "查看素材库"],
-    permission="read_only"
+    permission="read_only",
+    category="common",
 )
 async def tool_list_videos(**kwargs) -> Dict[str, Any]:
     """列出视频工具，支持按项目筛选"""
@@ -1025,46 +1147,46 @@ async def tool_list_videos(**kwargs) -> Dict[str, Any]:
 
     try:
         with get_db_context() as db:
+            if not project_id:
+                return {
+                    "success": True,
+                    "videos": [],
+                    "count": 0,
+                    "message": "当前无项目，无法查看素材"
+                }
+
+            project = db.query(VideoProject).filter(VideoProject.id == int(project_id)).first()
+            project_name = project.name if project else str(project_id)
+
+            # 项目关联的正式素材
             videos = []
-            label = "素材库中"
-
-            if project_id:
-                project = db.query(VideoProject).filter(VideoProject.id == int(project_id)).first()
-                project_name = project.name if project else str(project_id)
-                label = f"项目 '{project_name}' 中"
-
-                # 项目关联的正式素材
-                if project and project.material_ids:
-                    repo = VideoRepository(db)
-                    videos.extend(repo.get_by_ids(project.material_ids))
-
-                # 项目临时文件对应的 VideoSource 记录
-                from src.domain.entities.project_temp_file import ProjectTempFile
-                temp_files = db.query(ProjectTempFile).filter(
-                    ProjectTempFile.project_id == int(project_id)
-                ).all()
-                if temp_files:
-                    temp_paths = [tf.file_path for tf in temp_files]
-                    temp_vs = db.query(VideoSource).filter(
-                        VideoSource.local_path.in_(temp_paths),
-                        VideoSource.is_temp == True,
-                    ).all()
-                    # 按路径建立索引去重
-                    existing_ids = {v.id for v in videos}
-                    for v in temp_vs:
-                        if v.id not in existing_ids:
-                            videos.append(v)
-
-                if not videos:
-                    return {
-                        "success": True,
-                        "videos": [],
-                        "count": 0,
-                        "message": f"项目 '{project_name}' 暂无素材（正式 + 临时）"
-                    }
-            else:
+            if project and project.material_ids:
                 repo = VideoRepository(db)
-                videos = repo.get_all(limit=20)
+                videos.extend(repo.get_by_ids(project.material_ids))
+
+            # 项目临时文件对应的 VideoSource 记录
+            from src.domain.entities.project_temp_file import ProjectTempFile
+            temp_files = db.query(ProjectTempFile).filter(
+                ProjectTempFile.project_id == int(project_id)
+            ).all()
+            if temp_files:
+                temp_paths = [tf.file_path for tf in temp_files]
+                temp_vs = db.query(VideoSource).filter(
+                    VideoSource.local_path.in_(temp_paths),
+                    VideoSource.is_temp == True,
+                ).all()
+                existing_ids = {v.id for v in videos}
+                for v in temp_vs:
+                    if v.id not in existing_ids:
+                        videos.append(v)
+
+            if not videos:
+                return {
+                    "success": True,
+                    "videos": [],
+                    "count": 0,
+                    "message": f"项目 '{project_name}' 暂无素材"
+                }
 
             video_list = [
                 {
@@ -1078,7 +1200,7 @@ async def tool_list_videos(**kwargs) -> Dict[str, Any]:
                 for v in videos
             ]
 
-            lines = [f"{label}共 {len(video_list)} 个素材："]
+            lines = [f"项目 '{project_name}' 共 {len(video_list)} 个素材："]
             for i, v in enumerate(video_list):
                 name = v.get("name") or "未命名"
                 dur = v.get("duration") or ""
@@ -1108,7 +1230,8 @@ async def tool_list_videos(**kwargs) -> Dict[str, Any]:
         "video_id": {"type": "integer", "description": "视频素材 ID"},
     },
     examples=["第一个视频的描述", "这个视频讲了什么", "查看描述"],
-    permission="read_only"
+    permission="read_only",
+    category="common",
 )
 async def tool_get_video_description(video_id: int, **kwargs) -> Dict[str, Any]:
     """查询视频素材的描述信息"""
@@ -1126,32 +1249,45 @@ async def tool_get_video_description(video_id: int, **kwargs) -> Dict[str, Any]:
             desc = video.description
 
             if desc:
-                # 尝试解析 JSON segments 格式
+                result = {"success": True, "video_id": video_id, "video_name": name, "has_description": True}
+                parts = []
+
+                # 尝试解析结构化 JSON（VL + ASR 组合格式）
                 try:
                     obj = json.loads(desc)
-                    if isinstance(obj, dict) and "segments" in obj:
-                        segs = obj["segments"]
-                        lines = [f"- **{s.get('start', '?')}s-{s.get('end', '?')}s**: {s.get('desc', '')}" for s in segs]
-                        formatted = "\n".join(lines)
-                        return {
-                            "success": True,
-                            "video_id": video_id,
-                            "video_name": name,
-                            "description": formatted,
-                            "has_description": True,
-                            "message": f"**{name}** 的描述：\n{formatted}",
-                        }
+                    if isinstance(obj, dict):
+                        if "segments" in obj:
+                            segs = obj["segments"]
+                            lines = [f"- **{s.get('start', '?')}s-{s.get('end', '?')}s**: {s.get('desc', '')}" for s in segs]
+                            parts.append("画面分析：\n" + "\n".join(lines))
+                            result["segments"] = segs
+                        if "vl_text" in obj:
+                            parts.append("画面分析：" + obj["vl_text"])
+                        if "transcription" in obj:
+                            parts.append("字幕/语音：\n" + obj["transcription"])
+                            result["transcription"] = obj["transcription"]
+                        if not parts:
+                            parts.append(desc)
+                    else:
+                        parts.append(desc)
                 except (ValueError, TypeError):
-                    pass
+                    # 旧格式：纯 segments JSON 或纯文本
+                    try:
+                        obj = json.loads(desc)
+                        if isinstance(obj, dict) and "segments" in obj:
+                            segs = obj["segments"]
+                            lines = [f"- **{s.get('start', '?')}s-{s.get('end', '?')}s**: {s.get('desc', '')}" for s in segs]
+                            parts.append("画面分析：\n" + "\n".join(lines))
+                            result["segments"] = segs
+                        else:
+                            parts.append(desc)
+                    except (ValueError, TypeError):
+                        parts.append(desc)
 
-                return {
-                    "success": True,
-                    "video_id": video_id,
-                    "video_name": name,
-                    "description": desc,
-                    "has_description": True,
-                    "message": f"**{name}** 的描述：{desc}",
-                }
+                formatted = "\n\n".join(parts)
+                result["description"] = formatted
+                result["message"] = f"**{name}** 的描述：\n{formatted}"
+                return result
             else:
                 return {
                     "success": True,
@@ -1173,7 +1309,7 @@ async def tool_get_video_description(video_id: int, **kwargs) -> Dict[str, Any]:
 
 @registry.register(
     name="search_material",
-    description="搜索或下载视频素材",
+    description="搜索或下载视频素材（注意：使用前请先调用 list_videos 检查项目已有素材，优先使用已有素材，不够时再搜索下载）",
     parameters={
         "keywords": {"type": "string", "description": "搜索关键词"},
     },
@@ -1186,20 +1322,105 @@ async def tool_search_material(
     **kwargs
 ) -> Dict[str, Any]:
     """搜索素材工具"""
-    from src.application.services.creative_service import CreativeService
+    from src.application.services import video_downloader_adapter
+    from src.application.services import ffmpeg_adapter as ffmpeg
 
     try:
-        service = CreativeService()
-        result = service.get_source_by_keywords(keywords)
+        project_id = kwargs.get("project_id")
+        keyword_list = [k.strip() for k in keywords.replace("，", ",").split(",") if k.strip()]
+        tags = ",".join(keyword_list)
+        logger.info(f"[search_material] 开始搜索下载: {keyword_list}")
+
+        def _do_search():
+            results = []
+            for kw in keyword_list:
+                videos = video_downloader_adapter.search_videos(kw, minimum_duration=0, source="pexels")
+                if not videos:
+                    videos = video_downloader_adapter.search_videos(kw, minimum_duration=0, source="pixabay")
+                for v in videos[:2]:
+                    try:
+                        dl_result = video_downloader_adapter.download_video(
+                            v, project_id=project_id, tags=tags,
+                        )
+                        vid = dl_result.get("video_id") if isinstance(dl_result, dict) else None
+                        results.append({"keyword": kw, "url": v.get("url", ""), "status": "downloaded", "video_id": vid})
+                    except Exception as e:
+                        results.append({"keyword": kw, "url": v.get("url", ""), "status": "failed", "error": str(e)})
+            return results
+
+        results = await asyncio.to_thread(_do_search)
+        downloaded = [r for r in results if r["status"] == "downloaded"]
+        logger.info(f"[search_material] 完成: 下载 {len(downloaded)}/{len(results)} 个素材")
+
+        # 自动分析下载的视频（获取描述 + ASR 转录，供后续剪辑使用）
+        analyzed_ids = []
+        transcribed_ids = []
+        for r in downloaded:
+            vid = r.get("video_id")
+            if not vid:
+                continue
+            try:
+                with get_db_context() as db:
+                    repo = VideoRepository(db)
+                    video = repo.get_by_id(vid)
+                    if not video or video.description:
+                        continue
+                    # 基础视频信息分析
+                    desc = await asyncio.to_thread(ffmpeg.get_video_info, video.local_path)
+                    if desc:
+                        w, h = desc.get('width', 0), desc.get('height', 0)
+                        dur = desc.get('duration_hms', '')
+                        fps = desc.get('fps', 0)
+                        video.description = (
+                            f"自动分析: {w}x{h} {fps}fps 时长{dur}。"
+                            f"搜索关键词: {tags}"
+                        )
+                        analyzed_ids.append(vid)
+                    db.commit()
+            except Exception as e:
+                logger.warning(f"[search_material] 分析视频 {vid} 失败: {e}")
+                continue
+
+            # 有音频轨时自动 ASR 转录
+            try:
+                has_audio = ffmpeg._has_audio_stream(video.local_path if vid else "")
+            except Exception:
+                continue
+            if not has_audio:
+                continue
+            try:
+                from src.application.services import whisper_adapter
+                subtitle_text = await asyncio.to_thread(
+                    whisper_adapter.transcribe,
+                    video.local_path,
+                    "txt",
+                    subtitle_language="zh",
+                )
+                if subtitle_text and subtitle_text.strip():
+                    with get_db_context() as db:
+                        v = db.query(VideoSource).filter(VideoSource.id == vid).first()
+                        if v:
+                            existing = v.description or ""
+                            v.description = existing + f"\n语音内容: {subtitle_text.strip()}"
+                            db.commit()
+                            transcribed_ids.append(vid)
+            except Exception as e:
+                logger.warning(f"[search_material] ASR 转录视频 {vid} 失败: {e}")
+
+        summary = f"搜索 '{keywords}' 完成，下载了 {len(downloaded)} 个素材"
+        if analyzed_ids:
+            summary += f"，已分析 {len(analyzed_ids)} 个"
+        if transcribed_ids:
+            summary += f"，已转录 {len(transcribed_ids)} 个"
 
         return {
             "success": True,
-            "message": f"已下载与 '{keywords}' 相关的素材",
-            "details": result
+            "message": summary,
+            "details": results,
         }
 
     except Exception as e:
-        logger.error(f"搜索素材失败: {e}")
+        logger.error(f"搜索素材失败: {e}", exc_info=True)
         return {
             "success": False,
             "error": str(e)
@@ -1246,13 +1467,32 @@ async def tool_transcribe_video(
         if not local_path or not os.path.exists(local_path):
             return {"success": False, "error": f"文件不存在: {local_path}"}
 
-        proxy_path = ffmpeg_adapter.generate_proxy(local_path)
+        # 对于视频/WAV/FLAC 文件，先提取为 MP3 再送 ASR（避免 WAV 过大导致 413）
+        ext = os.path.splitext(local_path)[1].lower()
+        asr_input = local_path
+        if ext in ('.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.ts', '.m4v', '.wav', '.flac'):
+            audio_tmp = _make_temp_output(".mp3", video_id or 0)
+            try:
+                ffmpeg_adapter.run_ffmpeg_cmd([
+                    '-y', '-i', local_path,
+                    '-vn', '-acodec', 'libmp3lame', '-q:a', '4',
+                    audio_tmp
+                ])
+                asr_input = audio_tmp
+            except Exception as audio_err:
+                logger.warning(f"提取音频失败，直接使用原始文件: {audio_err}")
 
         subtitle_text = whisper_adapter.transcribe(
-            audio_path=local_path,
+            audio_path=asr_input,
             subtitle_language=language or "zh",
-            proxy_path=proxy_path
         )
+
+        # 清理临时音频文件
+        if asr_input != local_path and os.path.exists(asr_input):
+            try:
+                os.remove(asr_input)
+            except OSError:
+                pass
 
         return {
             "success": True,
@@ -1304,7 +1544,7 @@ async def tool_analyze_video_vl(
                     return {"success": False, "error": f"视频 {video_id} 不存在"}
                 local_path = video.local_path
                 video_name = video.video_name
-                duration_sec = video.duration if video.duration else None
+                duration_sec = float(video.duration) if video.duration else None
 
         if not local_path or not os.path.exists(local_path):
             return {"success": False, "error": f"文件不存在: {local_path}"}
@@ -1450,7 +1690,8 @@ async def tool_analyze_transcript(
         "style": {"type": "string", "description": "风格: pop/classical/electronic/jazz/rock/ambient"},
     },
     examples=["生成一段轻快的电子音乐", "做一个30秒的钢琴背景音乐", "来点爵士风格的 BGM"],
-    param_model=GenerateMusicParams
+    param_model=GenerateMusicParams,
+    category="common",
 )
 async def tool_generate_music(
     prompt: str,
@@ -1476,27 +1717,21 @@ async def tool_generate_music(
 
         audio_data = result.get("audio", "")
         if audio_data:
-            # 保存音频文件
             if audio_data.startswith("data:"):
                 audio_data = audio_data.split(",", 1)[1]
             audio_bytes = base64.b64decode(audio_data)
             output_filename = f"music_{int(time.time())}.mp3"
-            output_path = os.path.join(config.UPLOAD_DIR, output_filename)
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            output_path = _make_temp_output(".mp3", 0)
             with open(output_path, "wb") as f:
                 f.write(audio_bytes)
-            web_path = f"/static/uploads/{output_filename}"
-        else:
-            output_path = None
-            web_path = None
-
-        return {
-            "success": True,
-            "output_path": output_path,
-            "web_path": web_path,
-            "duration": result.get("duration", duration),
-            "message": f"音乐生成完成，时长 {result.get('duration', duration)} 秒"
-        }
+            return _save_tool_output(
+                output_path, 0, "generate_music",
+                kwargs.get("project_id"),
+                file_type="audio",
+                file_name=output_filename,
+                message="音乐生成完成",
+            )
+        return {"success": True, "message": "未获取到音频数据"}
 
     except Exception as e:
         logger.error(f"音乐生成失败: {e}")
@@ -1510,6 +1745,7 @@ async def tool_generate_music(
         "video_id": {"type": "integer", "description": "视频 ID"},
         "audio_path": {"type": "string", "description": "音频文件路径"},
         "audio_type": {"type": "string", "description": "类型: dubbing(配音)/bgm(背景音乐)"},
+        "project_id": {"type": "integer", "description": "项目 ID"},
     },
     examples=["给视频加上背景音乐", "添加配音"],
     param_model=AddAudioParams,
@@ -1519,6 +1755,7 @@ async def tool_add_audio(
     video_id: int,
     audio_path: str,
     audio_type: str = "bgm",
+    project_id: int = None,
     **kwargs
 ) -> Dict[str, Any]:
     """添加音频工具"""
@@ -1534,15 +1771,32 @@ async def tool_add_audio(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            service = VideoService()
+            # 确保音频路径为绝对路径
+            abs_audio = audio_path if os.path.isabs(audio_path) else os.path.abspath(audio_path.lstrip('/'))
+
+
+            service = VideoService(db)
             result = service.add_audio_to_video(
                 video_path=video.local_path,
-                audio_path=audio_path
+                audio_path=abs_audio
             )
+
+            output_path = result.get("local_path") or result.get("output_path") if isinstance(result, dict) else str(result)
+            if output_path:
+                try:
+                    return _save_tool_output(
+                        str(output_path), video_id, "add_audio",
+                        project_id,
+                        file_type="video",
+                        file_name=f"audio_{video_id}_{int(time.time())}{os.path.splitext(str(output_path))[1]}",
+                        message=f"已添加{'配音' if audio_type == 'dubbing' else '背景音乐'}",
+                    )
+                except Exception as e:
+                    print(f"[add_audio] _save_tool_output 失败: {e}", flush=True)
 
             return {
                 "success": True,
-                "output_path": result.get("output_path") if isinstance(result, dict) else str(result),
+                "output_path": str(output_path) if output_path else None,
                 "message": f"已添加{'配音' if audio_type == 'dubbing' else '背景音乐'}"
             }
 
@@ -1558,7 +1812,8 @@ async def tool_add_audio(
         "url": {"type": "string", "description": "视频 URL"},
     },
     examples=["下载这个视频 https://...", "帮我下载一个视频"],
-    param_model=DownloadVideoParams
+    param_model=DownloadVideoParams,
+    category="common",
 )
 async def tool_download_video(
     url: str,
@@ -1573,15 +1828,15 @@ async def tool_download_video(
     from src import config
 
     try:
+        import tempfile
         with get_db_context() as db:
             repo = VideoRepository(db)
 
-            # 直接下载到素材目录
-            dest_dir = config.source_videos_dir
-            os.makedirs(dest_dir, exist_ok=True)
-            title, duration = video_downloader.download_videos_from_url(url, dest_dir, progress_dict=_progress_dict)
+            # 下载到临时目录
+            tmp_dir = tempfile.mkdtemp(prefix="synthetix_dl_")
+            title, duration = video_downloader.download_videos_from_url(url, tmp_dir, progress_dict=_progress_dict)
 
-            file_path = os.path.join(dest_dir, title)
+            file_path = os.path.join(tmp_dir, title)
             if not os.path.exists(file_path):
                 return {"success": False, "error": f"视频下载失败：文件未生成。可能是需要登录 Cookie 才能下载该视频。"}
 
@@ -1593,9 +1848,27 @@ async def tool_download_video(
                 video_info = {}
                 duration_hms = str(duration) if duration else "0"
 
+            project_id = kwargs.get("project_id")
+
+            if project_id:
+                dl_filename = f"download_{int(time.time())}_{title}"
+                temp_result = _save_temp_file(file_path, project_id, "video", "download",
+                                              file_name=dl_filename, duration=duration)
+                if temp_result:
+                    temp_result["filename"] = title
+                    temp_result["message"] = f"视频下载完成"
+                    return temp_result
+
+            # 回退：无 project_id，保存到素材库
+            import shutil
+            dest_dir = config.source_videos_dir
+            os.makedirs(dest_dir, exist_ok=True)
+            dest_path = os.path.join(dest_dir, title)
+            shutil.move(file_path, dest_path)
+
             new_video = repo.create(
                 video_name=title,
-                local_path=file_path,
+                local_path=dest_path,
                 web_path=f"/static/source_videos/{title}",
                 duration=video_info.get("duration", str(duration) if duration else "0"),
                 duration_hms=duration_hms,
@@ -1603,28 +1876,11 @@ async def tool_download_video(
                 file_type="video",
             )
 
-            project_id = kwargs.get("project_id")
-
-            # 如果有项目，优先保存到临时目录
-            if project_id:
-                import shutil
-                dl_filename = f"download_{new_video.id}_{title}"
-                temp_result = _save_temp_file(file_path, project_id, "video", "download",
-                                              file_name=dl_filename, duration=duration)
-                if temp_result:
-                    temp_result["video_id"] = new_video.id
-                    temp_result["filename"] = title
-                    temp_result["message"] = f"视频下载完成 ID={new_video.id}"
-                    return temp_result
-
-            if project_id:
-                _add_material_to_project(project_id, new_video.id)
-
             return {
                 "success": True,
                 "video_id": new_video.id,
                 "filename": title,
-                "output_path": file_path,
+                "output_path": dest_path,
                 "web_path": f"/static/source_videos/{title}",
                 "output_type": "video",
                 "duration": duration,
@@ -1644,7 +1900,8 @@ async def tool_download_video(
     description="获取当前日期和时间",
     parameters={},
     examples=["现在几点了", "今天几号", "当前时间"],
-    permission="read_only"
+    permission="read_only",
+    category="common",
 )
 async def tool_get_current_time(**kwargs) -> Dict[str, Any]:
     """查询当前时间"""
@@ -1670,7 +1927,8 @@ async def tool_get_current_time(**kwargs) -> Dict[str, Any]:
         "pattern": {"type": "string", "description": "文件名过滤（可选）"},
     },
     examples=["看看素材目录里有什么", "列出 uploads 文件夹的内容"],
-    permission="read_only"
+    permission="read_only",
+    category="common",
 )
 async def tool_list_directory(
     path: str = None,
@@ -1734,7 +1992,8 @@ async def tool_list_directory(
     },
     examples=["找一下海边的视频", "搜索 mp3 文件"],
     param_model=SearchFilesParams,
-    permission="read_only"
+    permission="read_only",
+    category="common",
 )
 async def tool_search_files(
     keywords: str,
@@ -1819,16 +2078,23 @@ async def tool_compress_video(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
+            out_path = _make_temp_output("_compressed.mp4", video_id)
             output_path = ffmpeg.compress_video_h265(
                 input_path=video.local_path,
+                output_path=out_path,
                 crf=crf
             )
 
-            return {
-                "success": True,
-                "output_path": str(output_path),
-                "message": f"视频压缩完成（质量: {quality}）"
-            }
+            if not output_path:
+                return {"success": False, "error": "视频不需要压缩或压缩失败"}
+
+            return _save_tool_output(
+                str(output_path), video_id, "compress",
+                kwargs.get("project_id"),
+                file_type="video",
+                file_name=f"compressed_{video_id}_{int(time.time())}.mp4",
+                message=f"视频压缩完成（质量: {quality}）"
+            )
 
     except Exception as e:
         logger.error(f"视频压缩失败: {e}")
@@ -1852,11 +2118,10 @@ async def tool_extract_frames(
     **kwargs
 ) -> Dict[str, Any]:
     """提取帧工具"""
-    import os
+    import os, tempfile
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     try:
         with get_db_context() as db:
@@ -1866,23 +2131,27 @@ async def tool_extract_frames(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_dir = os.path.join(config.UPLOAD_DIR, f"frames_{video_id}")
-            os.makedirs(output_dir, exist_ok=True)
+            output_dir = tempfile.mkdtemp(prefix="synthetix_frames_")
 
             if timestamps:
                 ts_list = [t.strip() for t in timestamps.split(",")]
             else:
-                # 默认提取 5 帧（均匀分布）
                 info = ffmpeg.get_video_info(video.local_path)
                 duration = float(info.get("duration", 30)) if info else 30
                 step = duration / 6
                 ts_list = [f"{int(step * (i + 1)) // 3600:02d}:{(int(step * (i + 1)) % 3600) // 60:02d}:{int(step * (i + 1)) % 60:02d}" for i in range(5)]
 
             frame_paths = []
+            project_id = kwargs.get("project_id")
             for i, ts in enumerate(ts_list):
                 output_path = os.path.join(output_dir, f"frame_{i:03d}.jpg")
                 ffmpeg.extract_frame(video.local_path, ts, output_path)
-                frame_paths.append(output_path)
+                if project_id and os.path.exists(output_path):
+                    saved = _save_temp_file(output_path, project_id, "image", "extract_frame",
+                                            file_name=f"frame_{i}_{video_id}_{int(time.time())}.jpg")
+                    frame_paths.append(saved.get("web_path", output_path) if saved else output_path)
+                else:
+                    frame_paths.append(output_path)
 
             return {
                 "success": True,
@@ -1923,7 +2192,7 @@ class ExtractKeyframesParams(BaseModel):
     },
     param_model=ExtractKeyframesParams,
     before_execute=validate_video_exists,
-    permission="read_only",
+    permission="read_only"
 )
 async def tool_extract_keyframes(
     video_id: int,
@@ -1933,10 +2202,10 @@ async def tool_extract_keyframes(
     max_frames: int = 50,
     **kwargs,
 ) -> Dict[str, Any]:
+    import os, tempfile
     from src.application.services import ffmpeg_adapter
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
-    from src import config
 
     try:
         with get_db_context() as db:
@@ -1945,7 +2214,7 @@ async def tool_extract_keyframes(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_dir = os.path.join(config.UPLOAD_DIR, f"keyframes_{video_id}")
+            output_dir = tempfile.mkdtemp(prefix="synthetix_keyframes_")
             frames = ffmpeg_adapter.extract_keyframes(
                 input_path=video.local_path,
                 output_dir=output_dir,
@@ -1954,6 +2223,17 @@ async def tool_extract_keyframes(
                 scene_threshold=scene_threshold,
                 max_frames=max_frames,
             )
+            project_id = kwargs.get("project_id")
+            if project_id and frames:
+                saved_frames = []
+                for fp in frames:
+                    if os.path.exists(fp):
+                        saved = _save_temp_file(fp, project_id, "image", "extract_keyframe",
+                                                file_name=os.path.basename(fp))
+                        saved_frames.append(saved.get("web_path", fp) if saved else fp)
+                    else:
+                        saved_frames.append(fp)
+                frames = saved_frames
             return {
                 "success": True,
                 "frames": frames,
@@ -1989,7 +2269,6 @@ async def tool_convert_to_gif(
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     try:
         with get_db_context() as db:
@@ -1999,7 +2278,7 @@ async def tool_convert_to_gif(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"gif_{video_id}_{int(time.time())}.gif")
+            output_path = _make_temp_output(".gif", video_id)
 
             # 计算时长参数
             duration_param = None
@@ -2012,14 +2291,15 @@ async def tool_convert_to_gif(
             ffmpeg.video_to_gif(
                 input_video=video.local_path,
                 start_time=start_time,
-                duration=duration_param
+                duration=duration_param,
+                output_path=output_path
             )
 
-            return {
-                "success": True,
-                "output_path": output_path,
-                "message": "GIF 生成完成"
-            }
+            return _save_tool_output(output_path, video_id, "gif",
+                                     kwargs.get("project_id"),
+                                     file_type="image",
+                                     file_name=f"gif_{video_id}_{int(time.time())}.gif",
+                                     message="GIF 生成完成")
 
     except Exception as e:
         logger.error(f"GIF 生成失败: {e}")
@@ -2041,12 +2321,11 @@ async def tool_separate_vocal(
     **kwargs
 ) -> Dict[str, Any]:
     """人声分离工具"""
-    import os
+    import os, tempfile
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
     from src.application.services import dh_live_adapter
-    from src import config
 
     try:
         with get_db_context() as db:
@@ -2056,15 +2335,33 @@ async def tool_separate_vocal(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            # 先提取音频
-            output_dir = os.path.join(config.UPLOAD_DIR, f"separated_{video_id}")
-            os.makedirs(output_dir, exist_ok=True)
+            output_dir = tempfile.mkdtemp(prefix="synthetix_separated_")
             audio_path = os.path.join(output_dir, "original.wav")
             ffmpeg.extract_audio(video.local_path, audio_path)
 
-            # 人声分离
             dh_live_adapter.do_s(audio_path, output_dir)
 
+            project_id = kwargs.get("project_id")
+            saved_files = []
+            for f in os.listdir(output_dir):
+                if f == "original.wav":
+                    continue
+                fp = os.path.join(output_dir, f)
+                if os.path.isfile(fp):
+                    if project_id:
+                        saved = _save_temp_file(fp, project_id, "audio", "separate_vocal",
+                                                file_name=f)
+                        if saved:
+                            saved_files.append(saved)
+                    else:
+                        saved_files.append({"path": fp, "file_name": f})
+
+            if project_id and saved_files:
+                return {
+                    "success": True,
+                    "files": saved_files,
+                    "message": "人声分离完成，已生成人声和伴奏文件"
+                }
             return {
                 "success": True,
                 "output_dir": output_dir,
@@ -2073,41 +2370,6 @@ async def tool_separate_vocal(
 
     except Exception as e:
         logger.error(f"人声分离失败: {e}")
-        return {"success": False, "error": str(e)}
-
-
-@registry.register(
-    name="translate_text",
-    description="翻译文本内容",
-    parameters={
-        "text": {"type": "string", "description": "要翻译的文本"},
-        "target_lang": {"type": "string", "description": "目标语言（默认中文）"},
-    },
-    examples=["把这段话翻译成英文", "翻译成日语"],
-    param_model=TranslateTextParams
-)
-async def tool_translate_text(
-    text: str,
-    target_lang: str = "zh",
-    **kwargs
-) -> Dict[str, Any]:
-    """翻译工具"""
-    from src.application.services import translation_adapter
-
-    try:
-        result = translation_adapter.translator_response(
-            messages=[{"role": "user", "content": text}],
-            to_language=target_lang
-        )
-
-        return {
-            "success": True,
-            "translated_text": result,
-            "message": "翻译完成"
-        }
-
-    except Exception as e:
-        logger.error(f"翻译失败: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -2128,7 +2390,6 @@ async def tool_extract_audio(video_id: int, **kwargs) -> Dict[str, Any]:
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     try:
         with get_db_context() as db:
@@ -2137,10 +2398,14 @@ async def tool_extract_audio(video_id: int, **kwargs) -> Dict[str, Any]:
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"audio_{video_id}_{int(time.time())}.wav")
+            output_path = _make_temp_output(".wav", video_id)
             ffmpeg.get_audio(video.local_path, output_path)
 
-            return {"success": True, "output_path": output_path, "message": "音频提取完成"}
+            return _save_tool_output(output_path, video_id, "extract_audio",
+                                     kwargs.get("project_id"),
+                                     file_type="audio",
+                                     file_name=f"audio_{video_id}_{int(time.time())}.wav",
+                                     message="音频提取完成")
 
     except Exception as e:
         logger.error(f"提取音频失败: {e}")
@@ -2171,7 +2436,6 @@ async def tool_mix_audio_to_video(
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     try:
         with get_db_context() as db:
@@ -2180,16 +2444,24 @@ async def tool_mix_audio_to_video(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"mixed_{video_id}_{int(time.time())}.mp4")
+            # 确保路径为绝对路径
+            abs_tts = os.path.abspath(tts_path.lstrip('/')) if tts_path and not os.path.isabs(tts_path) else tts_path
+            abs_bgm = os.path.abspath(bgm_path.lstrip('/')) if bgm_path and not os.path.isabs(bgm_path) else bgm_path
+
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.mix_audios_to_video(
                 video_path=video.local_path,
-                tts_path=tts_path,
-                bgm_path=bgm_path,
+                tts_path=abs_tts,
+                bgm_path=abs_bgm,
                 bgm_volume=bgm_volume,
                 output_path=output_path
             )
 
-            return {"success": True, "output_path": output_path, "message": "音频混合完成"}
+            return _save_tool_output(output_path, video_id, "mix_audio",
+                                     kwargs.get("project_id"),
+                                     file_name=f"mixed_{video_id}_{int(time.time())}{ext}",
+                                     message="音频混合完成")
 
     except Exception as e:
         logger.error(f"混合音频失败: {e}")
@@ -2257,10 +2529,10 @@ async def tool_get_video_detail(video_id: int, **kwargs) -> Dict[str, Any]:
 )
 async def tool_split_video(video_id: int, interval: int = 10, **kwargs) -> Dict[str, Any]:
     """拆分视频工具"""
+    import os, tempfile
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     try:
         with get_db_context() as db:
@@ -2269,12 +2541,26 @@ async def tool_split_video(video_id: int, interval: int = 10, **kwargs) -> Dict[
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_dir = os.path.join(config.UPLOAD_DIR, f"clips_{video_id}")
-            os.makedirs(output_dir, exist_ok=True)
+            output_dir = tempfile.mkdtemp(prefix="synthetix_clips_")
 
             ffmpeg.extract_video_clips(video.local_path, output_dir, interval)
 
             clips = [f for f in os.listdir(output_dir) if f.endswith('.mp4')]
+            project_id = kwargs.get("project_id")
+            if project_id and clips:
+                saved_clips = []
+                for clip_name in clips:
+                    clip_path = os.path.join(output_dir, clip_name)
+                    saved = _save_temp_file(clip_path, project_id, "video", "split_video",
+                                            file_name=clip_name)
+                    if saved:
+                        saved_clips.append(saved)
+                return {
+                    "success": True,
+                    "clips": saved_clips,
+                    "clips_count": len(saved_clips),
+                    "message": f"已拆分为 {len(saved_clips)} 个片段（每段 {interval} 秒）"
+                }
 
             return {
                 "success": True,
@@ -2293,7 +2579,8 @@ async def tool_split_video(video_id: int, interval: int = 10, **kwargs) -> Dict[
     description="列出可用的音色/语音列表",
     parameters={},
     examples=["有哪些音色", "列出可用的声音"],
-    permission="read_only"
+    permission="read_only",
+    category="common",
 )
 async def tool_list_audios(**kwargs) -> Dict[str, Any]:
     """列出音色工具"""
@@ -2361,7 +2648,8 @@ async def tool_set_cover(video_id: int, cover_image: str, **kwargs) -> Dict[str,
     description="获取系统信息（GPU、磁盘空间、系统类型）",
     parameters={},
     examples=["系统信息", "有 GPU 吗", "磁盘还剩多少"],
-    permission="read_only"
+    permission="read_only",
+    category="common",
 )
 async def tool_get_system_info(**kwargs) -> Dict[str, Any]:
     """获取系统信息"""
@@ -2459,7 +2747,8 @@ async def tool_get_system_info(**kwargs) -> Dict[str, Any]:
     parameters={
         "path": {"type": "string", "description": "目录路径（默认输出目录）"},
     },
-    examples=["打开输出目录", "打开素材文件夹"]
+    examples=["打开输出目录", "打开素材文件夹"],
+    category="common",
 )
 async def tool_open_folder(path: str = None, **kwargs) -> Dict[str, Any]:
     """打开文件夹"""
@@ -2486,7 +2775,8 @@ async def tool_open_folder(path: str = None, **kwargs) -> Dict[str, Any]:
         "video_id": {"type": "integer", "description": "视频 ID"},
     },
     examples=["删除这个素材", "清理视频"],
-    permission="destructive"
+    permission="destructive",
+    category="common",
 )
 async def tool_delete_material(video_id: int, **kwargs) -> Dict[str, Any]:
     """删除素材工具"""
@@ -2509,7 +2799,8 @@ async def tool_delete_material(video_id: int, **kwargs) -> Dict[str, Any]:
         "text": {"type": "string", "description": "要检测的文本"},
     },
     examples=["这段话是什么语言", "检测语种"],
-    permission="read_only"
+    permission="read_only",
+    category="common",
 )
 async def tool_detect_language(text: str, **kwargs) -> Dict[str, Any]:
     """语言检测工具"""
@@ -2560,7 +2851,8 @@ async def tool_suggest_music(mood: str, duration: float = 30.0, **kwargs) -> Dic
         "prompt_type": {"type": "integer", "description": "类型: 1=文生图, 2=图生图, 3=文生视频"},
     },
     examples=["优化一下提示词", "帮我把描述优化成 AI 绘画提示"],
-    permission="read_only"
+    permission="read_only",
+    category="common",
 )
 async def tool_optimize_prompt(prompt: str, prompt_type: int = 1, **kwargs) -> Dict[str, Any]:
     """优化提示词工具"""
@@ -2726,7 +3018,8 @@ async def tool_srt_to_ass(
         "direction": {"type": "string", "description": "转换方向: to_hms（秒→时分秒）/ to_seconds（时分秒→秒）"},
     },
     examples=["300秒是多少时间", "01:30:00 是多少秒"],
-    permission="read_only"
+    permission="read_only",
+    category="common",
 )
 async def tool_time_convert(value: str, direction: str = "to_hms", **kwargs) -> Dict[str, Any]:
     """时间转换工具"""
@@ -2745,34 +3038,6 @@ async def tool_time_convert(value: str, direction: str = "to_hms", **kwargs) -> 
         return {"success": False, "error": str(e)}
 
 
-@registry.register(
-    name="task_status",
-    description="查询后台任务执行进度",
-    parameters={
-        "task_id": {"type": "string", "description": "任务 ID"},
-    },
-    examples=["查看任务进度", "任务执行到哪了"],
-    permission="read_only"
-)
-async def tool_task_status(task_id: str, **kwargs) -> Dict[str, Any]:
-    """任务状态工具"""
-    from src.shared.utils.task_manager import get_task
-
-    try:
-        task = get_task(task_id)
-        if not task:
-            return {"success": False, "error": f"任务 {task_id} 不存在"}
-
-        return {
-            "success": True,
-            "task_id": task_id,
-            "status": task.get("status", "unknown"),
-            "progress": task.get("progress", 0),
-            "message": f"任务状态: {task.get('status', 'unknown')}"
-        }
-
-    except Exception as e:
-        return {"success": False, "error": str(e)}
 
 
 # ==================== 第四梯队：FFmpeg 视频滤镜工具 ====================
@@ -2800,7 +3065,6 @@ async def tool_adjust_brightness(
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     brightness = max(-1.0, min(1.0, float(brightness)))
     contrast = max(0.1, min(10.0, float(contrast)))
@@ -2813,14 +3077,18 @@ async def tool_adjust_brightness(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"adjusted_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-vf', f"eq=brightness={brightness}:contrast={contrast}:saturation={saturation}",
                 '-c:a', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": f"亮度={brightness} 对比度={contrast} 饱和度={saturation}"}
+            return _save_tool_output(output_path, video_id, "adjust",
+                                     kwargs.get("project_id"),
+                                     file_name=f"adjusted_{video_id}_{int(time.time())}{ext}",
+                                     message=f"亮度={brightness} 对比度={contrast} 饱和度={saturation}")
 
     except Exception as e:
         logger.error(f"调整亮度失败: {e}")
@@ -2842,7 +3110,6 @@ async def tool_blur_video(video_id: int, sigma: float = 5.0, **kwargs) -> Dict[s
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     sigma = max(0.1, min(20.0, float(sigma)))
 
@@ -2853,14 +3120,18 @@ async def tool_blur_video(video_id: int, sigma: float = 5.0, **kwargs) -> Dict[s
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"blurred_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-vf', f"gblur=sigma={sigma}",
                 '-c:a', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": f"模糊完成 (sigma={sigma})"}
+            return _save_tool_output(output_path, video_id, "blur",
+                                     kwargs.get("project_id"),
+                                     file_name=f"blurred_{video_id}_{int(time.time())}{ext}",
+                                     message=f"模糊完成 (sigma={sigma})")
 
     except Exception as e:
         logger.error(f"模糊视频失败: {e}")
@@ -2882,7 +3153,6 @@ async def tool_sharpen_video(video_id: int, amount: float = 1.5, **kwargs) -> Di
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     amount = max(0.0, min(3.0, float(amount)))
 
@@ -2893,14 +3163,18 @@ async def tool_sharpen_video(video_id: int, amount: float = 1.5, **kwargs) -> Di
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"sharpened_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-vf', f"unsharp=5:5:{amount}",
                 '-c:a', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": f"锐化完成 (强度={amount})"}
+            return _save_tool_output(output_path, video_id, "sharpen",
+                                     kwargs.get("project_id"),
+                                     file_name=f"sharpened_{video_id}_{int(time.time())}{ext}",
+                                     message=f"锐化完成 (强度={amount})")
 
     except Exception as e:
         logger.error(f"锐化视频失败: {e}")
@@ -2922,7 +3196,6 @@ async def tool_rotate_video(video_id: int, angle: int = 90, **kwargs) -> Dict[st
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     angle = int(angle)
     if angle == 90:
@@ -2941,14 +3214,18 @@ async def tool_rotate_video(video_id: int, angle: int = 90, **kwargs) -> Dict[st
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"rotated_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-vf', vf,
                 '-c:a', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": f"已旋转 {angle} 度"}
+            return _save_tool_output(output_path, video_id, "rotate",
+                                     kwargs.get("project_id"),
+                                     file_name=f"rotated_{video_id}_{int(time.time())}{ext}",
+                                     message=f"已旋转 {angle} 度")
 
     except Exception as e:
         logger.error(f"旋转视频失败: {e}")
@@ -2970,7 +3247,6 @@ async def tool_flip_video(video_id: int, direction: str = "horizontal", **kwargs
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     vf = "hflip" if direction == "horizontal" else "vflip"
 
@@ -2981,7 +3257,8 @@ async def tool_flip_video(video_id: int, direction: str = "horizontal", **kwargs
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"flipped_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-vf', vf,
@@ -2989,7 +3266,10 @@ async def tool_flip_video(video_id: int, direction: str = "horizontal", **kwargs
             ])
 
             dir_desc = "水平" if direction == "horizontal" else "垂直"
-            return {"success": True, "output_path": output_path, "message": f"已{dir_desc}翻转"}
+            return _save_tool_output(output_path, video_id, "flip",
+                                     kwargs.get("project_id"),
+                                     file_name=f"flipped_{video_id}_{int(time.time())}{ext}",
+                                     message=f"已{dir_desc}翻转")
 
     except Exception as e:
         logger.error(f"翻转视频失败: {e}")
@@ -3017,7 +3297,6 @@ async def tool_crop_video(
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     try:
         with get_db_context() as db:
@@ -3034,14 +3313,18 @@ async def tool_crop_video(
                 x = (ow - width) // 2 if x is None else x
                 y = (oh - height) // 2 if y is None else y
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"cropped_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-vf', f"crop={width}:{height}:{x}:{y}",
                 '-c:a', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": f"裁剪完成 {width}x{height}+{x}+{y}"}
+            return _save_tool_output(output_path, video_id, "crop",
+                                     kwargs.get("project_id"),
+                                     file_name=f"cropped_{video_id}_{int(time.time())}{ext}",
+                                     message=f"裁剪完成 {width}x{height}+{x}+{y}")
 
     except Exception as e:
         logger.error(f"裁剪视频失败: {e}")
@@ -3066,7 +3349,6 @@ async def tool_fade_video(
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     try:
         with get_db_context() as db:
@@ -3081,14 +3363,18 @@ async def tool_fade_video(
 
             vf = f"fade=t=in:st=0:d={fade_in},fade=t=out:st={fade_out_start:.2f}:d={fade_out}"
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"faded_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-vf', vf,
                 '-c:a', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": f"淡入{fade_in}秒 淡出{fade_out}秒"}
+            return _save_tool_output(output_path, video_id, "fade",
+                                     kwargs.get("project_id"),
+                                     file_name=f"faded_{video_id}_{int(time.time())}{ext}",
+                                     message=f"淡入{fade_in}秒 淡出{fade_out}秒")
 
     except Exception as e:
         logger.error(f"淡入淡出失败: {e}")
@@ -3116,7 +3402,6 @@ async def tool_picture_in_picture(
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     try:
         with get_db_context() as db:
@@ -3132,7 +3417,8 @@ async def tool_picture_in_picture(
             sw = int(ow * scale)
             sh = int(oh * scale)
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"pip_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(main_video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y',
                 '-i', main_video.local_path,
@@ -3141,7 +3427,10 @@ async def tool_picture_in_picture(
                 '-c:a', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": f"画中画完成 叠加大小{sw}x{sh}"}
+            return _save_tool_output(output_path, video_id, "pip",
+                                     kwargs.get("project_id"),
+                                     file_name=f"pip_{video_id}_{int(time.time())}{ext}",
+                                     message=f"画中画完成 叠加大小{sw}x{sh}")
 
     except Exception as e:
         logger.error(f"画中画失败: {e}")
@@ -3168,7 +3457,6 @@ async def tool_add_watermark(
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     if not os.path.exists(watermark_path):
         return {"success": False, "error": f"水印文件不存在: {watermark_path}"}
@@ -3196,7 +3484,8 @@ async def tool_add_watermark(
 
             filter_complex = f"[1:v]colorchannelmixer=aa={opacity}[wm];[0:v][wm]overlay={pos}"
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"watermarked_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y',
                 '-i', video.local_path,
@@ -3205,7 +3494,10 @@ async def tool_add_watermark(
                 '-c:a', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": f"水印已添加 (位置: {position})"}
+            return _save_tool_output(output_path, video_id, "watermark",
+                                     kwargs.get("project_id"),
+                                     file_name=f"watermarked_{video_id}_{int(time.time())}{ext}",
+                                     message=f"水印已添加 (位置: {position})")
 
     except Exception as e:
         logger.error(f"添加水印失败: {e}")
@@ -3234,28 +3526,41 @@ async def tool_add_text_overlay(
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     # 转义特殊字符防止命令注入
     safe_text = re.sub(r'[\'\"\\:;]', '', text)
 
     try:
+        # 防护空值参数
+        if not isinstance(x, (int, float)) or not x:
+            x = 10
+        if not isinstance(y, (int, float)) or not y:
+            y = 10
         with get_db_context() as db:
             repo = VideoRepository(db)
             video = repo.get_by_id(video_id)
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            drawtext = f"drawtext=text='{safe_text}':fontsize={fontsize}:fontcolor={fontcolor}:x={x}:y={y}"
+            vf_parts = f"text='{safe_text}':fontsize={fontsize}:fontcolor={fontcolor}:x={x}:y={y}"
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"text_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
+            font_file = _prepare_font_for_file(video.local_path)
+            if font_file:
+                vf_parts = f"fontfile={font_file}:" + vf_parts
+            drawtext = f"drawtext={vf_parts}"
+
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-vf', drawtext,
                 '-c:a', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": f"文字已叠加: {text}"}
+            return _save_tool_output(output_path, video_id, "text_overlay",
+                                     kwargs.get("project_id"),
+                                     file_name=f"text_{video_id}_{int(time.time())}{ext}",
+                                     message=f"文字已叠加: {text}")
 
     except Exception as e:
         logger.error(f"文字叠加失败: {e}")
@@ -3276,7 +3581,6 @@ async def tool_reverse_video(video_id: int, **kwargs) -> Dict[str, Any]:
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     try:
         with get_db_context() as db:
@@ -3285,14 +3589,19 @@ async def tool_reverse_video(video_id: int, **kwargs) -> Dict[str, Any]:
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"reversed_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
+
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-filter_complex', '[0:v]reverse[v];[0:a]areverse[a]',
                 '-map', '[v]', '-map', '[a]', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": "倒放完成"}
+            return _save_tool_output(output_path, video_id, "reverse",
+                                     kwargs.get("project_id"),
+                                     file_name=f"reversed_{video_id}_{int(time.time())}{ext}",
+                                     message="倒放完成")
 
     except Exception as e:
         logger.error(f"视频倒放失败: {e}")
@@ -3314,7 +3623,6 @@ async def tool_stabilize_video(video_id: int, smoothing: int = 10, **kwargs) -> 
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
     import tempfile
 
     try:
@@ -3324,7 +3632,8 @@ async def tool_stabilize_video(video_id: int, smoothing: int = 10, **kwargs) -> 
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"stable_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
 
             # 第一步：检测抖动
             with tempfile.NamedTemporaryFile(suffix='.trf', delete=False) as tmp:
@@ -3348,7 +3657,10 @@ async def tool_stabilize_video(video_id: int, smoothing: int = 10, **kwargs) -> 
             except OSError:
                 pass
 
-            return {"success": True, "output_path": output_path, "message": "防抖处理完成"}
+            return _save_tool_output(output_path, video_id, "stabilize",
+                                     kwargs.get("project_id"),
+                                     file_name=f"stable_{video_id}_{int(time.time())}{ext}",
+                                     message="防抖处理完成")
 
     except Exception as e:
         logger.error(f"视频防抖失败: {e}")
@@ -3424,7 +3736,6 @@ async def tool_slow_motion(video_id: int, factor: float = 4.0, **kwargs) -> Dict
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     factor = max(2.0, min(8.0, float(factor)))
 
@@ -3435,7 +3746,8 @@ async def tool_slow_motion(video_id: int, factor: float = 4.0, **kwargs) -> Dict
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"slowmo_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
 
             fps = min(60, int(30 * factor))
 
@@ -3447,7 +3759,10 @@ async def tool_slow_motion(video_id: int, factor: float = 4.0, **kwargs) -> Dict
                 '-map', '[v]', '-map', '[a]', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": f"{factor}倍慢动作完成"}
+            return _save_tool_output(output_path, video_id, "slowmo",
+                                     kwargs.get("project_id"),
+                                     file_name=f"slowmo_{video_id}_{int(time.time())}{ext}",
+                                     message=f"{factor}倍慢动作完成")
 
     except Exception as e:
         logger.error(f"慢动作失败: {e}")
@@ -3475,7 +3790,6 @@ async def tool_color_adjust(
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     brightness = max(-1.0, min(1.0, float(brightness)))
     contrast = max(0.1, min(3.0, float(contrast)))
@@ -3489,14 +3803,18 @@ async def tool_color_adjust(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"color_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-vf', f"eq=brightness={brightness}:contrast={contrast}:saturation={saturation}:gamma={gamma}",
                 '-c:a', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": "色彩调整完成"}
+            return _save_tool_output(output_path, video_id, "color",
+                                     kwargs.get("project_id"),
+                                     file_name=f"color_{video_id}_{int(time.time())}{ext}",
+                                     message="色彩调整完成")
 
     except Exception as e:
         logger.error(f"色彩调整失败: {e}")
@@ -3518,7 +3836,6 @@ async def tool_convert_format(video_id: int, target_format: str = "mp4", **kwarg
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     allowed = {"mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "ts"}
     target_format = target_format.lower().lstrip('.')
@@ -3532,10 +3849,7 @@ async def tool_convert_format(video_id: int, target_format: str = "mp4", **kwarg
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(
-                config.UPLOAD_DIR,
-                f"converted_{video_id}_{int(time.time())}.{target_format}"
-            )
+            output_path = _make_temp_output(f".{target_format}", video_id)
 
             # 尝试流复制（无重编码），失败则重编码
             try:
@@ -3549,7 +3863,10 @@ async def tool_convert_format(video_id: int, target_format: str = "mp4", **kwarg
                     '-c:v', 'libx264', '-c:a', 'aac', output_path
                 ])
 
-            return {"success": True, "output_path": output_path, "message": f"已转为 {target_format} 格式"}
+            return _save_tool_output(output_path, video_id, "convert_format",
+                                     kwargs.get("project_id"),
+                                     file_name=f"converted_{video_id}_{int(time.time())}.{target_format}",
+                                     message=f"已转为 {target_format} 格式")
 
     except Exception as e:
         logger.error(f"格式转换失败: {e}")
@@ -3573,7 +3890,6 @@ async def tool_normalize_audio(video_id: int, target_loudness: float = -16.0, **
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     try:
         with get_db_context() as db:
@@ -3582,14 +3898,18 @@ async def tool_normalize_audio(video_id: int, target_loudness: float = -16.0, **
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"normalized_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-af', f"loudnorm=I={target_loudness}:TP=-1.5:LRA=11",
                 '-c:v', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": f"音频标准化完成 (目标 {target_loudness} LUFS)"}
+            return _save_tool_output(output_path, video_id, "normalize",
+                                     kwargs.get("project_id"),
+                                     file_name=f"normalized_{video_id}_{int(time.time())}{ext}",
+                                     message=f"音频标准化完成 (目标 {target_loudness} LUFS)")
 
     except Exception as e:
         logger.error(f"音频标准化失败: {e}")
@@ -3615,7 +3935,6 @@ async def tool_equalize_audio(
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     try:
         with get_db_context() as db:
@@ -3624,14 +3943,18 @@ async def tool_equalize_audio(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"eq_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-af', f"equalizer=f={frequency}:t=q:w={width}:g={gain}",
                 '-c:v', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": f"均衡器调节 {frequency}Hz +{gain}dB"}
+            return _save_tool_output(output_path, video_id, "equalize",
+                                     kwargs.get("project_id"),
+                                     file_name=f"eq_{video_id}_{int(time.time())}{ext}",
+                                     message=f"均衡器调节 {frequency}Hz +{gain}dB")
 
     except Exception as e:
         logger.error(f"均衡器调节失败: {e}")
@@ -3656,7 +3979,6 @@ async def tool_fade_audio(
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     try:
         with get_db_context() as db:
@@ -3671,14 +3993,18 @@ async def tool_fade_audio(
 
             af = f"afade=t=in:ss=0:d={fade_in},afade=t=out:st={fade_out_start:.2f}:d={fade_out}"
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"afaded_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-af', af,
                 '-c:v', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": f"音频淡入{fade_in}秒 淡出{fade_out}秒"}
+            return _save_tool_output(output_path, video_id, "audio_fade",
+                                     kwargs.get("project_id"),
+                                     file_name=f"afaded_{video_id}_{int(time.time())}{ext}",
+                                     message=f"音频淡入{fade_in}秒 淡出{fade_out}秒")
 
     except Exception as e:
         logger.error(f"音频淡入淡出失败: {e}")
@@ -3703,7 +4029,6 @@ async def tool_add_echo(
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     decay = max(0.0, min(1.0, float(decay)))
 
@@ -3714,14 +4039,18 @@ async def tool_add_echo(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"echo_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-af', f"aecho=0.8:0.88:{delay}:{decay}",
                 '-c:v', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": f"回声效果已添加 (延迟{delay}ms)"}
+            return _save_tool_output(output_path, video_id, "echo",
+                                     kwargs.get("project_id"),
+                                     file_name=f"echo_{video_id}_{int(time.time())}{ext}",
+                                     message=f"回声效果已添加 (延迟{delay}ms)")
 
     except Exception as e:
         logger.error(f"回声效果失败: {e}")
@@ -3743,7 +4072,6 @@ async def tool_denoise_audio(video_id: int, noise_level: float = -25.0, **kwargs
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     noise_level = max(-80.0, min(-20.0, float(noise_level)))
 
@@ -3754,14 +4082,18 @@ async def tool_denoise_audio(video_id: int, noise_level: float = -25.0, **kwargs
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"denoised_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-af', f"afftdn=nf={noise_level}",
                 '-c:v', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": f"降噪完成 (强度 {noise_level} dB)"}
+            return _save_tool_output(output_path, video_id, "denoise",
+                                     kwargs.get("project_id"),
+                                     file_name=f"denoised_{video_id}_{int(time.time())}{ext}",
+                                     message=f"降噪完成 (强度 {noise_level} dB)")
 
     except Exception as e:
         logger.error(f"音频降噪失败: {e}")
@@ -3783,7 +4115,6 @@ async def tool_pitch_shift(video_id: int, semitones: int = 0, **kwargs) -> Dict[
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     semitones = max(-12, min(12, int(semitones)))
     # 半音 → 频率比率: 2^(semitones/12)
@@ -3797,7 +4128,8 @@ async def tool_pitch_shift(video_id: int, semitones: int = 0, **kwargs) -> Dict[
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"pitch_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             # asetrate 改变采样率实现变调，aresample 恢复原始采样率
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
@@ -3806,7 +4138,10 @@ async def tool_pitch_shift(video_id: int, semitones: int = 0, **kwargs) -> Dict[
             ])
 
             dir_desc = "升高" if semitones > 0 else "降低"
-            return {"success": True, "output_path": output_path, "message": f"音调{dir_desc}{abs(semitones)}个半音"}
+            return _save_tool_output(output_path, video_id, "pitch",
+                                     kwargs.get("project_id"),
+                                     file_name=f"pitch_{video_id}_{int(time.time())}{ext}",
+                                     message=f"音调{dir_desc}{abs(semitones)}个半音")
 
     except Exception as e:
         logger.error(f"变调失败: {e}")
@@ -3827,7 +4162,6 @@ async def tool_reverse_audio(video_id: int, **kwargs) -> Dict[str, Any]:
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
-    from src import config
 
     try:
         with get_db_context() as db:
@@ -3836,14 +4170,18 @@ async def tool_reverse_audio(video_id: int, **kwargs) -> Dict[str, Any]:
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            output_path = os.path.join(config.UPLOAD_DIR, f"areversed_{video_id}_{int(time.time())}.mp4")
+            ext = os.path.splitext(video.local_path)[1] or '.mp4'
+            output_path = _make_temp_output(ext, video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', video.local_path,
                 '-af', 'areverse',
                 '-c:v', 'copy', output_path
             ])
 
-            return {"success": True, "output_path": output_path, "message": "音频倒放完成"}
+            return _save_tool_output(output_path, video_id, "audio_reverse",
+                                     kwargs.get("project_id"),
+                                     file_name=f"areversed_{video_id}_{int(time.time())}{ext}",
+                                     message="音频倒放完成")
 
     except Exception as e:
         logger.error(f"音频倒放失败: {e}")
@@ -3859,7 +4197,7 @@ async def tool_reverse_audio(video_id: int, **kwargs) -> Dict[str, Any]:
         "requirement": {"type": "string", "description": "剪辑需求描述"},
     },
     examples=["帮我规划一个30秒的产品宣传视频方案"],
-    permission="read_only",
+    permission="read_only"
 )
 async def tool_plan_clip(requirement: str, **kwargs) -> Dict[str, Any]:
     """调用规划子 Agent"""
@@ -3876,7 +4214,7 @@ async def tool_plan_clip(requirement: str, **kwargs) -> Dict[str, Any]:
         "original_requirement": {"type": "string", "description": "原始需求（可选）"},
     },
     examples=["审查一下刚才的剪辑结果"],
-    permission="read_only",
+    permission="read_only"
 )
 async def tool_review_result(content: str, original_requirement: str = "", **kwargs) -> Dict[str, Any]:
     """调用审查子 Agent"""
@@ -3900,6 +4238,7 @@ async def tool_review_result(content: str, original_requirement: str = "", **kwa
     },
     examples=["搜索关于海边素材的分析记录"],
     permission="read_only",
+    category="common",
 )
 async def tool_knowledge_search(query: str, top_k: int = 5, **kwargs) -> Dict[str, Any]:
     """搜索知识库"""
@@ -3921,6 +4260,7 @@ async def tool_knowledge_search(query: str, top_k: int = 5, **kwargs) -> Dict[st
         "tags": {"type": "array", "description": "标签（可选）", "items": {"type": "string"}},
     },
     examples=["记录一下这个视频的分析结果"],
+    category="common",
 )
 async def tool_knowledge_add(content: str, source: str = "", tags: list = None, **kwargs) -> Dict[str, Any]:
     """添加文档到知识库"""
@@ -3931,6 +4271,51 @@ async def tool_knowledge_add(content: str, source: str = "", tags: list = None, 
     kb = get_knowledge_base(pid)
     kb.add(content, source, tags)
     return {"success": True, "message": "已添加到知识库"}
+
+
+# ==================== 联网搜索工具（通过 core-nexus-ai） ====================
+
+@registry.register(
+    name="search_online",
+    description="联网搜索互联网信息（通过 AI 服务端搜索）。支持实时新闻、百科、科技等各类信息查询。",
+    parameters={
+        "query": {"type": "string", "description": "搜索关键词或问题"},
+    },
+    examples=["搜索今天的新闻", "查一下 xxx 是什么", "2026年5月科技热点"],
+    permission="read_only",
+    category="common",
+)
+async def tool_search_online(query: str, **kwargs) -> Dict[str, Any]:
+    """联网搜索（通过 core-nexus-ai 的 enable_search 能力）"""
+    from src.shared.utils.config_manager import get as cfg_get
+
+    if not cfg_get("web_search.enabled"):
+        return {"success": False, "error": "联网搜索未启用，请在设置中开启"}
+
+    try:
+        from src.application.services.llm_adapter import generate_response_async
+        answer = await generate_response_async(
+            messages=[{"role": "user", "content": query}],
+            enable_search=True,
+        )
+        # 从 last_response 获取搜索引用
+        from src.shared.utils.core_nexus_client import get_client
+        client = get_client()
+        last = client.last_response or {}
+        output = last.get("output", {})
+        search_results = output.get("search_results", [])
+
+        result = {
+            "success": True,
+            "query": query,
+            "answer": answer,
+            "search_results": search_results,
+            "message": f"搜索完成，找到 {len(search_results)} 条引用" if search_results else "搜索完成",
+        }
+        return result
+    except Exception as e:
+        logger.error(f"联网搜索失败: {e}")
+        return {"success": False, "error": f"搜索失败: {e}"}
 
 
 # ==================== CDP 浏览器自动化工具 ====================
@@ -3946,7 +4331,7 @@ async def tool_knowledge_add(content: str, source: str = "", tags: list = None, 
         "帮我打开 Pexels 搜索猫咪视频",
         "在浏览器里打开这个网页",
     ],
-    permission="read_only",
+    permission="read_only"
 )
 async def tool_browser_navigate(url: str, wait_ms: int = 2000, **kwargs) -> Dict[str, Any]:
     """浏览器导航"""
@@ -3966,19 +4351,28 @@ async def tool_browser_navigate(url: str, wait_ms: int = 2000, **kwargs) -> Dict
         "full_page": {"type": "boolean", "description": "是否截取完整页面，默认 false"},
     },
     examples=["截个图看看当前页面"],
-    permission="read_only",
+    permission="read_only"
 )
 async def tool_browser_screenshot(save_path: str = None, full_page: bool = False, **kwargs) -> Dict[str, Any]:
     """浏览器截图"""
     from src.shared.utils.cdp_browser import get_cdp_browser
-    from src import config
     try:
         browser = get_cdp_browser()
         if not save_path:
             import time
             import os
-            save_path = os.path.join(config.UPLOAD_DIR, f"browser_screenshot_{int(time.time())}.png")
-        return await browser.screenshot(save_path, full_page)
+            save_path = _make_temp_output(".png", 0)
+        result = await browser.screenshot(save_path, full_page)
+        # If screenshot was successful, try to save to project temp dir
+        if isinstance(result, dict) and result.get("success") and kwargs.get("project_id"):
+            saved = _save_tool_output(save_path, 0, "screenshot",
+                                     kwargs.get("project_id"),
+                                     file_type="image",
+                                     file_name=f"browser_screenshot_{int(time.time())}.png")
+            if saved.get("web_path"):
+                result["web_path"] = saved["web_path"]
+                result["temp_file_id"] = saved.get("temp_file_id")
+        return result
     except Exception as e:
         return {"success": False, "error": f"截图失败: {e}"}
 
@@ -3988,7 +4382,7 @@ async def tool_browser_screenshot(save_path: str = None, full_page: bool = False
     description="获取当前浏览器页面的文本内容。可用于提取网页信息、搜索结果。",
     parameters={},
     examples=["读取当前页面内容", "提取网页文字"],
-    permission="read_only",
+    permission="read_only"
 )
 async def tool_browser_get_content(**kwargs) -> Dict[str, Any]:
     """获取页面内容"""
@@ -4005,7 +4399,7 @@ async def tool_browser_get_content(**kwargs) -> Dict[str, Any]:
     description="提取当前浏览器页面所有链接。可用于查找下载资源、相关页面。",
     parameters={},
     examples=["列出页面上的所有链接"],
-    permission="read_only",
+    permission="read_only"
 )
 async def tool_browser_get_links(**kwargs) -> Dict[str, Any]:
     """获取页面链接"""
@@ -4024,7 +4418,7 @@ async def tool_browser_get_links(**kwargs) -> Dict[str, Any]:
         "expression": {"type": "string", "description": "要执行的 JavaScript 代码"},
     },
     examples=["在页面上执行一段 JS"],
-    permission="modify",
+    permission="modify"
 )
 async def tool_browser_execute_js(expression: str, **kwargs) -> Dict[str, Any]:
     """执行 JS"""
@@ -4050,6 +4444,7 @@ async def tool_browser_execute_js(expression: str, **kwargs) -> Dict[str, Any]:
     },
     examples=["帮我生成一个10个分镜的校园恋爱漫剧脚本", "创建一个悬疑漫剧，8个分镜"],
     permission="modify",
+    category="comic",
 )
 async def tool_comic_generate_script(
     project_id: int, description: str, genre: str = "drama",
@@ -4144,6 +4539,7 @@ async def tool_comic_generate_script(
     },
     examples=["修改第3个分镜的场景描述", "把分镜5的时长改为5秒"],
     permission="modify",
+    category="comic",
 )
 async def tool_comic_edit_panel(
     project_id: int, panel_index: int, scene_description: str = None,
@@ -4187,6 +4583,7 @@ async def tool_comic_edit_panel(
     },
     examples=["生成分镜1的画面图片", "为第3个分镜生成图片"],
     permission="modify",
+    category="comic",
 )
 async def tool_comic_generate_image(project_id: int, panel_index: int, **kwargs) -> Dict[str, Any]:
     from src.infrastructure.db.session import get_db_context
@@ -4235,6 +4632,7 @@ async def tool_comic_generate_image(project_id: int, panel_index: int, **kwargs)
     },
     examples=["为分镜2生成3秒动态视频"],
     permission="modify",
+    category="comic",
 )
 async def tool_comic_generate_video(
     project_id: int, panel_index: int, duration: float = 3.0, **kwargs
@@ -4280,6 +4678,7 @@ async def tool_comic_generate_video(
     },
     examples=["为分镜1的对白生成语音", "生成分镜3的旁白音频"],
     permission="modify",
+    category="comic",
 )
 async def tool_comic_generate_audio(
     project_id: int, panel_index: int, text: str = None,
@@ -4336,6 +4735,7 @@ async def tool_comic_generate_audio(
     },
     examples=["添加一个角色：小红，活泼的女生"],
     permission="modify",
+    category="comic",
 )
 async def tool_comic_add_character(
     project_id: int, name: str, appearance: str = "", gender: str = None,
@@ -4373,6 +4773,7 @@ async def tool_comic_add_character(
     },
     examples=["删除第3个分镜"],
     permission="modify",
+    category="comic",
 )
 async def tool_comic_remove_panel(project_id: int, panel_index: int, **kwargs) -> Dict[str, Any]:
     from src.infrastructure.db.session import get_db_context
@@ -4404,6 +4805,7 @@ async def tool_comic_remove_panel(project_id: int, panel_index: int, **kwargs) -
     },
     examples=["把分镜顺序调整为 [2,0,1]"],
     permission="modify",
+    category="comic",
 )
 async def tool_comic_reorder_panels(project_id: int, new_order: list, **kwargs) -> Dict[str, Any]:
     from src.infrastructure.db.session import get_db_context
@@ -4434,6 +4836,7 @@ async def tool_comic_reorder_panels(project_id: int, new_order: list, **kwargs) 
     },
     examples=["合成漫剧视频"],
     permission="destructive",
+    category="comic",
 )
 async def tool_comic_compose(project_id: int, **kwargs) -> Dict[str, Any]:
     from src.infrastructure.db.session import get_db_context
@@ -4483,6 +4886,7 @@ async def tool_comic_compose(project_id: int, **kwargs) -> Dict[str, Any]:
     },
     examples=["为漫剧选择轻快的 BGM", "AI 生成一段紧张的背景音乐"],
     permission="modify",
+    category="comic",
 )
 async def tool_comic_select_bgm(
     project_id: int, bgm_id: int = None, bgm_description: str = None,
@@ -4839,7 +5243,7 @@ class BatchCutParams(BaseModel):
     },
     param_model=BatchCutParams,
     before_execute=validate_video_exists,
-    permission="modify",
+    permission="modify"
 )
 async def tool_batch_cut(
     video_id: int,
@@ -4861,6 +5265,7 @@ async def tool_batch_cut(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
+            project_id = kwargs.get("project_id")
             results = []
             for i, seg in enumerate(segments):
                 start = seg.get("start_time", "00:00:00")
@@ -4868,12 +5273,30 @@ async def tool_batch_cut(
                 if not end:
                     continue
                 try:
+                    out_path = _make_temp_output(f"_cut{i}.mp4", video_id)
                     output = ffmpeg_adapter.cut_video(
                         input_path=video.local_path,
                         start_time=start,
                         end_time=end,
+                        output_path=out_path,
                     )
-                    results.append({"index": i, "start": start, "end": end, "path": output, "success": True})
+                    if project_id:
+                        saved = _save_tool_output(
+                            str(output), video_id, f"batch_cut_{i}",
+                            project_id,
+                            file_type="video",
+                            file_name=f"cut_{i}_{video_id}_{int(time.time())}.mp4",
+                        )
+                        results.append({
+                            "index": i, "start": start, "end": end,
+                            "path": saved.get("local_path", str(output)),
+                            "web_path": saved.get("web_path"),
+                            "temp_file_id": saved.get("temp_file_id"),
+                            "is_temp_asset": saved.get("is_temp_asset", False),
+                            "success": True,
+                        })
+                    else:
+                        results.append({"index": i, "start": start, "end": end, "path": output, "success": True})
                 except Exception as e:
                     results.append({"index": i, "start": start, "end": end, "error": str(e), "success": False})
 
@@ -4903,7 +5326,7 @@ class BatchAnalyzeParams(BaseModel):
         "analyze_type": {"type": "string", "description": "分析类型: basic/transcribe"},
     },
     param_model=BatchAnalyzeParams,
-    permission="read_only",
+    permission="read_only"
 )
 async def tool_batch_analyze(
     video_ids: list,
@@ -4959,7 +5382,7 @@ async def tool_batch_analyze(
         "platform": {"type": "string", "description": "目标平台: douyin/bilibili/youtube/xiaohongshu (可选)"},
     },
     before_execute=validate_video_exists,
-    permission="read_only",
+    permission="read_only"
 )
 async def tool_generate_metadata(
     video_id: int,
@@ -5118,7 +5541,7 @@ async def tool_resize_image(video_id: int, width: int = 0, height: int = 0, **kw
                 return {"success": False, "error": err}
             w = width if width > 0 else -1
             h = height if height > 0 else -1
-            tmp_out = os.path.join(str(config.source_videos_dir), f"_resize_{video_id}_{int(time.time())}{ext}")
+            tmp_out = _make_temp_output(f"_resize{ext}", video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', local,
                 '-vf', f'scale={w}:{h}',
@@ -5157,7 +5580,7 @@ async def tool_crop_image(video_id: int, crop_width: int = 0, crop_height: int =
             local, ext, err = _get_image_info(video)
             if err:
                 return {"success": False, "error": err}
-            tmp_out = os.path.join(str(config.source_videos_dir), f"_crop_{video_id}_{int(time.time())}{ext}")
+            tmp_out = _make_temp_output(f"_crop{ext}", video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', local,
                 '-vf', f'crop={crop_width}:{crop_height}:{x}:{y}',
@@ -5198,7 +5621,7 @@ async def tool_rotate_image(video_id: int, angle: int = 90, **kwargs) -> Dict[st
                 vf = 'transpose=2'
             else:
                 return {"success": False, "error": "angle 仅支持 90/180/270"}
-            tmp_out = os.path.join(str(config.source_videos_dir), f"_rotate_{video_id}_{int(time.time())}{ext}")
+            tmp_out = _make_temp_output(f"_rotate{ext}", video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', local,
                 '-vf', vf,
@@ -5232,7 +5655,7 @@ async def tool_flip_image(video_id: int, direction: str = 'horizontal', **kwargs
             if err:
                 return {"success": False, "error": err}
             vf = 'hflip' if direction in ('horizontal', 'h', '水平') else 'vflip'
-            tmp_out = os.path.join(str(config.source_videos_dir), f"_flip_{video_id}_{int(time.time())}{ext}")
+            tmp_out = _make_temp_output(f"_flip{ext}", video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', local,
                 '-vf', vf,
@@ -5272,7 +5695,7 @@ async def tool_adjust_image(video_id: int, brightness: float = 0, contrast: floa
             local, ext, err = _get_image_info(video)
             if err:
                 return {"success": False, "error": err}
-            tmp_out = os.path.join(str(config.source_videos_dir), f"_adj_{video_id}_{int(time.time())}{ext}")
+            tmp_out = _make_temp_output(f"_adj{ext}", video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', local,
                 '-vf', f'eq=brightness={brightness}:contrast={contrast}:saturation={saturation}',
@@ -5306,7 +5729,7 @@ async def tool_blur_image(video_id: int, sigma: float = 5.0, **kwargs) -> Dict[s
             local, ext, err = _get_image_info(video)
             if err:
                 return {"success": False, "error": err}
-            tmp_out = os.path.join(str(config.source_videos_dir), f"_blur_{video_id}_{int(time.time())}{ext}")
+            tmp_out = _make_temp_output(f"_blur{ext}", video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', local,
                 '-vf', f'gblur=sigma={sigma}',
@@ -5340,7 +5763,7 @@ async def tool_sharpen_image(video_id: int, amount: float = 1.5, **kwargs) -> Di
             local, ext, err = _get_image_info(video)
             if err:
                 return {"success": False, "error": err}
-            tmp_out = os.path.join(str(config.source_videos_dir), f"_sharp_{video_id}_{int(time.time())}{ext}")
+            tmp_out = _make_temp_output(f"_sharp{ext}", video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', local,
                 '-vf', f'unsharp=5:5:{amount}',
@@ -5379,7 +5802,7 @@ async def tool_convert_image(video_id: int, format: str = 'jpg', **kwargs) -> Di
             if err:
                 return {"success": False, "error": err}
             new_ext = f".{fmt}"
-            tmp_out = os.path.join(str(config.source_videos_dir), f"_conv_{video_id}_{int(time.time())}{new_ext}")
+            tmp_out = _make_temp_output(f"_conv{new_ext}", video_id)
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', local,
                 tmp_out
@@ -5412,7 +5835,7 @@ async def tool_compress_image(video_id: int, quality: int = 75, **kwargs) -> Dic
             local, ext, err = _get_image_info(video)
             if err:
                 return {"success": False, "error": err}
-            tmp_out = os.path.join(str(config.source_videos_dir), f"_comp_{video_id}_{int(time.time())}{ext}")
+            tmp_out = _make_temp_output(f"_comp{ext}", video_id)
             cmd = ['-y', '-i', local]
             if ext in ('.jpg', '.jpeg'):
                 cmd.extend(['-q:v', str(max(1, min(31, int((100 - quality) / 100 * 31 + 1))))])
@@ -5428,20 +5851,22 @@ async def tool_compress_image(video_id: int, quality: int = 75, **kwargs) -> Dic
 
 @registry.register(
     name="add_text_to_image",
-    description="在图片上叠加文字",
+    description="在图片上叠加文字。重要：调整参数（改颜色/字号/位置等）时，应使用原始素材的 video_id 重新执行，而非对上一次的输出再次叠加，否则文字会重复叠加。",
     parameters={
-        "video_id": {"type": "integer", "description": "图片素材 ID"},
+        "video_id": {"type": "integer", "description": "原始图片素材 ID（调整参数时始终用原始素材 ID）"},
         "text": {"type": "string", "description": "要叠加的文字内容"},
         "font_size": {"type": "integer", "description": "字号（默认36）"},
-        "color": {"type": "string", "description": "文字颜色（默认 white）"},
-        "x": {"type": "integer", "description": "X 坐标（默认10）"},
-        "y": {"type": "integer", "description": "Y 坐标（默认10）"},
+        "color": {"type": "string", "description": "文字颜色，如 white、red、#FF0000（默认 white）"},
+        "position": {"type": "string", "description": "位置预设：top-left/center/bottom-right 等，优先于 x/y"},
+        "x": {"type": "string", "description": "X 坐标（像素值或 FFmpeg 表达式如 w-tw-10，默认10）"},
+        "y": {"type": "string", "description": "Y 坐标（像素值或 FFmpeg 表达式如 h-th-10，默认10）"},
     },
-    examples=["在图片上写标题", "给图片加水印文字"],
+    examples=["在图片上写标题", "给图片加水印文字", "在右下角添加文字"],
     before_execute=validate_video_exists,
 )
 async def tool_add_text_to_image(video_id: int, text: str, font_size: int = 36,
-                                 color: str = 'white', x: int = 10, y: int = 10, **kwargs) -> Dict[str, Any]:
+                                 color: str = 'white', position: str = None,
+                                 x=None, y=None, **kwargs) -> Dict[str, Any]:
     if not text:
         return {"success": False, "error": "请输入要叠加的文字"}
     from src.infrastructure.db.session import get_db_context
@@ -5451,14 +5876,63 @@ async def tool_add_text_to_image(video_id: int, text: str, font_size: int = 36,
     try:
         safe_text = sanitize_ffmpeg_string(text)
         safe_color = sanitize_ffmpeg_string(color)
+
+        # 解析位置：优先 position 预设，其次 x/y，最后默认
+        position_map = {
+            'top-left': ('10', '10'),
+            'top-center': ('(w-tw)/2', '10'),
+            'top-right': ('w-tw-10', '10'),
+            'center-left': ('10', '(h-th)/2'),
+            'center': ('(w-tw)/2', '(h-th)/2'),
+            'center-right': ('w-tw-10', '(h-th)/2'),
+            'bottom-left': ('10', 'h-th-10'),
+            'bottom-center': ('(w-tw)/2', 'h-th-10'),
+            'bottom-right': ('w-tw-10', 'h-th-10'),
+        }
+        if position and position.lower().replace('_', '-') in position_map:
+            pos_x, pos_y = position_map[position.lower().replace('_', '-')]
+        elif position:
+            # 尝试模糊匹配
+            pos_lower = position.lower()
+            if '右' in pos_lower or 'right' in pos_lower:
+                if '上' in pos_lower or 'top' in pos_lower:
+                    pos_x, pos_y = 'w-tw-10', '10'
+                elif '下' in pos_lower or 'bottom' in pos_lower:
+                    pos_x, pos_y = 'w-tw-10', 'h-th-10'
+                else:
+                    pos_x, pos_y = 'w-tw-10', '(h-th)/2'
+            elif '左' in pos_lower or 'left' in pos_lower:
+                if '上' in pos_lower or 'top' in pos_lower:
+                    pos_x, pos_y = '10', '10'
+                elif '下' in pos_lower or 'bottom' in pos_lower:
+                    pos_x, pos_y = '10', 'h-th-10'
+                else:
+                    pos_x, pos_y = '10', '(h-th)/2'
+            elif '中' in pos_lower or 'center' in pos_lower:
+                if '上' in pos_lower or 'top' in pos_lower:
+                    pos_x, pos_y = '(w-tw)/2', '10'
+                elif '下' in pos_lower or 'bottom' in pos_lower:
+                    pos_x, pos_y = '(w-tw)/2', 'h-th-10'
+                else:
+                    pos_x, pos_y = '(w-tw)/2', '(h-th)/2'
+            else:
+                pos_x, pos_y = '10', '10'
+        else:
+            pos_x = str(x) if x is not None and str(x).strip() else '10'
+            pos_y = str(y) if y is not None and str(y).strip() else '10'
+
         with get_db_context() as db:
             repo = VideoRepository(db)
             video = repo.get_by_id(video_id)
             local, ext, err = _get_image_info(video)
             if err:
                 return {"success": False, "error": err}
-            tmp_out = os.path.join(str(config.source_videos_dir), f"_text_{video_id}_{int(time.time())}{ext}")
-            vf = f"drawtext=text='{safe_text}':fontsize={font_size}:fontcolor={safe_color}:x={x}:y={y}"
+            tmp_out = _make_temp_output(f"_text{ext}", video_id)
+            vf_parts = f"text='{safe_text}':fontsize={font_size}:fontcolor={safe_color}:x={pos_x}:y={pos_y}"
+            font_file = _prepare_font_for_file(local)
+            if font_file:
+                vf_parts = f"fontfile={font_file}:" + vf_parts
+            vf = f"drawtext={vf_parts}"
             ffmpeg.run_ffmpeg_cmd([
                 '-y', '-i', local,
                 '-vf', vf,
@@ -5489,7 +5963,8 @@ def _format_size(size_bytes: int) -> str:
         "recursive": {"type": "boolean", "description": "是否递归列出子目录内容（默认否）"},
     },
     examples=["E:\\aupi\\2 有什么文件", "列出 D:\\videos 下所有 mp4 文件"],
-    permission="read_only"
+    permission="read_only",
+    category="common",
 )
 async def tool_list_local_files(
     path: str,
@@ -5601,7 +6076,8 @@ async def tool_read_local_file(
         "file_type": {"type": "string", "description": "文件扩展名过滤，如 mp4、txt（可选）"},
     },
     examples=["在 E:\\aupi 里搜索所有 mp4 文件", "找找 D:\\projects 里有没有 readme"],
-    permission="read_only"
+    permission="read_only",
+    category="common",
 )
 async def tool_search_local_files(
     path: str,

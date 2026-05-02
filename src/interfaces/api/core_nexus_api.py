@@ -273,6 +273,7 @@ async def tts_with_upload(
             ref_audio=ref_audio_data,
             ref_text=ref_text,
             language=language,
+            model=cfg_get("core_nexus.tts_model") or None,
         )
 
         return Response(
@@ -303,6 +304,7 @@ async def asr_transcribe(request: ASRRequest):
         result = await client.asr_transcribe_async(
             audio=request.audio,
             language=request.language,
+            model=cfg_get("core_nexus.asr_model") or None,
             **(request.generation or {})
         )
 
@@ -333,6 +335,7 @@ async def asr_with_upload(
         result = await client.asr_transcribe_async(
             audio=audio_base64,
             language=language,
+            model=cfg_get("core_nexus.asr_model") or None,
         )
 
         return success_response(data=result)
@@ -359,6 +362,7 @@ async def vl_generate(request: VLRequest):
             image=request.image,
             images=request.images,
             messages=request.messages,
+            model=cfg_get("core_nexus.vl_model") or None,
             **(request.generation or {})
         )
 
@@ -386,6 +390,7 @@ async def vl_generate_stream(request: VLRequest):
                     image=request.image,
                     images=request.images,
                     messages=request.messages,
+                    model=cfg_get("core_nexus.vl_model") or None,
                     **(request.generation or {})
                 ):
                     yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
@@ -430,6 +435,7 @@ async def vl_with_upload(
         result = await client.vl_generate_async(
             prompt=prompt,
             image=image_data,
+            model=cfg_get("core_nexus.vl_model") or None,
         )
 
         return success_response(data={"text": result})

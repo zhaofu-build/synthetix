@@ -64,16 +64,11 @@ src/
 │   ├── session_manager.py        # 会话管理（内存缓存 + DB 双写）
 │   ├── mcp_client.py             # MCP 协议客户端（动态接入外部工具服务器）
 │   ├── extension_loader.py       # 扩展/插件加载器（扫描 src/extensions/ 目录）
-│   ├── skill_loader.py           # Markdown 技能加载器（扫描 src/skills/ 目录的 .md 文件）
 │   ├── project_memory.py         # 项目级用户偏好记忆
 │   ├── knowledge_base.py         # BM25 知识库（轻量 RAG）
-│   ├── multi_agent.py            # 多 Agent 协作（Planner→Executor→Reviewer）
-│   └── prompts.py                # LLM 提示词模板
+│   └── multi_agent.py            # 多 Agent 协作（Planner→Executor→Reviewer）
 │
-├── extensions/                   # 扩展/插件目录
-│   └── subtitle_style/           # 示例：字幕风格预设扩展
-│
-├── skills/                       # Markdown 技能定义目录
+├── extensions/                   # 扩展/插件目录（每个子目录一个扩展，含 manifest.json）
 │
 ├── scripts/                      # 工具脚本（migrate_imports, update_imports）
 │
@@ -157,9 +152,8 @@ FastAPI 静态路由必须在动态路由（`/{id}`）之前定义，否则 `"bg
 **系统提示词注入链**（`_build_messages()` 按顺序拼接）：
 1. 基础系统提示词（角色 + 工具描述 + 规则）
 2. 项目偏好记忆（`project_memory.py` 提取的历史偏好）
-3. 技能描述（`skill_loader.py` 加载的 Markdown 技能）
-4. 扩展提示词（`extension_loader.py` 加载的扩展声明）
-5. MCP 外部工具描述（`mcp_client.py` 发现的远程工具）
+3. 扩展提示词（`extension_loader.py` 加载的扩展声明）
+4. MCP 外部工具描述（`mcp_client.py` 发现的远程工具）
 
 **三种处理模式**：
 - `process_message()` — 同步返回完整结果
@@ -241,6 +235,7 @@ Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；
 - 入口模块可定义 `register_tools()` 函数注册自定义工具到 tool_registry
 - `extension_loader.py` 自动将 `src/` 加入 `sys.path` 以支持模块导入
 - 应用启动时自动加载（`lifespan()`），API 支持热重载
+- 技能（原 `src/skills/` 的 .md 文件）已迁移为扩展，统一由 `extension_loader.py` 管理
 
 ### MCP 协议
 - `mcp_client.py` 管理外部 MCP Server 连接，通过 HTTP 发现和调用工具
@@ -390,6 +385,40 @@ static/temp/{project_id}/           # 每个项目独立目录
 - `_saveChatHistory()` 使用 `JSON.parse(JSON.stringify(...))` 深拷贝确保 reactive proxy 正确序列化
 
 ## 常见陷阱
+
+### 视频合并必须使用 concat demuxer
+
+`ffmpeg_adapter.py` 中 `concatenate_videos_with_filter` 和 `concatenate_videos_with_transitions` **禁止使用 `-filter_complex concat`**，该方式同时打开所有输入视频并行解码，多视频合并时内存会爆炸。统一使用 **concat demuxer**（`-f concat -safe 0`）顺序读取，内存占用恒定。
+
+流程：
+1. `_can_stream_copy()` 检查所有视频编码/分辨率是否一致
+2. 一致 → `_merge_with_concat_demuxer()` 用 `-c copy` 零重编码拼接
+3. 不一致 → `_normalize_video_for_concat()` 逐个标准化（一次只开一个文件），再 concat demuxer
+4. `concatenate_videos_with_transitions` 的中间文件已由 `cut_video_silence` 统一格式，直接 concat demuxer 后补静音轨
+
+### 视频入库标准化
+
+所有视频文件进入系统时自动标准化为 **h264 + aac + yuv420p**，确保后续合并操作可直接 stream copy。
+
+`ffmpeg_adapter.py` 中 `standardize_video(input_path)` 函数：
+- ffprobe 检查是否已是标准格式 → 已是则跳过（~10ms）
+- 否则原子替换（临时文件 + `os.replace`），h264 fast preset CRF 23
+- 失败时保留原文件，仅打 warning 日志
+- 按 `file_type` 和扩展名自动跳过非视频文件（audio/image/document）
+- 受 `config/default.json` 中 `ffmpeg.standardize_on_ingest` 开关控制（默认 true）
+
+**注入点**（6 个，覆盖所有视频入库路径）：
+
+| 文件 | 函数 | 覆盖场景 |
+|------|------|---------|
+| `tool_registry.py` `_save_temp_file` | Agent 下载 + 40+ 工具产出（`if file_type == "video"`） |
+| `video_service.py` `upload_video_file` | 流式上传 |
+| `video_service.py` `upload_video_file_from_bytes` | 字节上传 |
+| `video_service.py` `download_video` | URL 下载 |
+| `video_downloader_adapter.py` `download_video` | Pexels/Pixabay 下载 |
+| `tool_api.py` `upload_file` | 聊天上传（`if file_type == "video"`） |
+
+**注意**：新增视频入库路径时，必须在文件写入后、ffprobe/DB 操作前调用 `standardize_video(path)`。
 
 ### to_dict() 双系统（新增字段时必查）
 

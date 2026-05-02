@@ -31,6 +31,22 @@ def cache_interceptor(params: Dict, tool_name: str) -> Dict:
 
 # ── 后置拦截器 ──
 
+def _infer_web_path(local_path: str) -> str:
+    """根据文件实际路径推断正确的 web_path"""
+    import os
+    path = str(local_path).replace('\\', '/')
+    # static/temp/{project_id}/xxx → /static/temp/{project_id}/xxx
+    if '/static/temp/' in path:
+        idx = path.index('/static/')
+        return path[idx:]
+    # static/source_videos/xxx → /static/source_videos/xxx
+    if '/static/source_videos/' in path:
+        idx = path.index('/static/')
+        return path[idx:]
+    # 其他路径回退
+    return f"/static/source_videos/{os.path.basename(local_path)}"
+
+
 def material_registration_interceptor(result: Dict, tool_name: str) -> Dict:
     """剪辑类工具产生的视频自动注册为素材"""
     if not result.get("success"):
@@ -45,17 +61,21 @@ def material_registration_interceptor(result: Dict, tool_name: str) -> Dict:
         return result
     if result.get("_material_registered"):
         return result
+    # 已有 video_id 或 temp_file_id 说明工具自己已注册，跳过
+    if result.get("video_id") or result.get("temp_file_id"):
+        return result
     try:
         from src.infrastructure.db.session import get_db_context
         from src.domain.entities.video_source import VideoSource
         import os
         if not os.path.exists(output_path):
             return result
+        web_path = _infer_web_path(output_path)
         with get_db_context() as db:
             src = VideoSource(
                 video_name=os.path.basename(output_path),
                 local_path=output_path,
-                web_path=f"/static/uploads/{os.path.basename(output_path)}",
+                web_path=web_path,
                 video_type=1,
             )
             db.add(src)

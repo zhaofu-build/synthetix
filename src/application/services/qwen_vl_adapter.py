@@ -4,12 +4,16 @@ VL 视觉语言服务
 通过 core-nexus-ai API 进行图像/视频理解
 """
 import logging
+import os
 from typing import Optional
 
 from src.shared.utils.core_nexus_client import get_client
 from src.shared.utils.config_manager import get as cfg_get
 
 logger = logging.getLogger(__name__)
+
+# 视频文件大小阈值：超过此值用关键帧方式，否则直接发视频 base64
+_VIDEO_DIRECT_SIZE_LIMIT = 10 * 1024 * 1024  # 10 MB
 
 
 def image_summary(tmp_path: str, prompt: Optional[str] = None) -> str:
@@ -31,14 +35,15 @@ def image_summary(tmp_path: str, prompt: Optional[str] = None) -> str:
     try:
         client = get_client()
         vl_model = cfg_get("core_nexus.vl_model") or None
-        # 本地文件路径转为 data URL
+
+        # 本地文件转 base64（远程 VL API 如 DashScope 无法访问本地路径）
+        image_input = tmp_path
         if tmp_path and not tmp_path.startswith(("http://", "https://", "data:")):
-            image_data = _file_to_data_url(tmp_path)
-        else:
-            image_data = tmp_path
+            image_input = _file_to_data_url(tmp_path)
+
         response = client.vl_generate(
             prompt=prompt,
-            image=image_data,
+            image=image_input,
             model=vl_model
         )
         logger.info(f"✅ 图片理解完成")
@@ -67,6 +72,10 @@ def _file_to_data_url(file_path: str) -> str:
 def video_summary(tmp_path: str, prompt: Optional[str] = None, duration: Optional[float] = None, proxy_path: Optional[str] = None) -> str:
     """
     视频内容总结
+
+    策略：
+    1. 小文件 (<10MB): 转 base64 data URL 直接发送
+    2. 大文件 (>=10MB) 或 base64 失败: 降级为关键帧方式
 
     Args:
         tmp_path: 视频文件路径
@@ -112,19 +121,144 @@ def video_summary(tmp_path: str, prompt: Optional[str] = None, duration: Optiona
     try:
         client = get_client()
         vl_model = cfg_get("core_nexus.vl_model") or None
-        video_data = _file_to_data_url(actual_path)
-        response = client.vl_generate(
-            prompt=prompt,
-            video=video_data,
-            model=vl_model
+
+        # 小文件：转 base64 发送（远程 VL API 如 DashScope 不支持本地路径）
+        file_size = os.path.getsize(actual_path) if os.path.exists(actual_path) else 0
+        if file_size < _VIDEO_DIRECT_SIZE_LIMIT and not proxy_path:
+            logger.info(f"📹 视频文件 ({file_size / 1024 / 1024:.1f}MB)，base64 发送")
+            try:
+                video_data = _file_to_data_url(actual_path)
+                response = client.vl_generate(
+                    prompt=prompt,
+                    video=video_data,
+                    model=vl_model
+                )
+                set_cached(actual_path, "vl", response, **vl_cache_kwargs)
+                return response
+            except Exception as e:
+                logger.warning(f"base64 发送失败，降级为关键帧方式: {e}")
+
+        # 大文件或 base64 失败：提取关键帧截图
+        logger.info(f"🖼️ 提取关键帧进行分析")
+        frames = _extract_keyframes(actual_path, duration)
+        if not frames:
+            raise ValueError("无法提取视频关键帧")
+
+        # frames: [(data_url, timestamp), ...]
+        frame_data_urls = [f[0] for f in frames]
+        frame_times = [f[1] for f in frames]
+
+        frame_prompt = prompt + (
+            f"\n\n以下是视频的 {len(frames)} 个关键帧截图"
+            f"（按时间顺序排列），请根据这些截图分析视频内容。"
         )
-        logger.info(f"✅ 视频理解完成")
-        set_cached(actual_path, "vl", response, **vl_cache_kwargs)
-        return response
+
+        # 尝试 images 数组方式
+        try:
+            response = client.vl_generate(
+                prompt=frame_prompt,
+                images=frame_data_urls,
+                model=vl_model
+            )
+            logger.info(f"✅ 视频理解完成（关键帧模式，{len(frames)} 帧）")
+            set_cached(actual_path, "vl", response, **vl_cache_kwargs)
+            return response
+        except Exception as e:
+            logger.warning(f"images 数组方式失败: {e}，降级为逐帧分析")
+
+        # images 失败：逐帧发送，单张 image 方式
+        segments = []
+        for i, (frame_url, t) in enumerate(frames):
+            try:
+                # 计算该帧对应的时间段
+                next_t = frame_times[i + 1] if i + 1 < len(frame_times) else (duration or t + 5)
+                start = frame_times[0] if i == 0 else (frame_times[i - 1] + t) / 2
+                end = (t + next_t) / 2
+                frame_prompt_single = (
+                    f"这是视频第 {t:.1f} 秒的画面截图。"
+                    f"请用简练语言描述这个时刻的画面内容（场景、人物动作、风格等），不要输出JSON。"
+                )
+                desc = client.vl_generate(
+                    prompt=frame_prompt_single,
+                    image=frame_url,
+                    model=vl_model
+                )
+                segments.append({"start": round(start, 1), "end": round(end, 1), "desc": desc.strip()})
+            except Exception as e:
+                logger.warning(f"第 {i+1} 帧分析失败: {e}")
+
+        if segments:
+            import json
+            response = json.dumps({"segments": segments}, ensure_ascii=False)
+            set_cached(actual_path, "vl", response, **vl_cache_kwargs)
+            return response
+        raise ValueError("所有关键帧分析均失败")
 
     except Exception as e:
         logger.error(f"❌ 视频理解失败: {e}")
         raise ValueError(f"视频理解失败: {e}")
+
+
+def _extract_keyframes(video_path: str, duration: Optional[float] = None, max_frames: int = 8) -> list:
+    """
+    从视频中均匀提取关键帧截图
+
+    Args:
+        video_path: 视频文件路径
+        duration: 视频时长（秒），不提供则用 FFmpeg 获取
+        max_frames: 最大提取帧数
+
+    Returns:
+        [(data_url, timestamp), ...] 列表
+    """
+    import tempfile
+    from src.application.services import ffmpeg_adapter as ffmpeg
+
+    # 获取视频时长
+    if not duration or duration <= 0:
+        info = ffmpeg.get_video_info(video_path)
+        duration = info.get("duration", 0) if info else 0
+
+    if duration <= 0:
+        # 无法获取时长，至少提取一帧
+        duration = 1
+
+    # 计算提取帧数：短视频少提取，长视频多提取
+    num_frames = min(max_frames, max(3, int(duration / 5)))
+    if duration <= 10:
+        num_frames = min(3, max(1, int(duration / 2)))
+
+    frames = []
+    tmp_dir = tempfile.mkdtemp(prefix="vl_frames_")
+
+    try:
+        for i in range(num_frames):
+            # 均匀分布时间点
+            t = (i + 0.5) * duration / num_frames
+            t = min(t, duration - 0.1)
+            if t < 0:
+                t = 0
+            out_path = os.path.join(tmp_dir, f"frame_{i:03d}.jpg")
+            try:
+                ffmpeg.run_ffmpeg_cmd([
+                    '-y', '-ss', str(t), '-i', video_path,
+                    '-vframes', '1', '-q:v', '2',
+                    '-vf', 'scale=-2:480',
+                    out_path
+                ])
+                if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                    frames.append((_file_to_data_url(out_path), t))
+            except Exception as e:
+                logger.warning(f"提取第 {i} 帧失败 (t={t:.1f}s): {e}")
+    finally:
+        # 清理临时文件
+        import shutil
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    return frames
 
 
 def generate_summary(messages: list) -> str:

@@ -19,8 +19,10 @@ pub fn run() {
 fn start_backend(app_handle: tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     use tauri_plugin_shell::ShellExt;
     use tauri_plugin_shell::process::CommandEvent;
+    use tauri::Emitter;
 
     let (rx, _child) = app_handle.shell().sidecar("binaries/backend")?.spawn()?;
+    let handle = app_handle.clone();
 
     tauri::async_runtime::spawn(async move {
         let mut rx = rx;
@@ -34,10 +36,14 @@ fn start_backend(app_handle: tauri::AppHandle) -> Result<(), Box<dyn std::error:
                 }
                 CommandEvent::Terminated(status) => {
                     eprintln!("[backend] exited with status: {:?}", status);
+                    let msg = format!("后端服务已停止 (退出码: {:?})，请重启应用。", status);
+                    let _ = handle.emit("backend-crashed", &msg);
                     break;
                 }
                 CommandEvent::Error(err) => {
                     eprintln!("[backend:error] {}", err);
+                    let msg = format!("后端服务异常: {}", err);
+                    let _ = handle.emit("backend-crashed", &msg);
                     break;
                 }
                 _ => {}
