@@ -3,6 +3,7 @@ Core-Nexus-AI 代理 API
 
 代理 LLM、TTS、ASR、VL 接口到前端
 """
+import os
 import logging
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query
@@ -453,7 +454,32 @@ class TextToMusicRequest(BaseModel):
     duration: Optional[float] = 10.0
     style: Optional[str] = None
     model: Optional[str] = None
+    mode: Optional[str] = None
+    lyrics: Optional[str] = None
+    audio: Optional[str] = None
+    variance: Optional[float] = None
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    extend_left: Optional[float] = None
+    extend_right: Optional[float] = None
     generation: Optional[Dict[str, Any]] = None
+
+
+class MusicToMusicRequest(BaseModel):
+    """音乐风格迁移请求"""
+    audio: str
+    prompt: Optional[str] = None
+    style: Optional[str] = None
+    model: Optional[str] = None
+    generation: Optional[Dict[str, Any]] = None
+
+
+def _decode_audio_response(result: dict) -> bytes:
+    """从 API 结果中提取音频字节"""
+    audio_data = result.get("audio", "")
+    if audio_data.startswith("data:"):
+        audio_data = audio_data.split(",", 1)[1]
+    return base64.b64decode(audio_data)
 
 
 @router.post("/music")
@@ -461,7 +487,7 @@ async def text_to_music(request: TextToMusicRequest):
     """
     文本生成音乐
 
-    根据文本描述生成音乐，支持指定风格和时长
+    支持 generate/retake/repaint/edit/extend/cover 模式
     """
     try:
         client = get_client()
@@ -471,26 +497,73 @@ async def text_to_music(request: TextToMusicRequest):
             duration=request.duration,
             style=request.style,
             model=request.model,
+            mode=request.mode,
+            lyrics=request.lyrics,
+            audio=request.audio,
+            variance=request.variance,
+            start_time=request.start_time,
+            end_time=request.end_time,
+            extend_left=request.extend_left,
+            extend_right=request.extend_right,
             **(request.generation or {})
         )
 
-        # 返回音频数据
-        audio_data = result.get("audio", "")
-        if audio_data.startswith("data:"):
-            # 移除 data URL 前缀
-            audio_data = audio_data.split(",", 1)[1]
-            audio_bytes = base64.b64decode(audio_data)
-        else:
-            audio_bytes = base64.b64decode(audio_data)
-
+        audio_bytes = _decode_audio_response(result)
         return Response(
             content=audio_bytes,
             media_type="audio/wav",
-            headers={
-                "Content-Disposition": "attachment; filename=music_output.wav"
-            }
+            headers={"Content-Disposition": "attachment; filename=music_output.wav"}
         )
 
     except Exception as e:
         logger.error(f"音乐生成失败: {e}", exc_info=True)
+        return error_response(error="MusicError", message=str(e), code=500)
+
+
+@router.post("/music-to-music")
+async def music_to_music(request: MusicToMusicRequest):
+    """音乐风格迁移"""
+    try:
+        client = get_client()
+        result = await client.music_to_music_async(
+            audio=request.audio,
+            prompt=request.prompt,
+            style=request.style,
+            model=request.model,
+            **(request.generation or {})
+        )
+        audio_bytes = _decode_audio_response(result)
+        return Response(
+            content=audio_bytes,
+            media_type="audio/wav",
+            headers={"Content-Disposition": "attachment; filename=style_transfer.wav"}
+        )
+    except Exception as e:
+        logger.error(f"音乐风格迁移失败: {e}", exc_info=True)
+        return error_response(error="MusicError", message=str(e), code=500)
+
+
+@router.get("/music/bgm-audio/{bgm_id}")
+async def get_bgm_audio(bgm_id: int):
+    """获取 BGM 的 base64 音频数据（供前端音乐编辑模式使用）"""
+    try:
+        from src.infrastructure.db.session import get_db_context
+        from src.domain.entities.bgm_item import BGMItem
+
+        with get_db_context() as db:
+            bgm = db.query(BGMItem).filter(BGMItem.id == bgm_id).first()
+            if not bgm:
+                return error_response(error="NotFound", message="BGM 不存在", code=404)
+            bgm_data = bgm.to_dict()
+            local_path = bgm.local_path
+
+        if not local_path or not os.path.exists(local_path):
+            return error_response(error="FileNotFound", message="BGM 文件不存在", code=404)
+
+        with open(local_path, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        return success_response(data={"audio": audio_b64, "bgm": bgm_data})
+    except Exception as e:
+        logger.error(f"获取 BGM 音频失败: {e}", exc_info=True)
         return error_response(error="MusicError", message=str(e), code=500)

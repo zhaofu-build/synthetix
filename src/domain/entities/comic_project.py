@@ -3,7 +3,7 @@
 """
 from datetime import datetime
 from typing import Dict, Any
-from sqlalchemy import Column, Integer, String, Text, Float, DateTime, JSON
+from sqlalchemy import Column, Integer, String, Text, Float, DateTime, JSON, ForeignKey
 
 from src.domain.entities.base import Base
 
@@ -18,6 +18,11 @@ class ComicProject(Base):
     genre = Column(String(50), nullable=True, comment="类型: drama/comedy/action/romance/horror")
     style = Column(String(50), nullable=True, default="动漫", comment="画风: 动漫/写实/水墨/像素/美漫")
     status = Column(String(50), default="draft", comment="状态: draft/scripting/generating/compositing/completed")
+
+    # 系列关联（多集支持）
+    series_id = Column(Integer, ForeignKey("comic_series.id"), nullable=True, comment="所属系列 ID")
+    episode_number = Column(Integer, default=1, comment="集数序号")
+    target_duration = Column(Float, nullable=True, comment="目标时长（秒）")
 
     # 脚本结构（JSON 存储）
     script_data = Column(JSON, nullable=True, comment="完整脚本 JSON")
@@ -45,6 +50,9 @@ class ComicProject(Base):
             "genre": self.genre,
             "style": self.style or "动漫",
             "status": self.status or "draft",
+            "series_id": self.series_id,
+            "episode_number": self.episode_number or 1,
+            "target_duration": self.target_duration,
             "script_data": self.script_data,
             "characters": self.characters or [],
             "panels": self.panels or [],

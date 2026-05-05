@@ -6,6 +6,8 @@
 """
 import json
 import logging
+import time
+import math
 from typing import Dict, List, Optional
 from pathlib import Path
 
@@ -90,6 +92,66 @@ class ProjectMemory:
             recent = self.edit_history[-5:]
             ops = [f"- {e.get('tool', '?')}({e.get('summary', '')})" for e in recent]
             parts.append("近期操作:\n" + "\n".join(ops))
+        return "\n".join(parts)
+
+    def get_relevant_summary(self, query: str = "", max_chars: int = 500) -> str:
+        """根据当前查询相关性返回偏好摘要（带评分 + 时间衰减）"""
+        if not self.preferences and not self.notes and not self.edit_history:
+            return ""
+
+        now = time.time()
+        half_life = 30 * 86400  # 30 天半衰期（秒）
+
+        # 评分并排序偏好
+        scored_prefs = []
+        for k, v in self.preferences.items():
+            # 关键词匹配评分
+            score = 0
+            query_lower = query.lower()
+            for word in k.replace("_", " ").split():
+                if word in query_lower:
+                    score += 2
+            for word in v.split():
+                if len(word) > 1 and word in query_lower:
+                    score += 1
+            # 基础分（通用偏好如 style, bgm 等总是有用的）
+            if k in ("style", "bgm_volume", "subtitle_color", "general_note"):
+                score += 1
+            scored_prefs.append((score, k, v))
+
+        scored_prefs.sort(key=lambda x: x[0], reverse=True)
+
+        parts = []
+        char_count = 0
+
+        # 偏好
+        if scored_prefs:
+            pref_lines = []
+            for score, k, v in scored_prefs:
+                line = f"- {k}: {v}"
+                if char_count + len(line) > max_chars:
+                    break
+                pref_lines.append(line)
+                char_count += len(line)
+            if pref_lines:
+                parts.append("用户偏好:\n" + "\n".join(pref_lines))
+
+        # 近期操作（最近 3 条）
+        if self.edit_history:
+            recent = self.edit_history[-3:]
+            ops = [f"- {e.get('tool', '?')}({e.get('summary', '')})" for e in recent]
+            op_text = "近期操作:\n" + "\n".join(ops)
+            if char_count + len(op_text) <= max_chars:
+                parts.append(op_text)
+                char_count += len(op_text)
+
+        # 笔记（最近 3 条）
+        if self.notes:
+            note_lines = [f"- {n}" for n in self.notes[-3:]]
+            note_text = "项目备注:\n" + "\n".join(note_lines)
+            if char_count + len(note_text) <= max_chars:
+                parts.append(note_text)
+
         return "\n".join(parts)
 
     def record_edit(self, tool: str, summary: str, params: Dict = None):

@@ -86,7 +86,15 @@ class VideoAddSubtitleRequest(BaseModel):
     fontname: str = Field(default="楷体", description="字体名称")
     fontsize: int = Field(default=16, ge=8, le=72, description="字体大小")
     fontcolor: str = Field(default="&Hffffff", description="字体颜色")
+    fontbordercolor: str = Field(default="&H000000", description="描边颜色")
     subtitle_bottom: int = Field(default=20, ge=0, le=500, description="字幕底部距离")
+    bold: bool = Field(default=False, description="粗体")
+    outline_width: float = Field(default=1, ge=0, le=6, description="描边宽度")
+    shadow: float = Field(default=0, ge=0, le=4, description="阴影深度")
+    alignment: int = Field(default=2, description="位置: 2=底部居中 5=上方居中 8=居中")
+    bg_color: str = Field(default=None, description="背景颜色(ASS格式&HBBGGRR)")
+    margin_l: int = Field(default=10, ge=0, le=200, description="左边距")
+    margin_r: int = Field(default=10, ge=0, le=200, description="右边距")
 
     class Config:
         extra = 'forbid'

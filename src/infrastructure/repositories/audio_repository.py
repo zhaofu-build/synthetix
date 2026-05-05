@@ -129,6 +129,7 @@ class AudioRepository(BaseRepository[AudioSource]):
             "temperature": audio.temperature,
             "repetition_penalty": audio.repetition_penalty,
             "create_time": audio.create_time,
+            "is_default": audio.is_default,
         }
 
         if include_web_path:

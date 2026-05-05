@@ -494,7 +494,15 @@ class VideoService:
         fontname: str = "楷体",
         fontsize: int = 16,
         fontcolor: str = "&Hffffff",
+        fontbordercolor: str = "&H000000",
         subtitle_bottom: int = 20,
+        bold: bool = False,
+        outline_width: float = 1,
+        shadow: float = 0,
+        alignment: int = 2,
+        bg_color: str = None,
+        margin_l: int = 10,
+        margin_r: int = 10,
         output_dir: str = None
     ) -> Dict[str, str]:
         """
@@ -507,7 +515,15 @@ class VideoService:
             fontname: 字体名称
             fontsize: 字体大小
             fontcolor: 字体颜色
+            fontbordercolor: 描边颜色
             subtitle_bottom: 字幕底部边距
+            bold: 粗体
+            outline_width: 描边宽度
+            shadow: 阴影深度
+            alignment: 位置 (2=底部居中 5=上方居中 8=居中)
+            bg_color: 背景颜色
+            margin_l: 左边距
+            margin_r: 右边距
             output_dir: 输出目录
 
         Returns:
@@ -523,10 +539,18 @@ class VideoService:
                 video_path,
                 subtitle_content,
                 is_soft,
-                fontname,
-                fontsize,
-                fontcolor,
-                subtitle_bottom
+                fontname=fontname,
+                fontsize=fontsize,
+                fontcolor=fontcolor,
+                fontbordercolor=fontbordercolor,
+                subtitle_bottom=subtitle_bottom,
+                bold=bold,
+                outline_width=outline_width,
+                shadow=shadow,
+                alignment=alignment,
+                bg_color=bg_color,
+                margin_l=margin_l,
+                margin_r=margin_r,
             )
             output_path = Path(config.ROOT_DIR_WIN) / output_dir / title
             video_info = use_ffmpeg.get_video_info(output_path)

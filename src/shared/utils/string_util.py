@@ -55,7 +55,23 @@ def parse_srt(srt_text):
 
 
 # 设置ass字体格式
-def set_ass_font(ass_file, fontname, fontsize, fontcolor, fontbordercolor, subtitle_bottom):
+def set_ass_font(ass_file, fontname, fontsize, fontcolor, fontbordercolor, subtitle_bottom,
+                 bold=False, outline_width=1, shadow=0, alignment=2,
+                 margin_l=10, margin_r=10, bg_color=None):
+    """设置 ASS 字幕样式。
+
+    Args:
+        bold: 粗体
+        outline_width: 描边宽度 0-6
+        shadow: 阴影深度 0-4
+        alignment: 位置 2=底部居中 5=上方居中 8=中间居中
+        margin_l/margin_r: 左/右边距
+        bg_color: 背景颜色 (ASS格式 &HBBGGRR)，有值时启用不透明背景
+    """
+    bold_val = -1 if bold else 0
+    border_style = 3 if bg_color else 1  # 3=不透明底色, 1=描边+阴影
+    back_colour = bg_color if bg_color else '&H0'
+
     with open(ass_file, 'r+', encoding='utf-8') as f:
         content = f.read()
 
@@ -63,8 +79,11 @@ def set_ass_font(ass_file, fontname, fontsize, fontcolor, fontbordercolor, subti
         style_pattern = re.compile(r'^Style:\s*.*', flags=re.MULTILINE)
         new_style = (
             f"Style: Default,{fontname},{fontsize},"
-            f"{fontcolor},&HFFFFFF,{fontbordercolor},&H0,0,0,0,0,"
-            f"100,100,0,0,1,1,0,2,10,10,{subtitle_bottom},1"
+            f"{fontcolor},&HFFFFFF,{fontbordercolor},{back_colour},"
+            f"{bold_val},0,0,0,"
+            f"100,100,0,0,"
+            f"{border_style},{outline_width},{shadow},{alignment},"
+            f"{margin_l},{margin_r},{subtitle_bottom},1,0"
         )
         updated_content = re.sub(style_pattern, new_style, content, count=1)
 

@@ -1,6 +1,9 @@
 # 环境变量文件（包含敏感信息）
 .env
 
+# 分层配置（含 API Key 等敏感信息）
+config/settings.json
+
 # Python
 __pycache__/
 *.py[cod]

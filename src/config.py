@@ -75,3 +75,42 @@ MODEL_CACHE_DIR = DirectoryConfig.MODEL_CACHE_DIR
 class ModelType(Enum):
     """模型类型枚举"""
     VL = "vl"  # 视觉语言模型，如Qwen-VL系列
+
+
+# ==================== 统一配置同步 ====================
+
+# config_manager key → 本模块变量名 的映射
+_CONFIG_KEY_MAP = {
+    "core_nexus.api_key": "llm_key",
+    "core_nexus.base_url": "CORE_NEXUS_BASE_URL",
+    "core_nexus.llm_model": "llm_model",
+    "core_nexus.fast_model": "FAST_MODEL",
+    "core_nexus.slow_model": "SLOW_MODEL",
+    "video_api_keys": "video_api_keys",
+    "pixabay_api_key": "pixabay_api_key",
+}
+
+
+def sync_from_config_manager():
+    """从 config_manager 同步所有已知 key 到模块级变量"""
+    try:
+        from src.shared.utils.config_manager import get as cfg_get
+        import src.config as _self
+
+        for cfg_key, var_name in _CONFIG_KEY_MAP.items():
+            val = cfg_get(cfg_key, None)
+            if val:
+                setattr(_self, var_name, val)
+
+        # 同步 fallback keys（core_nexus key 也设置到 TTS/ASR/VL）
+        cn_key = cfg_get('core_nexus.api_key', '')
+        if cn_key:
+            if not getattr(_self, 'TTS_KEY', ''):
+                _self.TTS_KEY = cn_key
+            if not getattr(_self, 'ASR_KEY', ''):
+                _self.ASR_KEY = cn_key
+            if not getattr(_self, 'VL_KEY', ''):
+                _self.VL_KEY = cn_key
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"配置同步失败: {e}")

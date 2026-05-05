@@ -47,6 +47,9 @@ class AudioSource(Base, ToDictMixin):
     
     # 重复惩罚因子
     repetition_penalty = Column(Float, nullable=True, comment='重复惩罚因子')
-    
+
+    # 是否为默认音色
+    is_default = Column(SmallInteger, default=0, comment='是否为默认音色 0:否 1:是')
+
     def __repr__(self):
         return f"<AudioSource(id={self.id}, audio_name='{self.audio_name}', seed={self.seed})>"

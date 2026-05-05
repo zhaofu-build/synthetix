@@ -127,6 +127,8 @@ class CoreNexusClient:
             "TTS": getattr(config, "TTS_KEY", "") or llm_key,
             "ASR": getattr(config, "ASR_KEY", "") or llm_key,
             "VL": getattr(config, "VL_KEY", "") or llm_key,
+            "MUSIC": getattr(config, "MUSIC_KEY", "") or llm_key,
+            "IMAGE": llm_key,
         }
         for svc, raw_keys in key_map.items():
             keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
@@ -162,6 +164,7 @@ class CoreNexusClient:
         if '/asr' in endpoint: return 'ASR'
         if '/vl' in endpoint: return 'VL'
         if '/music' in endpoint or '/text-to-music' in endpoint: return 'MUSIC'
+        if '/text-to-image' in endpoint or '/image-to-image' in endpoint: return 'IMAGE'
         return 'UNKNOWN'
 
     def _is_cooled_down(self, url: str) -> bool:
@@ -232,7 +235,11 @@ class CoreNexusClient:
                     response.raise_for_status()
                     if api_key:
                         self._key_pool.mark_healthy(service, api_key)
-                    return response.json()
+                    raw = response.text[:1000]
+                    logger.info(f"[CoreNexus] {method} {url} → {response.status_code} | raw: {raw}")
+                    parsed = response.json()
+                    logger.info(f"[CoreNexus] parsed type={type(parsed).__name__}, keys={list(parsed.keys()) if isinstance(parsed, dict) else 'N/A'}")
+                    return parsed
                 except httpx.TransportError as e:
                     last_error = e
                     if attempt < max_retries - 1:
@@ -856,23 +863,31 @@ class CoreNexusClient:
         duration: float = 10.0,
         style: Optional[str] = None,
         model: Optional[str] = None,
+        mode: Optional[str] = None,
+        lyrics: Optional[str] = None,
+        audio: Optional[str] = None,
+        variance: Optional[float] = None,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+        extend_left: Optional[float] = None,
+        extend_right: Optional[float] = None,
         **generation_params
     ) -> Dict[str, Any]:
-        """文本生成音乐"""
-        payload = {
-            "prompt": prompt,
-            "duration": duration,
-        }
-
-        if style:
-            payload["style"] = style
-        if model:
-            payload["model"] = model
+        """文本生成音乐（支持 generate/retake/repaint/edit/extend/cover 模式）"""
+        payload = {"prompt": prompt, "duration": duration}
+        for k, v in [("style", style), ("model", model), ("mode", mode),
+                     ("lyrics", lyrics), ("audio", audio),
+                     ("variance", variance), ("start_time", start_time),
+                     ("end_time", end_time), ("extend_left", extend_left),
+                     ("extend_right", extend_right)]:
+            if v is not None:
+                payload[k] = v
         if generation_params:
             payload["generation"] = generation_params
 
         response = self._request('POST', '/text-to-music', json_data=payload)
-        return response.get('output', {})
+        logger.info(f"[text_to_music] mode={mode}, response type={type(response).__name__}")
+        return (response or {}).get('output') or {}
 
     async def text_to_music_async(
         self,
@@ -880,14 +895,43 @@ class CoreNexusClient:
         duration: float = 10.0,
         style: Optional[str] = None,
         model: Optional[str] = None,
+        mode: Optional[str] = None,
+        lyrics: Optional[str] = None,
+        audio: Optional[str] = None,
+        variance: Optional[float] = None,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+        extend_left: Optional[float] = None,
+        extend_right: Optional[float] = None,
         **generation_params
     ) -> Dict[str, Any]:
-        """异步文本生成音乐"""
-        payload = {
-            "prompt": prompt,
-            "duration": duration,
-        }
+        """异步文本生成音乐（支持 generate/retake/repaint/edit/extend/cover 模式）"""
+        payload = {"prompt": prompt, "duration": duration}
+        for k, v in [("style", style), ("model", model), ("mode", mode),
+                     ("lyrics", lyrics), ("audio", audio),
+                     ("variance", variance), ("start_time", start_time),
+                     ("end_time", end_time), ("extend_left", extend_left),
+                     ("extend_right", extend_right)]:
+            if v is not None:
+                payload[k] = v
+        if generation_params:
+            payload["generation"] = generation_params
 
+        response = await self._request_async('POST', '/text-to-music', json_data=payload)
+        return (response or {}).get('output') or {}
+
+    def music_to_music(
+        self,
+        audio: str,
+        prompt: Optional[str] = None,
+        style: Optional[str] = None,
+        model: Optional[str] = None,
+        **generation_params
+    ) -> Dict[str, Any]:
+        """音乐风格迁移（/music-to-music 端点）"""
+        payload = {"audio": audio}
+        if prompt:
+            payload["prompt"] = prompt
         if style:
             payload["style"] = style
         if model:
@@ -895,14 +939,38 @@ class CoreNexusClient:
         if generation_params:
             payload["generation"] = generation_params
 
-        response = await self._request_async('POST', '/text-to-music', json_data=payload)
-        return response.get('output', {})
+        response = self._request('POST', '/music-to-music', json_data=payload)
+        logger.info(f"[music_to_music] response type={type(response).__name__}")
+        return (response or {}).get('output') or {}
 
-    # ==================== Image Generation 接口（stub） ====================
+    async def music_to_music_async(
+        self,
+        audio: str,
+        prompt: Optional[str] = None,
+        style: Optional[str] = None,
+        model: Optional[str] = None,
+        **generation_params
+    ) -> Dict[str, Any]:
+        """异步音乐风格迁移（/music-to-music 端点）"""
+        payload = {"audio": audio}
+        if prompt:
+            payload["prompt"] = prompt
+        if style:
+            payload["style"] = style
+        if model:
+            payload["model"] = model
+        if generation_params:
+            payload["generation"] = generation_params
+
+        response = await self._request_async('POST', '/music-to-music', json_data=payload)
+        return (response or {}).get('output') or {}
+
+    # ==================== Image Generation 接口 ====================
 
     def text_to_image(
         self,
         prompt: str,
+        negative_prompt: Optional[str] = None,
         model: Optional[str] = None,
         width: int = 1024,
         height: int = 1024,
@@ -910,13 +978,23 @@ class CoreNexusClient:
         ref_strength: float = 0.4,
         **generation_params
     ) -> Dict[str, Any]:
-        """文本/参考图生成图片（stub，等待 core-nexus-ai 实现）"""
-        logger.warning("text_to_image called - stub implementation")
-        return {"status": "stub", "message": "text_to_image not yet implemented in core-nexus-ai"}
+        """文本生成图片（POST /text-to-image）"""
+        payload = {"prompt": prompt}
+        if negative_prompt:
+            payload["negative_prompt"] = negative_prompt
+        if model:
+            payload["model"] = model
+        generation = {"width": width, "height": height}
+        generation.update(generation_params)
+        payload["generation"] = generation
+
+        response = self._request('POST', '/text-to-image', json_data=payload)
+        return self._extract_image_output(response)
 
     async def text_to_image_async(
         self,
         prompt: str,
+        negative_prompt: Optional[str] = None,
         model: Optional[str] = None,
         width: int = 1024,
         height: int = 1024,
@@ -924,9 +1002,81 @@ class CoreNexusClient:
         ref_strength: float = 0.4,
         **generation_params
     ) -> Dict[str, Any]:
-        """异步文本生成图片（stub）"""
-        logger.warning("text_to_image_async called - stub implementation")
-        return {"status": "stub", "message": "text_to_image not yet implemented in core-nexus-ai"}
+        """异步文本生成图片（POST /text-to-image）"""
+        payload = {"prompt": prompt}
+        if negative_prompt:
+            payload["negative_prompt"] = negative_prompt
+        if model:
+            payload["model"] = model
+        generation = {"width": width, "height": height}
+        generation.update(generation_params)
+        payload["generation"] = generation
+
+        response = await self._request_async('POST', '/text-to-image', json_data=payload)
+        return self._extract_image_output(response)
+
+    def image_to_image(
+        self,
+        prompt: str,
+        image: str,
+        mask: Optional[str] = None,
+        model: Optional[str] = None,
+        **generation_params
+    ) -> Dict[str, Any]:
+        """图像编辑（POST /image-to-image）"""
+        payload = {
+            "prompt": prompt,
+            "image": self._process_image_input(image),
+        }
+        if mask:
+            payload["mask"] = self._process_image_input(mask)
+        if model:
+            payload["model"] = model
+        if generation_params:
+            payload["generation"] = generation_params
+
+        response = self._request('POST', '/image-to-image', json_data=payload)
+        return self._extract_image_output(response)
+
+    async def image_to_image_async(
+        self,
+        prompt: str,
+        image: str,
+        mask: Optional[str] = None,
+        model: Optional[str] = None,
+        **generation_params
+    ) -> Dict[str, Any]:
+        """异步图像编辑（POST /image-to-image）"""
+        payload = {
+            "prompt": prompt,
+            "image": self._process_image_input(image),
+        }
+        if mask:
+            payload["mask"] = self._process_image_input(mask)
+        if model:
+            payload["model"] = model
+        if generation_params:
+            payload["generation"] = generation_params
+
+        response = await self._request_async('POST', '/image-to-image', json_data=payload)
+        return self._extract_image_output(response)
+
+    @staticmethod
+    def _extract_image_output(response: Dict) -> Dict[str, Any]:
+        """从 core-nexus-ai 响应中提取图片数据"""
+        output = (response or {}).get('output') or {}
+        image_data = output.get('image', '')
+        if not image_data:
+            return {"image": None}
+        result = {"image": image_data}
+        if image_data.startswith('data:'):
+            header, b64 = image_data.split(',', 1)
+            result["image_bytes"] = base64.b64decode(b64)
+            result["image_base64"] = b64
+        else:
+            result["image_bytes"] = base64.b64decode(image_data)
+            result["image_base64"] = image_data
+        return result
 
     # ==================== Video Generation 接口（stub） ====================
 

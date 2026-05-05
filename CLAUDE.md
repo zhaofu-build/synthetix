@@ -210,12 +210,13 @@ Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；
 **工具权限**：`read_only`（自动执行）→ `modify`（需确认）→ `destructive`（必须确认）。SSE 流式推送中 `tool_start` 事件包含 `permission` 字段。
 
 ### 已注册工具分类
-共 73 个工具，按类别：
+共 74+ 个工具，按类别：
 
-- **基础视频操作**: cut_video, merge_videos, add_subtitle, change_speed, compress_video, split_video, convert_to_gif, convert_format
+- **基础视频操作**: cut_video, merge_videos, image_to_video, add_subtitle, change_speed, compress_video, split_video, convert_to_gif, convert_format
 - **音频处理**: add_audio, extract_audio, mix_audio_to_video, separate_vocal, normalize_audio, equalize_audio, fade_audio, add_echo, denoise_audio, pitch_shift, reverse_audio
 - **AI 能力**: smart_clip, analyze_video, analyze_video_vl, transcribe_video, generate_tts, generate_music, translate_text, detect_language
 - **素材管理**: list_videos, get_video_description, search_material, search_files, download_video, delete_material, random_video, set_cover, update_description, list_audios
+- **字幕样式**: subtitle_style_preset（扩展）
 - **FFmpeg 滤镜**: adjust_brightness, blur_video, sharpen_video, rotate_video, flip_video, crop_video, fade_video, picture_in_picture, add_watermark, add_text_overlay, reverse_video, stabilize_video, scene_detect, slow_motion, color_adjust
 - **系统工具**: get_current_time, list_directory, get_system_info, open_folder, task_status, time_convert, srt_to_ass, suggest_music, optimize_prompt, help, extract_frames, get_video_detail, batch_compress
 - **多 Agent**: plan_clip, review_result
@@ -385,6 +386,36 @@ static/temp/{project_id}/           # 每个项目独立目录
 - `_saveChatHistory()` 使用 `JSON.parse(JSON.stringify(...))` 深拷贝确保 reactive proxy 正确序列化
 
 ## 常见陷阱
+
+### validate_params 会丢弃 Pydantic 模型外的字段
+
+`Tool.validate_params()` 使用 Pydantic model 校验参数。`react_agent.py` 自动注入 `project_id` 到 params，但大多数工具的 Pydantic 模型不含 `project_id`。当前 `validate_params()` 已做回填处理（保留额外字段），但新增工具时需注意：如果工具需要 `project_id`，确保它通过 `kwargs` 获取，**不要依赖 Pydantic 模型声明**（除非确实需要校验）。
+
+### web_path 不是文件系统路径
+
+工具返回的 `web_path`（如 `static/uploads/xxx.wav`、`/static/temp/7/tts_xxx.wav`）是 URL 路径，不能直接传给 FFmpeg。需要转为绝对路径：
+```python
+abs_path = os.path.join(str(config.ROOT_DIR_WIN), web_path.lstrip('/'))
+```
+`add_audio`、`mix_audio_to_video`、`image_to_video` 等接受文件路径的工具已内置此解析逻辑。
+
+### 临时文件必须用 _save_temp_file 保存
+
+工具产出文件**不能**在外部 `get_db_context()` session 中直接 `repo.create()` 再返回 ID——该 session 默认 `commit=False`，退出时回滚，后续工具查不到。正确做法：
+1. 有 `project_id` → 调用 `_save_temp_file()`（内部有独立 session + `db.commit()`）
+2. 无 `project_id` → 使用独立的 `get_db_context()` 并手动 `db.commit()`
+
+### 字幕系统 ASS 颜色格式
+
+ASS 颜色格式为 `&HBBGGRR`（注意不是 RGB 而是 BGR），6 位十六进制。不要使用 8 位格式 `&H00FFFFFF`——前两位 alpha 为 `00` 表示全透明，字幕会不可见。正确写法：白色 `&Hffffff`，黑色 `&H000000`。
+
+### 字幕临时文件路径
+
+`ffmpeg_adapter.py` 中 `add_subtitle()` 的 SRT/ASS 临时文件已改为写入 `tempfile.gettempdir()`。不要改回相对路径——相对路径会写入 CWD（项目根目录），进程中断时残留。
+
+### 字体文件集中管理
+
+FFmpeg `drawtext` 滤镜在 Windows 上不能使用含盘符冒号的绝对路径。`_prepare_font_for_file()` 已改为从 `static/fonts/` 集中目录计算相对路径，不再复制字体到输入文件目录。
 
 ### 视频合并必须使用 concat demuxer
 

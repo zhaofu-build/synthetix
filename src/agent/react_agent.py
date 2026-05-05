@@ -9,6 +9,7 @@ import os
 import re
 import logging
 import time
+import asyncio
 from typing import Dict, List, Optional, Any
 
 from src.agent.tool_registry import registry
@@ -18,6 +19,20 @@ from src.application.services.llm_adapter import generate_response_async, select
 from src.shared.utils.core_nexus_client import get_client
 
 logger = logging.getLogger(__name__)
+
+# ==================== 超时配置 ====================
+LLM_TIMEOUT = 180  # LLM 调用超时 3 分钟
+TOOL_TIMEOUTS = {
+    "default": 120,
+    "download_video": 300,
+    "stabilize_video": 600,
+    "smart_clip": 300,
+    "scene_detect": 300,
+    "batch_compress": 600,
+    "analyze_video_vl": 180,
+    "transcribe_video": 180,
+    "generate_music": 300,
+}
 
 # ==================== 系统提示词 ====================
 
@@ -113,6 +128,47 @@ class ReActAgent:
 
     def __init__(self):
         self.sessions = get_session_manager()
+        self._confirm_events: Dict[str, asyncio.Event] = {}  # 权限确认事件
+
+    def confirm_tool(self, tool_name: str):
+        """外部确认工具执行（由 WebSocket handler 调用）"""
+        event = self._confirm_events.get(tool_name)
+        if event:
+            event.set()
+
+    async def _compact_history(self, state: DialogState, max_messages: int = 30) -> bool:
+        """智能压缩历史消息：保留最近 15 条 + LLM 摘要"""
+        if len(state.history) <= max_messages:
+            return False
+
+        recent = state.history[-15:]
+        older = state.history[:-15]
+
+        # 用快模型生成摘要
+        try:
+            summary_messages = [
+                {"role": "system", "content": "请将以下对话历史压缩为简洁摘要，保留关键决策、用户偏好和工具调用结果。用中文输出，不超过 300 字。"},
+                *older,
+                {"role": "user", "content": "请生成摘要"},
+            ]
+            summary = await asyncio.wait_for(
+                generate_response_async(messages=summary_messages, max_tokens=500),
+                timeout=60,
+            )
+            if summary:
+                # 用摘要 + 最近消息替换原历史
+                state.history = [
+                    {"role": "system", "content": f"[历史摘要] {summary.strip()}"},
+                    *recent,
+                ]
+                logger.info(f"[ReAct] 历史压缩: {len(older)} 条旧消息 → 摘要")
+                return True
+        except Exception as e:
+            logger.warning(f"[ReAct] 历史压缩失败: {e}")
+
+        # 降级：硬截断
+        state.history = recent
+        return False
 
     def _save_checkpoint(self, session_id: str, stage_idx: int, stage_summaries: list, messages: list):
         """持久化中间结果到检查点文件"""
@@ -320,7 +376,10 @@ class ReActAgent:
         yield {"type": "session", "session_id": state.session_id}
         logger.info(f"[ReAct-Stream] 用户输入: '{user_input}', project_id={state.project_id}")
 
+        pending_tasks: set = set()
         try:
+            # 历史过长时触发压缩
+            await self._compact_history(state)
             messages = self._build_messages(state)
             final_reply = ""
 
@@ -336,12 +395,15 @@ class ReActAgent:
                 if kv_session_id:
                     provider_options["session_id"] = kv_session_id
 
-                response_text = await generate_response_async(
-                    messages=messages,
-                    model_name=model,
-                    temperature=0.7,
-                    max_tokens=2048,
-                    provider_options=provider_options,
+                response_text = await asyncio.wait_for(
+                    generate_response_async(
+                        messages=messages,
+                        model_name=model,
+                        temperature=0.7,
+                        max_tokens=2048,
+                        provider_options=provider_options,
+                    ),
+                    timeout=LLM_TIMEOUT,
                 )
 
                 # 提取 session_id 供下一轮 KV Cache 使用
@@ -363,7 +425,6 @@ class ReActAgent:
                     break
 
                 # 执行工具并推送状态
-                import asyncio
                 tool_results = []
 
                 # 判断是否可以并行执行（需要特殊处理的工具走串行）
@@ -375,7 +436,7 @@ class ReActAgent:
                         tool = registry.get_tool(tc["name"])
                         perm = tool.permission if tool else "modify"
                         yield {"type": "tool_start", "tool": tc["name"], "params": tc["params"], "permission": perm}
-                        print(f"[ToolExec] >>> {tc['name']}({json.dumps(tc['params'], ensure_ascii=False)[:300]}) [parallel]")
+                        logger.debug(f"[ToolExec] >>> {tc['name']}(...) [parallel]")
 
                     tasks = [self._execute_tool(tc["name"], tc["params"], state) for tc in tool_calls]
                     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -386,8 +447,7 @@ class ReActAgent:
                         tool_name = tc["name"]
                         tool_params = tc["params"]
 
-                        _res_preview = json.dumps(result, ensure_ascii=False, default=str)[:300]
-                        print(f"[ToolExec] <<< {tool_name} success={result.get('success', True)} | {_res_preview}")
+                        logger.debug(f"[ToolExec] <<< {tool_name} success={result.get('success', True)}")
 
                         if result.get("is_temp_asset"):
                             has_temp_asset = True
@@ -429,13 +489,15 @@ class ReActAgent:
                         perm = tool.permission if tool else "modify"
 
                         yield {"type": "tool_start", "tool": tool_name, "params": tool_params, "permission": perm}
-                        print(f"[ToolExec] >>> {tool_name}({json.dumps(tool_params, ensure_ascii=False)[:300]})")
+                        logger.debug(f"[ToolExec] >>> {tool_name}(...)")
 
                         if tool_name == "download_video":
                             progress_dict = {}
                             tool_task = asyncio.ensure_future(
                                 self._execute_tool(tool_name, tool_params, state, progress_dict=progress_dict)
                             )
+                            pending_tasks.add(tool_task)
+                            tool_task.add_done_callback(pending_tasks.discard)
                             while not tool_task.done():
                                 p = {k: v for k, v in progress_dict.items() if v}
                                 if p:
@@ -446,13 +508,14 @@ class ReActAgent:
                             tool_task = asyncio.ensure_future(
                                 self._execute_tool(tool_name, tool_params, state)
                             )
+                            pending_tasks.add(tool_task)
+                            tool_task.add_done_callback(pending_tasks.discard)
                             while not tool_task.done():
                                 yield {"type": "heartbeat"}
                                 await asyncio.sleep(3)
                             result = tool_task.result()
 
-                        _res_preview = json.dumps(result, ensure_ascii=False, default=str)[:300]
-                        print(f"[ToolExec] <<< {tool_name} success={result.get('success', True)} | {_res_preview}")
+                        logger.debug(f"[ToolExec] <<< {tool_name} success={result.get('success', True)}")
 
                         if result.get("is_temp_asset"):
                             has_temp_asset = True
@@ -515,6 +578,16 @@ class ReActAgent:
 
             yield {"type": "done", "status": "completed", "session_id": state.session_id}
 
+        except asyncio.CancelledError:
+            # SSE 客户端断连，取消所有进行中的工具任务
+            logger.info(f"[ReAct-Stream] 客户端断连，取消 {len(pending_tasks)} 个待处理任务")
+            for task in pending_tasks:
+                if not task.done():
+                    task.cancel()
+            if pending_tasks:
+                await asyncio.gather(*pending_tasks, return_exceptions=True)
+            yield {"type": "done", "status": "cancelled", "session_id": state.session_id}
+
         except Exception as e:
             logger.error(f"[ReAct-Stream] 处理失败: {e}", exc_info=True)
             yield {"type": "error", "message": str(e), "session_id": state.session_id}
@@ -555,6 +628,7 @@ class ReActAgent:
         if checkpoint and checkpoint.get("stage_idx", 0) > 0:
             start_stage = checkpoint["stage_idx"] + 1
             stage_summaries = checkpoint.get("stage_summaries", [])
+            await self._compact_history(state)
             messages = checkpoint.get("messages", self._build_messages(state))
             yield {"type": "deep_research", "stage": "resume", "resumed_from": start_stage}
             logger.info(f"[DeepResearch] resuming from stage {start_stage}")
@@ -601,9 +675,12 @@ class ReActAgent:
                     if kv_session_id:
                         provider_options["session_id"] = kv_session_id
 
-                    response_text = await generate_response_async(
-                        messages=messages, model_name=model, temperature=0.7, max_tokens=2048,
-                        provider_options=provider_options,
+                    response_text = await asyncio.wait_for(
+                        generate_response_async(
+                            messages=messages, model_name=model, temperature=0.7, max_tokens=2048,
+                            provider_options=provider_options,
+                        ),
+                        timeout=LLM_TIMEOUT,
                     )
 
                     # 提取 session_id 供下一轮 KV Cache 使用
@@ -622,10 +699,9 @@ class ReActAgent:
                     tool_results = []
                     for tc in tool_calls:
                         yield {"type": "tool_start", "tool": tc["name"], "params": tc["params"], "stage": stage_name}
-                        print(f"[ToolExec] >>> {tc['name']}({json.dumps(tc['params'], ensure_ascii=False)[:300]})")
+                        logger.debug(f"[ToolExec] >>> {tc['name']}(...)")
                         result = await self._execute_tool(tc["name"], tc["params"], state)
-                        _res_preview = json.dumps(result, ensure_ascii=False, default=str)[:300]
-                        print(f"[ToolExec] <<< {tc['name']} success={result.get('success', True)} | {_res_preview}")
+                        logger.debug(f"[ToolExec] <<< {tc['name']} success={result.get('success', True)}")
                         tool_results.append({"name": tc["name"], "params": tc["params"], "result": result})
 
                         dr_media_info = None
@@ -664,9 +740,12 @@ class ReActAgent:
                 f"所有阶段已完成。请基于以下总结，用自然语言向用户汇报最终结果。\n\n"
                 + "\n".join(f"## {n}\n{s}" for n, s in stage_summaries)
             )
-            final_reply = await generate_response_async(
-                messages=[{"role": "user", "content": final_prompt}],
-                temperature=0.7, max_tokens=2048,
+            final_reply = await asyncio.wait_for(
+                generate_response_async(
+                    messages=[{"role": "user", "content": final_prompt}],
+                    temperature=0.7, max_tokens=2048,
+                ),
+                timeout=LLM_TIMEOUT,
             )
 
             state.add_message("assistant", final_reply)
@@ -674,6 +753,10 @@ class ReActAgent:
             self._clear_checkpoint(state.session_id)
             yield {"type": "reply", "content": final_reply}
             yield {"type": "done", "status": "completed", "session_id": state.session_id}
+
+        except asyncio.CancelledError:
+            logger.info(f"[DeepResearch] 客户端断连，清理资源")
+            raise
 
         except Exception as e:
             logger.error(f"[DeepResearch] 失败: {e}", exc_info=True)
@@ -704,12 +787,15 @@ class ReActAgent:
             if kv_session_id:
                 provider_options["session_id"] = kv_session_id
 
-            response_text = await generate_response_async(
-                messages=messages,
-                model_name=model,
-                temperature=0.7,
-                max_tokens=2048,
-                provider_options=provider_options,
+            response_text = await asyncio.wait_for(
+                generate_response_async(
+                    messages=messages,
+                    model_name=model,
+                    temperature=0.7,
+                    max_tokens=2048,
+                    provider_options=provider_options,
+                ),
+                timeout=LLM_TIMEOUT,
             )
 
             # 提取 session_id 供下一轮 KV Cache 使用
@@ -735,10 +821,10 @@ class ReActAgent:
             # Act: 执行工具调用
             tool_results = []
             for tc in tool_calls:
-                print(f"[ToolExec] >>> {tc['name']}({json.dumps(tc['params'], ensure_ascii=False)[:300]})")
+                logger.debug(f"[ToolExec] >>> {tc['name']}(...)")
                 result = await self._execute_tool(tc["name"], tc["params"], state)
                 _res_preview = json.dumps(result, ensure_ascii=False, default=str)[:300]
-                print(f"[ToolExec] <<< {tc['name']} success={result.get('success', True)} | {_res_preview}")
+                logger.debug(f"[ToolExec] <<< {tc['name']} success={result.get('success', True)}")
 
                 if result.get("is_temp_asset"):
                     has_temp_asset = True
@@ -797,11 +883,17 @@ class ReActAgent:
         else:
             system_prompt = build_system_prompt(tools_desc, state.project_id, project_name)
 
-        # 注入项目偏好记忆
+        # 注入项目偏好记忆（相关性评分 + 字符预算）
         if state.project_id:
             try:
                 memory = get_project_memory(state.project_id)
-                pref_summary = memory.get_preferences_summary()
+                # 用最近用户消息作为查询上下文
+                query = ""
+                for msg in reversed(state.history):
+                    if msg.get("role") == "user":
+                        query = msg.get("content", "")[:200]
+                        break
+                pref_summary = memory.get_relevant_summary(query=query)
                 if pref_summary:
                     system_prompt += f"\n\n## 用户偏好（基于历史对话自动记录）\n\n{pref_summary}"
             except Exception:
@@ -902,6 +994,19 @@ class ReActAgent:
         """执行单个工具（支持 registry 工具和 MCP 外部工具）"""
         tool = registry.get_tool(tool_name)
 
+        # 权限门控：destructive 工具需确认
+        if tool and tool.permission == "destructive":
+            confirm_key = f"{tool_name}_{id(params)}"
+            confirm_event = asyncio.Event()
+            self._confirm_events[confirm_key] = confirm_event
+            logger.warning(f"[ReAct] destructive 工具 {tool_name} 等待确认...")
+            try:
+                await asyncio.wait_for(confirm_event.wait(), timeout=10)
+            except asyncio.TimeoutError:
+                logger.warning(f"[ReAct] destructive 工具 {tool_name} 确认超时，自动执行")
+            finally:
+                self._confirm_events.pop(confirm_key, None)
+
         # 尝试 MCP 外部工具
         if not tool:
             try:
@@ -924,7 +1029,9 @@ class ReActAgent:
 
         try:
             # 参数校验
+            logger.debug(f"[_execute_tool] {tool_name} params={json.dumps(params, ensure_ascii=False, default=str)[:200]}")
             validated = tool.validate_params(params) if tool.param_model else params
+            logger.debug(f"[_execute_tool] {tool_name} validated")
 
             # Global pre-interceptors
             validated = registry.run_pre_interceptors(validated, tool_name)
@@ -934,7 +1041,10 @@ class ReActAgent:
                 validated = tool.before_execute(validated) or validated
 
             # 执行
-            result = await tool.execute(**validated)
+            logger.debug(f"[_execute_tool] {tool_name} calling execute...")
+            timeout = TOOL_TIMEOUTS.get(tool_name, TOOL_TIMEOUTS["default"])
+            result = await asyncio.wait_for(tool.execute(**validated), timeout=timeout)
+            logger.debug(f"[_execute_tool] {tool_name} execute returned type={type(result).__name__}")
 
             # after_execute hook
             if tool.after_execute:
@@ -949,6 +1059,10 @@ class ReActAgent:
 
             return result
 
+        except asyncio.TimeoutError:
+            timeout = TOOL_TIMEOUTS.get(tool_name, TOOL_TIMEOUTS["default"])
+            logger.error(f"[ReAct] 工具 {tool_name} 执行超时（{timeout}s）")
+            return {"success": False, "error": f"工具执行超时（{timeout}s）"}
         except Exception as e:
             logger.error(f"[ReAct] 工具 {tool_name} 执行异常: {e}", exc_info=True)
             return {"success": False, "error": str(e)}

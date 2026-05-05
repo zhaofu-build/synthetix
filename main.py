@@ -27,6 +27,7 @@ from src.interfaces.api.ws_api import router as ws_api
 from src.interfaces.api.mcp_api import router as mcp_api
 from src.interfaces.api.extension_api import router as extension_api
 from src.interfaces.api.comic_api import router as comic_api
+from src.interfaces.api.comic_series_api import router as comic_series_api
 
 from src.shared.utils import file_util
 
@@ -88,29 +89,15 @@ async def lifespan(app: FastAPI):
 
     # 从 settings.json 同步配置到运行时
     try:
-        from src.shared.utils.config_manager import get as cfg_get
-        _px_key = cfg_get('pixabay_api_key', '')
-        if _px_key:
-            config.pixabay_api_key = _px_key
-        _va_keys = cfg_get('video_api_keys', '')
-        if _va_keys:
-            config.video_api_keys = _va_keys
-        # 同步 core-nexus API Key，确保首次启动即可用
-        _cn_key = cfg_get('core_nexus.api_key', '')
-        if _cn_key:
-            config.llm_key = _cn_key
-            if not getattr(config, 'TTS_KEY', ''):
-                config.TTS_KEY = _cn_key
-            if not getattr(config, 'ASR_KEY', ''):
-                config.ASR_KEY = _cn_key
-            if not getattr(config, 'VL_KEY', ''):
-                config.VL_KEY = _cn_key
+        from src.config import sync_from_config_manager
+        sync_from_config_manager()
     except Exception as e:
         logger.warning(f"配置同步失败: {e}")
 
     yield
 
     # 关闭时执行
+    logger.info("开始优雅关闭...")
     cleanup_task.cancel()
     # 关闭 CoreNexusClient 连接
     try:
@@ -118,7 +105,19 @@ async def lifespan(app: FastAPI):
         get_client().close()
     except Exception:
         pass
-    logger.info("应用关闭")
+    # 关闭 MCP 连接池
+    try:
+        from src.agent.mcp_client import mcp_client
+        await mcp_client.close_all()
+    except Exception:
+        pass
+    # 关闭数据库引擎
+    try:
+        from src.infrastructure.db.session import engine
+        engine.dispose()
+    except Exception:
+        pass
+    logger.info("优雅关闭完成")
 
 
 # 创建 FastAPI 应用实例
@@ -144,6 +143,7 @@ app.include_router(ws_api, tags=["WebSocket"])
 app.include_router(mcp_api, prefix="/api/mcp", tags=["MCP工具"])
 app.include_router(extension_api, prefix="/api/extensions", tags=["扩展管理"])
 app.include_router(comic_api, prefix="/api/comic-projects", tags=["漫剧项目"])
+app.include_router(comic_series_api, prefix="/api/comic-series", tags=["漫剧系列"])
 # app.include_router(video_generation_api, tags=["视频生成"])
 
 # ⚠️ 重要：CORS 中间件必须在其他中间件之前添加

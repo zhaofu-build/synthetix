@@ -226,7 +226,15 @@ async def add_subtitle(
             fontname=req.fontname,
             fontsize=req.fontsize,
             fontcolor=req.fontcolor,
-            subtitle_bottom=req.subtitle_bottom
+            subtitle_bottom=req.subtitle_bottom,
+            fontbordercolor=req.fontbordercolor,
+            bold=req.bold,
+            outline_width=req.outline_width,
+            shadow=req.shadow,
+            alignment=req.alignment,
+            bg_color=req.bg_color,
+            margin_l=req.margin_l,
+            margin_r=req.margin_r,
         )
         return success_response(data=result, message="添加字幕成功")
     except ValueError as e:

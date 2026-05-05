@@ -62,12 +62,16 @@ class UpdateComicProjectRequest(BaseModel):
     bgm_config: Optional[Dict[str, Any]] = None
     current_step: Optional[int] = None
     status: Optional[str] = None
+    series_id: Optional[int] = None
+    episode_number: Optional[int] = None
+    target_duration: Optional[float] = None
 
 
 class GenerateScriptRequest(BaseModel):
     description: str = Field(..., description="故事设定/大纲")
     genre: Optional[str] = Field(default="drama", description="类型")
-    num_panels: int = Field(default=10, ge=3, le=50, description="分镜数量")
+    num_panels: Optional[int] = Field(default=None, ge=3, le=100, description="分镜数量（可选，不传则根据目标时长自动计算）")
+    target_duration: Optional[float] = Field(default=None, ge=10, le=600, description="目标时长（秒），与 num_panels 二选一")
     characters: Optional[List[Dict[str, Any]]] = None
 
 
@@ -80,3 +84,9 @@ class GeneratePanelAudioRequest(BaseModel):
     panel_index: int = Field(..., ge=0, description="分镜索引")
     text: Optional[str] = None
     voice_id: Optional[str] = None
+
+
+class GeneratePanelVideoRequest(BaseModel):
+    panel_index: int = Field(..., ge=0, description="分镜索引")
+    scene_description: Optional[str] = Field(default=None, description="场景描述（可选，默认用面板原有描述）")
+    duration: Optional[float] = Field(default=3.0, ge=1, le=15, description="视频时长（秒）")

@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import json
+import shutil
 from src import config
 import time
 from typing import Dict, List, Optional, Callable, Any
@@ -112,51 +113,55 @@ def _make_temp_output(suffix: str, video_id: int) -> str:
 _font_cache = None
 
 def _prepare_font_for_file(file_path: str) -> str:
-    """将中文字体复制到指定文件同目录，返回字体文件名。
+    """返回供 FFmpeg drawtext 使用的字体路径。
 
-    FFmpeg drawtext 在 Windows 上无法解析含盘符冒号的绝对路径，
-    但能找到与输入文件同目录的字体（相对文件名）。
-    将字体复制到输入文件同目录即可。
+    优先使用 static/fonts/ 下的集中字体，计算相对路径给 FFmpeg
+    （避免 Windows 绝对路径含盘符冒号导致 drawtext 解析失败）。
+    回退到系统字体目录。
     """
     global _font_cache
-    import platform, shutil
 
     if not _font_cache:
-        candidates = []
-        if platform.system() == 'Windows':
-            fonts_dir = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
-            candidates = [
-                os.path.join(fonts_dir, 'simhei.ttf'),
-                os.path.join(fonts_dir, 'simkai.ttf'),
-            ]
-        elif platform.system() == 'Darwin':
-            candidates = [
-                '/System/Library/Fonts/PingFang.ttc',
-                '/Library/Fonts/Arial Unicode.ttf',
-            ]
+        # 优先使用项目 static/fonts/ 集中存放的字体
+        _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        project_font = os.path.join(_project_root, 'static', 'fonts', 'simhei.ttf')
+        if os.path.exists(project_font):
+            _font_cache = project_font
         else:
-            candidates = [
-                '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
-                '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
-                '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',
-            ]
-        for path in candidates:
-            if os.path.exists(path):
-                _font_cache = path
-                break
+            import platform
+            candidates = []
+            if platform.system() == 'Windows':
+                fonts_dir = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
+                candidates = [
+                    os.path.join(fonts_dir, 'simhei.ttf'),
+                    os.path.join(fonts_dir, 'simkai.ttf'),
+                ]
+            elif platform.system() == 'Darwin':
+                candidates = [
+                    '/System/Library/Fonts/PingFang.ttc',
+                    '/Library/Fonts/Arial Unicode.ttf',
+                ]
+            else:
+                candidates = [
+                    '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
+                    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+                    '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',
+                ]
+            for path in candidates:
+                if os.path.exists(path):
+                    _font_cache = path
+                    break
 
     if not _font_cache:
         return ''
 
-    font_name = os.path.basename(_font_cache)
-    target_dir = os.path.dirname(os.path.abspath(file_path))
-    dest = os.path.join(target_dir, font_name)
-    if not os.path.exists(dest):
-        try:
-            shutil.copy2(_font_cache, dest)
-        except Exception:
-            return ''
-    return font_name
+    # 使用相对路径（从输入文件目录到字体文件），避免 Windows 盘符冒号问题
+    try:
+        input_dir = os.path.dirname(os.path.abspath(file_path))
+        rel = os.path.relpath(_font_cache, input_dir).replace('\\', '/')
+    except Exception:
+        return os.path.basename(_font_cache)
+    return rel
 
 
 def _save_tool_output(output_path: str, video_id: int, source: str,
@@ -219,6 +224,15 @@ class AddSubtitleParams(BaseModel):
     subtitle_content: str = Field(..., description="字幕内容或文件路径")
     hard_subtitle: bool = Field(default=True, description="是否硬字幕")
     project_id: Opt[int] = Field(default=None, description="项目 ID")
+    fontname: str = Field(default="楷体", description="字体名称，如: 楷体, Microsoft YaHei, SimHei, SimSun, FangSong")
+    fontsize: int = Field(default=24, ge=8, le=72, description="字体大小")
+    fontcolor: str = Field(default="&Hffffff", description="字体颜色(ASS格式&HBBGGRR)")
+    fontbordercolor: str = Field(default="&H000000", description="描边颜色(ASS格式)")
+    bold: bool = Field(default=False, description="粗体")
+    outline_width: float = Field(default=2, ge=0, le=6, description="描边宽度")
+    shadow: float = Field(default=0, ge=0, le=4, description="阴影深度")
+    alignment: int = Field(default=2, description="位置: 2=底部居中 5=上方居中 8=居中")
+    bg_color: str = Field(default=None, description="背景颜色(ASS格式&HBBGGRR)，空则无背景")
 
 
 class ChangeSpeedParams(BaseModel):
@@ -271,8 +285,56 @@ class AnalyzeVideoVlParams(BaseModel):
 class GenerateMusicParams(BaseModel):
     """音乐生成参数"""
     prompt: str = Field(..., description="音乐描述")
-    duration: float = Field(default=10.0, ge=1, le=60, description="时长（秒）")
+    duration: float = Field(default=10.0, ge=1, le=240, description="时长（秒）")
     style: Opt[str] = Field(default=None, description="风格: pop/classical/electronic/jazz/rock/ambient")
+    lyrics: Opt[str] = Field(default=None, description="歌词（支持 [verse]/[chorus] 结构标签，不传则纯音乐）")
+
+
+class RetakeMusicParams(BaseModel):
+    """音乐变奏参数"""
+    prompt: str = Field(..., description="音乐描述")
+    duration: float = Field(default=10.0, ge=1, le=240, description="时长（秒）")
+    style: Opt[str] = Field(default=None, description="风格")
+    lyrics: Opt[str] = Field(default=None, description="歌词")
+    variance: float = Field(default=0.5, ge=0, le=1, description="变化程度 0-1，越大差异越大")
+
+
+class RepaintMusicParams(BaseModel):
+    """音乐局部重绘参数"""
+    bgm_id: int = Field(..., description="BGM ID（从曲库中选择需要重绘的音乐）")
+    prompt: str = Field(..., description="重绘部分的音乐描述")
+    start_time: float = Field(..., ge=0, description="重绘起始时间（秒）")
+    end_time: float = Field(..., ge=0, description="重绘结束时间（秒）")
+    duration: Opt[float] = Field(default=None, ge=1, le=240, description="输出总时长（秒）")
+
+
+class EditMusicLyricsParams(BaseModel):
+    """音乐歌词编辑参数"""
+    bgm_id: int = Field(..., description="BGM ID")
+    lyrics: str = Field(..., description="新歌词（支持 [verse]/[chorus] 结构标签）")
+    prompt: Opt[str] = Field(default=None, description="编辑指导")
+
+
+class ExtendMusicParams(BaseModel):
+    """音乐扩展参数"""
+    bgm_id: int = Field(..., description="BGM ID")
+    prompt: Opt[str] = Field(default=None, description="音乐描述")
+    extend_left: float = Field(default=0, ge=0, le=60, description="向前延长秒数")
+    extend_right: float = Field(default=10, ge=0, le=60, description="向后延长秒数")
+
+
+class CoverMusicParams(BaseModel):
+    """音乐翻唱参数"""
+    bgm_id: int = Field(..., description="要翻唱的 BGM ID")
+    prompt: Opt[str] = Field(default=None, description="翻唱风格描述")
+    lyrics: Opt[str] = Field(default=None, description="歌词")
+
+
+class StyleTransferMusicParams(BaseModel):
+    """音乐风格迁移参数"""
+    bgm_id: int = Field(..., description="BGM ID")
+    prompt: str = Field(..., description="目标风格描述")
+    edit_strength: float = Field(default=0.5, ge=0, le=1, description="风格修改强度 0-1")
 
 
 class AddAudioParams(BaseModel):
@@ -386,6 +448,19 @@ class CopyFilesParams(BaseModel):
         return v
 
 
+class GenerateImageParams(BaseModel):
+    prompt: str = Field(..., description="图片描述")
+    negative_prompt: Optional[str] = Field(default=None, description="反向提示词（排除元素）")
+    width: int = Field(default=1024, ge=256, le=2048, description="图片宽度")
+    height: int = Field(default=1024, ge=256, le=2048, description="图片高度")
+
+
+class EditImageParams(BaseModel):
+    prompt: str = Field(..., description="编辑指令")
+    video_id: int = Field(..., description="原始图片素材 ID")
+    mask_video_id: Optional[int] = Field(default=None, description="蒙版图片素材 ID（可选，用于局部编辑）")
+
+
 # 参数模型映射
 PARAM_MODELS = {
     "cut_video": CutVideoParams,
@@ -397,6 +472,12 @@ PARAM_MODELS = {
     "analyze_video_vl": AnalyzeVideoVlParams,
     "generate_tts": GenerateTtsParams,
     "generate_music": GenerateMusicParams,
+    "retake_music": RetakeMusicParams,
+    "repaint_music": RepaintMusicParams,
+    "edit_music_lyrics": EditMusicLyricsParams,
+    "extend_music": ExtendMusicParams,
+    "cover_music": CoverMusicParams,
+    "style_transfer_music": StyleTransferMusicParams,
     "search_material": SearchMaterialParams,
     "transcribe_video": TranscribeVideoParams,
     "add_audio": AddAudioParams,
@@ -410,6 +491,8 @@ PARAM_MODELS = {
     "delete_files": DeleteFilesParams,
     "move_files": MoveFilesParams,
     "copy_files": CopyFilesParams,
+    "generate_image": GenerateImageParams,
+    "edit_image": EditImageParams,
 }
 
 
@@ -432,11 +515,16 @@ class Tool:
             self.examples = []
 
     def validate_params(self, params: Dict) -> Dict:
-        """校验并规范化参数"""
+        """校验并规范化参数，保留 Pydantic 模型未声明的额外字段（如 project_id）"""
         if self.param_model is None:
             return params
         model = self.param_model(**params)
-        return model.model_dump()
+        validated = model.model_dump()
+        # 保留 Pydantic 未处理的额外字段（如 react_agent 注入的 project_id）
+        for k, v in params.items():
+            if k not in validated:
+                validated[k] = v
+        return validated
 
 
 class ToolRegistry:
@@ -825,15 +913,125 @@ async def tool_merge_videos(
 
 
 @registry.register(
+    name="image_to_video",
+    description="将图片转换为视频片段（静态展示或带缩放/平移效果），可用于 merge_videos 拼接到视频时间线",
+    parameters={
+        "image_path": {"type": "string", "description": "图片文件路径（本地路径或 web_path）"},
+        "duration": {"type": "number", "description": "持续时长（秒，默认5）"},
+        "effect": {"type": "string", "description": "效果: static(静态)/zoom_in(缓慢放大)/zoom_out(缩小)/pan_left(左移)/pan_right(右移)，默认 static"},
+        "resolution": {"type": "string", "description": "分辨率 如 1920x1080，默认 1920x1080"},
+        "project_id": {"type": "integer", "description": "项目 ID"},
+    },
+    examples=["把这张图做成5秒视频", "图片转视频带放大效果"],
+    permission="modify",
+)
+async def tool_image_to_video(
+    image_path: str,
+    duration: float = 5.0,
+    effect: str = "static",
+    resolution: str = "1920x1080",
+    project_id: int = None,
+    **kwargs
+) -> Dict[str, Any]:
+    """图片转视频工具"""
+    from src.infrastructure.db.session import get_db_context
+    from src.infrastructure.repositories import VideoRepository
+    from src.application.services import ffmpeg_adapter as ffmpeg
+
+    try:
+        # 解析图片路径
+        abs_path = image_path
+        if not os.path.isabs(abs_path):
+            abs_path = os.path.join(str(config.ROOT_DIR_WIN), abs_path.lstrip('/'))
+            if not os.path.isfile(abs_path):
+                abs_path = os.path.abspath(image_path.lstrip('/'))
+
+        if not os.path.isfile(abs_path):
+            return {"success": False, "error": f"图片文件不存在: {image_path}"}
+
+        # 获取图片尺寸
+        info = ffmpeg.get_video_info(abs_path)
+        img_w = int(info.get('width', 0)) if info else 0
+        img_h = int(info.get('height', 0)) if info else 0
+
+        # 解析目标分辨率
+        try:
+            w, h = resolution.lower().split('x')
+            out_w, out_h = int(w), int(h)
+        except Exception:
+            out_w, out_h = 1920, 1080
+
+        output_path = _make_temp_output(".mp4", 0)
+
+        # 构建 FFmpeg 滤镜
+        if effect == "static" or not effect:
+            vf = f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:color=black"
+            cmd = ['-loop', '1', '-t', str(duration), '-i', abs_path,
+                   '-vf', vf,
+                   '-c:v', 'libx264', '-tune', 'stillimage',
+                   '-pix_fmt', 'yuv420p', '-r', '30',
+                   '-an', output_path]
+        else:
+            # 动态效果：用 zoompan 滤镜
+            fps = 30
+            frames = int(duration * fps)
+            if effect == "zoom_in":
+                zp = f"zoompan=z='min(zoom+0.001,1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={out_w}x{out_h}:fps={fps}"
+            elif effect == "zoom_out":
+                zp = f"zoompan=z='if(eq(on,1),1.5,max(zoom-0.001,1))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={out_w}x{out_h}:fps={fps}"
+            elif effect == "pan_left":
+                zp = f"zoompan=z='1.2':x='iw*(1-1/zoom)*(on/{frames})':y='ih/2-(ih/zoom/2)':d={frames}:s={out_w}x{out_h}:fps={fps}"
+            elif effect == "pan_right":
+                zp = f"zoompan=z='1.2':x='iw*(1-1/zoom)*(1-on/{frames})':y='ih/2-(ih/zoom/2)':d={frames}:s={out_w}x{out_h}:fps={fps}"
+            else:
+                zp = f"zoompan=z='1':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={out_w}x{out_h}:fps={fps}"
+            cmd = ['-loop', '1', '-t', str(duration), '-i', abs_path,
+                   '-vf', zp,
+                   '-c:v', 'libx264', '-tune', 'stillimage',
+                   '-pix_fmt', 'yuv420p',
+                   '-an', output_path]
+
+        ffmpeg.run_ffmpeg_cmd(cmd)
+
+        output_info = ffmpeg.get_video_info(output_path)
+        output_duration = float(output_info.get('duration', duration)) if output_info else duration
+
+        result = _save_tool_output(
+            output_path, 0, "image_to_video",
+            project_id,
+            file_type="video",
+            file_name=f"img2vid_{int(time.time())}.mp4",
+            message=f"图片已转为 {duration} 秒视频（效果: {effect}）",
+            duration=output_duration,
+        )
+        if result.get("success"):
+            result["duration"] = output_duration
+        return result
+
+    except Exception as e:
+        logger.error(f"图片转视频失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
     name="add_subtitle",
-    description="为视频添加字幕",
+    description="为视频添加字幕，支持多种字体、粗体、描边、阴影、背景色、位置等样式",
     parameters={
         "video_id": {"type": "integer", "description": "视频 ID"},
         "subtitle_content": {"type": "string", "description": "字幕内容或文件路径"},
         "hard_subtitle": {"type": "boolean", "description": "是否硬字幕"},
         "project_id": {"type": "integer", "description": "项目 ID"},
+        "fontname": {"type": "string", "description": "字体名称(楷体/Microsoft YaHei/SimHei/SimSun/FangSong/Arial等)"},
+        "fontsize": {"type": "integer", "description": "字体大小(8-72)"},
+        "fontcolor": {"type": "string", "description": "字体颜色(ASS格式&HBBGGRR，如&Hffffff白色)"},
+        "fontbordercolor": {"type": "string", "description": "描边颜色(ASS格式)"},
+        "bold": {"type": "boolean", "description": "粗体"},
+        "outline_width": {"type": "number", "description": "描边宽度(0-6)"},
+        "shadow": {"type": "number", "description": "阴影深度(0-4)"},
+        "alignment": {"type": "integer", "description": "位置: 2=底部居中 5=上方居中 8=居中"},
+        "bg_color": {"type": "string", "description": "背景颜色(ASS格式)，空则透明"},
     },
-    examples=["给视频添加字幕", "添加硬字幕"],
+    examples=["给视频添加字幕", "添加粗体字幕", "添加带描边和阴影的字幕"],
     param_model=AddSubtitleParams,
     before_execute=validate_video_exists
 )
@@ -842,6 +1040,15 @@ async def tool_add_subtitle(
     subtitle_content: str,
     hard_subtitle: bool = True,
     project_id: int = None,
+    fontname: str = "楷体",
+    fontsize: int = 24,
+    fontcolor: str = "&Hffffff",
+    fontbordercolor: str = "&H000000",
+    bold: bool = False,
+    outline_width: float = 2,
+    shadow: float = 0,
+    alignment: int = 2,
+    bg_color: str = None,
     **kwargs
 ) -> Dict[str, Any]:
     """添加字幕工具"""
@@ -865,6 +1072,15 @@ async def tool_add_subtitle(
                 video_path=video.local_path,
                 subtitle_content=subtitle_content,
                 subtitle_type=not hard_subtitle,
+                fontname=fontname,
+                fontsize=fontsize,
+                fontcolor=fontcolor,
+                fontbordercolor=fontbordercolor,
+                bold=bold,
+                outline_width=outline_width,
+                shadow=shadow,
+                alignment=alignment,
+                bg_color=bg_color,
             )
 
             return _save_tool_output(
@@ -1076,10 +1292,10 @@ async def tool_analyze_video(
 
 @registry.register(
     name="generate_tts",
-    description="文本转语音，生成配音。使用前先调用 list_audios 查看可用音色及对应 ID，speaker_id 必须是数字 ID",
+    description="文本转语音，生成配音。不需要先查询音色列表，系统会自动使用默认音色。仅在需要指定特定音色时才传 speaker_id",
     parameters={
         "text": {"type": "string", "description": "要合成的文本"},
-        "speaker_id": {"type": "integer", "description": "音色 ID（数字），先用 list_audios 查看可用音色"},
+        "speaker_id": {"type": "integer", "description": "音色 ID（可选，不传则使用默认音色）"},
     },
     examples=["生成配音", "把这个文案读出来", "用1号音色生成语音"],
     param_model=GenerateTtsParams,
@@ -1094,19 +1310,30 @@ async def tool_generate_tts(
     from src.application.services.audio_service import AudioService
     from src.infrastructure.db.session import get_db_context
 
+    # 未指定 speaker_id 时自动使用默认音色
+    resolved_speaker_id = speaker_id
+    if resolved_speaker_id is None:
+        from src.domain.entities.audio_source import AudioSource
+        with get_db_context() as db:
+            default_voice = db.query(AudioSource).filter(
+                AudioSource.is_default == 1, AudioSource.del_flag == 0
+            ).first()
+            if default_voice:
+                resolved_speaker_id = default_voice.id
+
     try:
         with get_db_context() as db:
             audio_service = AudioService(db)
             result = audio_service.generate_fish_speech_tts(
                 text=text,
-                audio_source_id=speaker_id or -1,
+                audio_source_id=resolved_speaker_id or -1,
             )
 
         project_id = kwargs.get("project_id")
         local_path = result.get("local_path")
         if local_path and os.path.isfile(local_path):
             save_result = _save_tool_output(
-                local_path, speaker_id or 0, "tts",
+                local_path, resolved_speaker_id or 0, "tts",
                 project_id, file_type="audio",
                 file_name=f"tts_{int(time.time())}.wav",
                 message="语音生成完成",
@@ -1719,15 +1946,89 @@ async def tool_analyze_transcript(
         return {"success": False, "error": str(e)}
 
 
+def _resolve_bgm_audio(bgm_id: int) -> tuple:
+    """从 BGM 曲库解析音频，返回 (local_path, audio_base64, bgm_dict)"""
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.bgm_item import BGMItem
+
+    with get_db_context() as db:
+        bgm = db.query(BGMItem).filter(BGMItem.id == bgm_id).first()
+        if not bgm:
+            raise ValueError(f"BGM ID {bgm_id} 不存在")
+        bgm_data = bgm.to_dict()
+        local_path = bgm.local_path
+
+    if not local_path or not os.path.exists(local_path):
+        raise ValueError(f"BGM 文件不存在: {local_path}")
+
+    with open(local_path, "rb") as f:
+        audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+    return local_path, audio_b64, bgm_data
+
+
+def _extract_audio_bytes(result: dict) -> bytes:
+    """从 API 结果中提取音频字节，兼容多种返回格式"""
+    import base64 as _b64
+    result = result or {}
+    audio_data = ""
+
+    if isinstance(result, dict):
+        audio_data = result.get("audio", "") or result.get("output", "") or result.get("data", "")
+        if not audio_data and any(result.values()):
+            for v in result.values():
+                if isinstance(v, str) and len(v) > 100:
+                    audio_data = v
+                    break
+    elif isinstance(result, str) and len(result) > 100:
+        audio_data = result
+
+    if not audio_data:
+        raise ValueError("音乐生成服务未返回音频数据")
+
+    if audio_data.startswith("data:"):
+        audio_data = audio_data.split(",", 1)[1]
+    return _b64.b64decode(audio_data)
+
+
+def _save_audio_to_bgm(audio_bytes: bytes, name: str, style: str = "",
+                       duration: float = 10.0, description: str = "") -> dict:
+    """将音频字节保存到 BGM 曲库，返回 bgm_dict"""
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.bgm_item import BGMItem
+
+    bgm_dir = os.path.join(str(config.ROOT_DIR_WIN), "static", "bgm")
+    os.makedirs(bgm_dir, exist_ok=True)
+    save_name = f"ai_music_{int(time.time())}.mp3"
+    file_path = os.path.join(bgm_dir, save_name)
+    with open(file_path, "wb") as f:
+        f.write(audio_bytes)
+
+    with get_db_context(commit=True) as db:
+        bgm = BGMItem(
+            name=name[:255],
+            web_path=f"static/bgm/{save_name}",
+            local_path=file_path,
+            style=style or "",
+            duration=duration,
+            description=description[:500]
+        )
+        db.add(bgm)
+        db.commit()
+        db.refresh(bgm)
+        return bgm.to_dict()
+
+
 @registry.register(
     name="generate_music",
-    description="根据文字描述生成背景音乐",
+    description="根据文字描述生成背景音乐。不传 lyrics 生成纯音乐，传入歌词生成带人声的歌曲。支持 [verse]/[chorus] 结构标签",
     parameters={
         "prompt": {"type": "string", "description": "音乐描述"},
-        "duration": {"type": "number", "description": "时长（秒，默认10）"},
+        "duration": {"type": "number", "description": "时长（秒，默认10，最大240）"},
         "style": {"type": "string", "description": "风格: pop/classical/electronic/jazz/rock/ambient"},
+        "lyrics": {"type": "string", "description": "歌词（支持 [verse]/[chorus] 结构标签，不传则纯音乐）"},
     },
-    examples=["生成一段轻快的电子音乐", "做一个30秒的钢琴背景音乐", "来点爵士风格的 BGM"],
+    examples=["生成一段30秒的钢琴纯音乐", "做一个轻快的电子BGM", "写一首温暖的流行歌，歌词：[verse]星空下的夜晚[chorus]我想要飞翔"],
     param_model=GenerateMusicParams,
     category="common",
 )
@@ -1735,44 +2036,530 @@ async def tool_generate_music(
     prompt: str,
     duration: float = 10.0,
     style: str = None,
+    lyrics: str = None,
     **kwargs
 ) -> Dict[str, Any]:
     """音乐生成工具"""
     from src.shared.utils.core_nexus_client import get_client
     from src.shared.utils.config_manager import get as cfg_get
     from src import config
-    import base64
 
     try:
         client = get_client()
         music_model = cfg_get("core_nexus.music_model") or None
         result = client.text_to_music(
-            prompt=prompt,
-            duration=duration,
-            style=style,
-            model=music_model
+            prompt=prompt, duration=duration, style=style,
+            model=music_model, mode="generate", lyrics=lyrics,
         )
 
-        audio_data = result.get("audio", "")
-        if audio_data:
-            if audio_data.startswith("data:"):
-                audio_data = audio_data.split(",", 1)[1]
-            audio_bytes = base64.b64decode(audio_data)
-            output_filename = f"music_{int(time.time())}.mp3"
-            output_path = _make_temp_output(".mp3", 0)
-            with open(output_path, "wb") as f:
-                f.write(audio_bytes)
-            return _save_tool_output(
-                output_path, 0, "generate_music",
-                kwargs.get("project_id"),
-                file_type="audio",
-                file_name=output_filename,
-                message="音乐生成完成",
-            )
-        return {"success": True, "message": "未获取到音频数据"}
+        audio_bytes = _extract_audio_bytes(result)
+        if len(audio_bytes) < 1000:
+            return {"success": False, "error": f"生成的音频数据异常（仅 {len(audio_bytes)} 字节），请重试"}
 
+        name_prefix = "AI歌曲" if lyrics else "AI纯音乐"
+        bgm_data = _save_audio_to_bgm(
+            audio_bytes,
+            name=f"{name_prefix}-{prompt[:20]}",
+            style=style or "",
+            duration=duration,
+            description=f"提示词: {prompt[:100]}"
+        )
+        return {
+            "success": True,
+            "message": f"音乐生成完成，已添加到BGM曲库: {bgm_data.get('name', '')}",
+            "bgm": bgm_data,
+            "web_path": bgm_data.get("web_path"),
+        }
     except Exception as e:
         logger.error(f"音乐生成失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="generate_image",
+    description="AI 图片生成：根据文字描述生成图片。可用于生成封面、背景、配图等。生成后自动保存到项目临时文件",
+    parameters={
+        "prompt": {"type": "string", "description": "图片描述（越详细效果越好，包含主体、风格、光影、构图等）"},
+        "negative_prompt": {"type": "string", "description": "反向提示词（排除不想要的元素，如 '模糊, 变形, 水印'）"},
+        "width": {"type": "integer", "description": "图片宽度（默认1024，范围256-2048）"},
+        "height": {"type": "integer", "description": "图片高度（默认1024，范围256-2048）"},
+    },
+    examples=["生成一张动漫风格的女孩头像", "画一个赛博朋克城市夜景，霓虹灯光", "生成一张1024x576的横版风景图"],
+    param_model=GenerateImageParams,
+    category="common",
+)
+async def tool_generate_image(
+    prompt: str,
+    negative_prompt: str = None,
+    width: int = 1024,
+    height: int = 1024,
+    **kwargs
+) -> Dict[str, Any]:
+    """AI 图片生成工具"""
+    from src.shared.utils.core_nexus_client import get_client
+
+    try:
+        client = get_client()
+        result = await client.text_to_image_async(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            width=width,
+            height=height,
+        )
+
+        image_bytes = result.get("image_bytes")
+        if not image_bytes or len(image_bytes) < 1000:
+            return {"success": False, "error": "图片生成失败，返回数据异常，请重试"}
+
+        project_id = kwargs.get("project_id")
+
+        # 保存到临时文件
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir=tempfile.gettempdir()) as f:
+            f.write(image_bytes)
+            temp_path = f.name
+
+        if project_id:
+            saved = _save_temp_file(
+                temp_path, project_id, "image", "generate_image",
+                file_name=f"ai_image_{int(time.time())}.png",
+            )
+            if saved:
+                return {
+                    "success": True,
+                    "message": f"图片生成完成 ({width}x{height})",
+                    **saved,
+                }
+
+        # 无 project_id 时保存到 static/source_videos/
+        import uuid
+        from src import config
+        save_dir = os.path.join(str(config.ROOT_DIR_WIN), "static", "source_videos")
+        os.makedirs(save_dir, exist_ok=True)
+        filename = f"ai_image_{uuid.uuid4().hex[:8]}.png"
+        save_path = os.path.join(save_dir, filename)
+        shutil.move(temp_path, save_path)
+        web_path = f"static/source_videos/{filename}"
+        return {
+            "success": True,
+            "message": f"图片生成完成 ({width}x{height})",
+            "web_path": web_path,
+            "local_path": save_path,
+        }
+    except Exception as e:
+        logger.error(f"图片生成失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="edit_image",
+    description="AI 图片编辑：根据文字指令修改现有图片（改风格、加元素、去元素、局部重绘等）。需要提供原始图片的素材 ID",
+    parameters={
+        "prompt": {"type": "string", "description": "编辑指令（描述想要的效果，如 '把背景换成星空' '去掉水印' '改成水彩风格'）"},
+        "video_id": {"type": "integer", "description": "原始图片素材 ID"},
+        "mask_video_id": {"type": "integer", "description": "蒙版图片素材 ID（可选，用于局部编辑，白色区域会被重新生成）"},
+    },
+    examples=["把这张图的背景换成海边", "把这个图片改成卡通风格", "去掉图片上的水印"],
+    param_model=EditImageParams,
+    category="common",
+)
+async def tool_edit_image(
+    prompt: str,
+    video_id: int,
+    mask_video_id: int = None,
+    **kwargs
+) -> Dict[str, Any]:
+    """AI 图片编辑工具"""
+    from src.shared.utils.core_nexus_client import get_client
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.video_source import VideoSource
+
+    try:
+        # 查找原图
+        with get_db_context() as db:
+            source = db.query(VideoSource).filter(VideoSource.id == video_id).first()
+            if not source:
+                return {"success": False, "error": f"素材 ID {video_id} 不存在"}
+            image_path = source.local_path or source.web_path
+            if image_path and not os.path.isabs(image_path):
+                image_path = os.path.join(str(config.ROOT_DIR_WIN), image_path.lstrip('/'))
+            if not image_path or not os.path.isfile(image_path):
+                return {"success": False, "error": f"素材文件不存在: {image_path}"}
+
+            mask_path = None
+            if mask_video_id:
+                mask_source = db.query(VideoSource).filter(VideoSource.id == mask_video_id).first()
+                if mask_source:
+                    mask_path = mask_source.local_path or mask_source.web_path
+                    if mask_path and not os.path.isabs(mask_path):
+                        mask_path = os.path.join(str(config.ROOT_DIR_WIN), mask_path.lstrip('/'))
+
+        client = get_client()
+        result = await client.image_to_image_async(
+            prompt=prompt,
+            image=image_path,
+            mask=mask_path if mask_path and os.path.isfile(mask_path) else None,
+        )
+
+        image_bytes = result.get("image_bytes")
+        if not image_bytes or len(image_bytes) < 1000:
+            return {"success": False, "error": "图片编辑失败，返回数据异常，请重试"}
+
+        project_id = kwargs.get("project_id")
+
+        # 保存结果
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir=tempfile.gettempdir()) as f:
+            f.write(image_bytes)
+            temp_path = f.name
+
+        if project_id:
+            saved = _save_temp_file(
+                temp_path, project_id, "image", "edit_image",
+                file_name=f"edited_{int(time.time())}.png",
+            )
+            if saved:
+                return {
+                    "success": True,
+                    "message": "图片编辑完成",
+                    **saved,
+                }
+
+        import uuid
+        save_dir = os.path.join(str(config.ROOT_DIR_WIN), "static", "source_videos")
+        os.makedirs(save_dir, exist_ok=True)
+        filename = f"edited_{uuid.uuid4().hex[:8]}.png"
+        save_path = os.path.join(save_dir, filename)
+        shutil.move(temp_path, save_path)
+        web_path = f"static/source_videos/{filename}"
+        return {
+            "success": True,
+            "message": "图片编辑完成",
+            "web_path": web_path,
+            "local_path": save_path,
+        }
+    except Exception as e:
+        logger.error(f"图片编辑失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="retake_music",
+    description="音乐变奏：基于相同描述生成不同变体。variance 越大差异越大",
+    parameters={
+        "prompt": {"type": "string", "description": "音乐描述"},
+        "duration": {"type": "number", "description": "时长（秒）"},
+        "style": {"type": "string", "description": "风格"},
+        "lyrics": {"type": "string", "description": "歌词"},
+        "variance": {"type": "number", "description": "变化程度 0-1（默认0.5）"},
+    },
+    examples=["换一个版本的音乐", "再来一个变体，变化大一点"],
+    param_model=RetakeMusicParams,
+    category="common",
+)
+async def tool_retake_music(
+    prompt: str, duration: float = 10.0, style: str = None,
+    lyrics: str = None, variance: float = 0.5, **kwargs
+) -> Dict[str, Any]:
+    """音乐变奏工具"""
+    from src.shared.utils.core_nexus_client import get_client
+    from src.shared.utils.config_manager import get as cfg_get
+
+    try:
+        client = get_client()
+        music_model = cfg_get("core_nexus.music_model") or None
+        result = client.text_to_music(
+            prompt=prompt, duration=duration, style=style,
+            model=music_model, mode="retake", lyrics=lyrics,
+            variance=variance,
+        )
+
+        audio_bytes = _extract_audio_bytes(result)
+        if len(audio_bytes) < 1000:
+            return {"success": False, "error": f"生成的音频数据异常（仅 {len(audio_bytes)} 字节），请重试"}
+
+        bgm_data = _save_audio_to_bgm(
+            audio_bytes,
+            name=f"AI变奏-{prompt[:20]}",
+            style=style or "", duration=duration,
+            description=f"变奏(variance={variance}): {prompt[:100]}"
+        )
+        return {
+            "success": True,
+            "message": f"音乐变奏完成，已添加到BGM曲库: {bgm_data.get('name', '')}",
+            "bgm": bgm_data,
+            "web_path": bgm_data.get("web_path"),
+        }
+    except Exception as e:
+        logger.error(f"音乐变奏失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="repaint_music",
+    description="音乐局部重绘：对 BGM 曲库中指定时间段重新生成。需要指定 bgm_id、起止时间",
+    parameters={
+        "bgm_id": {"type": "integer", "description": "BGM ID（从曲库中选择）"},
+        "prompt": {"type": "string", "description": "重绘部分的音乐描述"},
+        "start_time": {"type": "number", "description": "重绘起始时间（秒）"},
+        "end_time": {"type": "number", "description": "重绘结束时间（秒）"},
+        "duration": {"type": "number", "description": "输出总时长（秒）"},
+    },
+    examples=["把第5到10秒重绘一下，加点鼓点", "重绘BGM的前15秒，改成钢琴"],
+    param_model=RepaintMusicParams,
+    category="common",
+)
+async def tool_repaint_music(
+    bgm_id: int, prompt: str, start_time: float, end_time: float,
+    duration: float = None, **kwargs
+) -> Dict[str, Any]:
+    """音乐局部重绘工具"""
+    from src.shared.utils.core_nexus_client import get_client
+    from src.shared.utils.config_manager import get as cfg_get
+
+    try:
+        _, audio_b64, bgm_info = _resolve_bgm_audio(bgm_id)
+        client = get_client()
+        music_model = cfg_get("core_nexus.music_model") or None
+        result = client.text_to_music(
+            prompt=prompt, duration=duration or bgm_info.get("duration", 10.0),
+            model=music_model, mode="repaint",
+            audio=audio_b64, start_time=start_time, end_time=end_time,
+        )
+
+        audio_bytes = _extract_audio_bytes(result)
+        if len(audio_bytes) < 1000:
+            return {"success": False, "error": f"生成的音频数据异常（仅 {len(audio_bytes)} 字节），请重试"}
+
+        bgm_data = _save_audio_to_bgm(
+            audio_bytes,
+            name=f"AI重绘-{bgm_info.get('name', '')[:20]}",
+            style=bgm_info.get("style", ""),
+            duration=duration or bgm_info.get("duration", 10.0),
+            description=f"重绘 {start_time}-{end_time}s: {prompt[:100]}"
+        )
+        return {
+            "success": True,
+            "message": f"音乐重绘完成（{start_time}-{end_time}s），已添加到BGM曲库: {bgm_data.get('name', '')}",
+            "bgm": bgm_data,
+            "web_path": bgm_data.get("web_path"),
+        }
+    except Exception as e:
+        logger.error(f"音乐重绘失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="edit_music_lyrics",
+    description="音乐歌词编辑：替换 BGM 曲库中音乐的歌词并重新生成，保持原曲风格",
+    parameters={
+        "bgm_id": {"type": "integer", "description": "BGM ID"},
+        "lyrics": {"type": "string", "description": "新歌词（支持 [verse]/[chorus] 结构标签）"},
+        "prompt": {"type": "string", "description": "编辑指导（可选）"},
+    },
+    examples=["把这首歌的歌词改成关于春天的", "替换歌词：[verse]春风吹过[chorus]花开满园"],
+    param_model=EditMusicLyricsParams,
+    category="common",
+)
+async def tool_edit_music_lyrics(
+    bgm_id: int, lyrics: str, prompt: str = None, **kwargs
+) -> Dict[str, Any]:
+    """音乐歌词编辑工具"""
+    from src.shared.utils.core_nexus_client import get_client
+    from src.shared.utils.config_manager import get as cfg_get
+
+    try:
+        _, audio_b64, bgm_info = _resolve_bgm_audio(bgm_id)
+        client = get_client()
+        music_model = cfg_get("core_nexus.music_model") or None
+        result = client.text_to_music(
+            prompt=prompt or "保持原曲风格",
+            duration=bgm_info.get("duration", 10.0),
+            model=music_model, mode="edit",
+            audio=audio_b64, lyrics=lyrics,
+        )
+
+        audio_bytes = _extract_audio_bytes(result)
+        if len(audio_bytes) < 1000:
+            return {"success": False, "error": f"生成的音频数据异常（仅 {len(audio_bytes)} 字节），请重试"}
+
+        bgm_data = _save_audio_to_bgm(
+            audio_bytes,
+            name=f"AI歌词编辑-{bgm_info.get('name', '')[:20]}",
+            style=bgm_info.get("style", ""),
+            duration=bgm_info.get("duration", 10.0),
+            description=f"歌词编辑: {lyrics[:100]}"
+        )
+        return {
+            "success": True,
+            "message": f"歌词编辑完成，已添加到BGM曲库: {bgm_data.get('name', '')}",
+            "bgm": bgm_data,
+            "web_path": bgm_data.get("web_path"),
+        }
+    except Exception as e:
+        logger.error(f"歌词编辑失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="extend_music",
+    description="音乐扩展：在 BGM 曲库中的音乐前后扩展时长",
+    parameters={
+        "bgm_id": {"type": "integer", "description": "BGM ID"},
+        "prompt": {"type": "string", "description": "音乐描述"},
+        "extend_left": {"type": "number", "description": "向前延长秒数（默认0）"},
+        "extend_right": {"type": "number", "description": "向后延长秒数（默认10）"},
+    },
+    examples=["把这段BGM往后延长15秒", "在前面加10秒的引子"],
+    param_model=ExtendMusicParams,
+    category="common",
+)
+async def tool_extend_music(
+    bgm_id: int, prompt: str = None, extend_left: float = 0,
+    extend_right: float = 10, **kwargs
+) -> Dict[str, Any]:
+    """音乐扩展工具"""
+    from src.shared.utils.core_nexus_client import get_client
+    from src.shared.utils.config_manager import get as cfg_get
+
+    try:
+        _, audio_b64, bgm_info = _resolve_bgm_audio(bgm_id)
+        client = get_client()
+        music_model = cfg_get("core_nexus.music_model") or None
+        orig_duration = bgm_info.get("duration", 10.0)
+        result = client.text_to_music(
+            prompt=prompt or "延续前面的旋律风格",
+            duration=orig_duration + extend_left + extend_right,
+            model=music_model, mode="extend",
+            audio=audio_b64,
+            extend_left=extend_left, extend_right=extend_right,
+        )
+
+        audio_bytes = _extract_audio_bytes(result)
+        if len(audio_bytes) < 1000:
+            return {"success": False, "error": f"生成的音频数据异常（仅 {len(audio_bytes)} 字节），请重试"}
+
+        new_duration = orig_duration + extend_left + extend_right
+        bgm_data = _save_audio_to_bgm(
+            audio_bytes,
+            name=f"AI扩展-{bgm_info.get('name', '')[:20]}",
+            style=bgm_info.get("style", ""),
+            duration=new_duration,
+            description=f"扩展(左+{extend_left}s 右+{extend_right}s): {bgm_info.get('name', '')}"
+        )
+        return {
+            "success": True,
+            "message": f"音乐扩展完成（+左{extend_left}s +右{extend_right}s），已添加到BGM曲库: {bgm_data.get('name', '')}",
+            "bgm": bgm_data,
+            "web_path": bgm_data.get("web_path"),
+        }
+    except Exception as e:
+        logger.error(f"音乐扩展失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="cover_music",
+    description="音乐翻唱：基于 BGM 曲库中的参考音频进行翻唱，可指定风格",
+    parameters={
+        "bgm_id": {"type": "integer", "description": "要翻唱的 BGM ID"},
+        "prompt": {"type": "string", "description": "翻唱风格描述"},
+        "lyrics": {"type": "string", "description": "翻唱歌词（可选）"},
+    },
+    examples=["用爵士风格翻唱这段BGM", "把这首歌翻唱成摇滚版"],
+    param_model=CoverMusicParams,
+    category="common",
+)
+async def tool_cover_music(
+    bgm_id: int, prompt: str = None, lyrics: str = None, **kwargs
+) -> Dict[str, Any]:
+    """音乐翻唱工具"""
+    from src.shared.utils.core_nexus_client import get_client
+    from src.shared.utils.config_manager import get as cfg_get
+
+    try:
+        _, audio_b64, bgm_info = _resolve_bgm_audio(bgm_id)
+        client = get_client()
+        music_model = cfg_get("core_nexus.music_model") or None
+        result = client.text_to_music(
+            prompt=prompt or "翻唱",
+            duration=bgm_info.get("duration", 10.0),
+            model=music_model, mode="cover",
+            audio=audio_b64, lyrics=lyrics,
+        )
+
+        audio_bytes = _extract_audio_bytes(result)
+        if len(audio_bytes) < 1000:
+            return {"success": False, "error": f"生成的音频数据异常（仅 {len(audio_bytes)} 字节），请重试"}
+
+        bgm_data = _save_audio_to_bgm(
+            audio_bytes,
+            name=f"AI翻唱-{bgm_info.get('name', '')[:20]}",
+            style=prompt or bgm_info.get("style", ""),
+            duration=bgm_info.get("duration", 10.0),
+            description=f"翻唱: {prompt or '默认风格'} | 原曲: {bgm_info.get('name', '')}"
+        )
+        return {
+            "success": True,
+            "message": f"音乐翻唱完成，已添加到BGM曲库: {bgm_data.get('name', '')}",
+            "bgm": bgm_data,
+            "web_path": bgm_data.get("web_path"),
+        }
+    except Exception as e:
+        logger.error(f"音乐翻唱失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="style_transfer_music",
+    description="音乐风格迁移：将 BGM 曲库中的音乐转换为新的风格",
+    parameters={
+        "bgm_id": {"type": "integer", "description": "BGM ID"},
+        "prompt": {"type": "string", "description": "目标风格描述"},
+        "edit_strength": {"type": "number", "description": "风格修改强度 0-1（默认0.5）"},
+    },
+    examples=["把这段BGM改成电子风格", "转换成古典风格，强度0.8"],
+    param_model=StyleTransferMusicParams,
+    category="common",
+)
+async def tool_style_transfer_music(
+    bgm_id: int, prompt: str, edit_strength: float = 0.5, **kwargs
+) -> Dict[str, Any]:
+    """音乐风格迁移工具"""
+    from src.shared.utils.core_nexus_client import get_client
+    from src.shared.utils.config_manager import get as cfg_get
+
+    try:
+        _, audio_b64, bgm_info = _resolve_bgm_audio(bgm_id)
+        client = get_client()
+        music_model = cfg_get("core_nexus.music_model") or None
+        result = client.music_to_music(
+            audio=audio_b64,
+            prompt=prompt,
+            style=prompt,
+            model=music_model,
+            edit_strength=edit_strength,
+        )
+
+        audio_bytes = _extract_audio_bytes(result)
+        if len(audio_bytes) < 1000:
+            return {"success": False, "error": f"生成的音频数据异常（仅 {len(audio_bytes)} 字节），请重试"}
+
+        bgm_data = _save_audio_to_bgm(
+            audio_bytes,
+            name=f"AI风格迁移-{prompt[:20]}",
+            style=prompt,
+            duration=bgm_info.get("duration", 10.0),
+            description=f"风格迁移({prompt}): {bgm_info.get('name', '')}"
+        )
+        return {
+            "success": True,
+            "message": f"风格迁移完成，已添加到BGM曲库: {bgm_data.get('name', '')}",
+            "bgm": bgm_data,
+            "web_path": bgm_data.get("web_path"),
+        }
+    except Exception as e:
+        logger.error(f"风格迁移失败: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -1809,8 +2596,15 @@ async def tool_add_audio(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            # 确保音频路径为绝对路径
-            abs_audio = audio_path if os.path.isabs(audio_path) else os.path.abspath(audio_path.lstrip('/'))
+            # 将 web_path 或相对路径转为绝对文件系统路径
+            abs_audio = audio_path
+            if not os.path.isabs(abs_audio):
+                # web_path 如 "static/uploads/xxx.wav" 或 "/static/temp/7/tts_xxx.wav"
+                abs_audio = abs_audio.lstrip('/')
+                abs_audio = os.path.join(str(config.ROOT_DIR_WIN), abs_audio)
+            if not os.path.isfile(abs_audio):
+                # 回退：基于 CWD 解析
+                abs_audio = os.path.abspath(audio_path.lstrip('/'))
 
 
             service = VideoService(db)
@@ -2482,9 +3276,19 @@ async def tool_mix_audio_to_video(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            # 确保路径为绝对路径
-            abs_tts = os.path.abspath(tts_path.lstrip('/')) if tts_path and not os.path.isabs(tts_path) else tts_path
-            abs_bgm = os.path.abspath(bgm_path.lstrip('/')) if bgm_path and not os.path.isabs(bgm_path) else bgm_path
+            # 将 web_path 或相对路径转为绝对文件系统路径
+            def _resolve_audio_path(p):
+                if not p:
+                    return p
+                if os.path.isabs(p):
+                    return p
+                abs_p = os.path.join(str(config.ROOT_DIR_WIN), p.lstrip('/'))
+                if os.path.isfile(abs_p):
+                    return abs_p
+                return os.path.abspath(p.lstrip('/'))
+
+            abs_tts = _resolve_audio_path(tts_path)
+            abs_bgm = _resolve_audio_path(bgm_path)
 
             ext = os.path.splitext(video.local_path)[1] or '.mp4'
             output_path = _make_temp_output(ext, video_id)

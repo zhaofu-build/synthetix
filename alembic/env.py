@@ -20,6 +20,7 @@ from src.domain.entities.video_project import VideoProject, ClipPlanItem
 from src.domain.entities.bgm_item import BGMItem
 from src.domain.entities.dialog_session import DialogSession
 from src.domain.entities.comic_project import ComicProject
+from src.domain.entities.comic_series import ComicSeries
 from src.domain.entities.project_temp_file import ProjectTempFile
 from src.domain.entities.video_shot import VideoShot
 

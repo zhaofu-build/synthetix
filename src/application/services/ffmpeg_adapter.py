@@ -1002,8 +1002,11 @@ def _is_srt_format(content):
     return bool(re.search(r'\d{2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,.]\d{3}', content))
 
 
-def _plain_text_to_srt(text, video_path):
-    """将纯文本按句号/换行分段，均匀分配到视频时长，生成 SRT 格式"""
+def _plain_text_to_srt(text, video_path, max_chars_per_line=20):
+    """将纯文本按句号/换行分段，均匀分配到视频时长，生成 SRT 格式。
+
+    自动换行：超过 max_chars_per_line 个中文字符宽度时，在标点/空格处断行。
+    """
     import re
     duration = 0
     try:
@@ -1021,9 +1024,48 @@ def _plain_text_to_srt(text, video_path):
     if not segments:
         segments = [text.strip()]
 
-    seg_duration = duration / len(segments)
+    def _char_width(c):
+        return 2 if '\u4e00' <= c <= '\u9fff' or '\u3000' <= c <= '\u303f' else 1
+
+    def _wrap_line(line, limit):
+        """按字符宽度自动换行，在标点/空格处优先断行。"""
+        result_lines = []
+        current = ''
+        current_w = 0
+        for ch in line:
+            w = _char_width(ch)
+            if current_w + w > limit and current:
+                # 尝试在最后一个标点/空格处断开
+                split_pos = -1
+                for j in range(len(current) - 1, max(0, len(current) - 10), -1):
+                    if current[j] in '，、；：,;: ':
+                        split_pos = j + 1
+                        break
+                if split_pos > 0:
+                    result_lines.append(current[:split_pos])
+                    current = current[split_pos:] + ch
+                    current_w = sum(_char_width(c) for c in current)
+                else:
+                    result_lines.append(current)
+                    current = ch
+                    current_w = w
+            else:
+                current += ch
+                current_w += w
+        if current:
+            result_lines.append(current)
+        return '\n'.join(result_lines)
+
+    wrapped_segments = []
+    for seg in segments:
+        # 先按已有换行拆分，每段分别做宽度换行
+        sub_lines = seg.split('\n')
+        wrapped = [_wrap_line(sl, max_chars_per_line * 2) for sl in sub_lines]
+        wrapped_segments.append('\n'.join(wrapped))
+
+    seg_duration = duration / len(wrapped_segments)
     lines = []
-    for i, seg in enumerate(segments):
+    for i, seg in enumerate(wrapped_segments):
         start = i * seg_duration
         end = (i + 1) * seg_duration
         sh, sm, ss = int(start // 3600), int(start % 3600 // 60), start % 60
@@ -1038,6 +1080,8 @@ def _plain_text_to_srt(text, video_path):
 def add_subtitle(video_path, subtitle_content, subtitle_type,
                  fontname="楷体", fontsize=16, fontcolor="&Hffffff",
                  fontbordercolor="&H000000", subtitle_bottom=20,
+                 bold=False, outline_width=1, shadow=0, alignment=2,
+                 bg_color=None, margin_l=10, margin_r=10,
                  output_path=None
                  ):
     """添加字幕到视频文件"""
@@ -1047,10 +1091,13 @@ def add_subtitle(video_path, subtitle_content, subtitle_type,
            '-i',
            os.path.normpath(video_path)
            ]
-    # 获取文件名称（sanitize 避免 FFmpeg 处理中文/特殊字符失败）
     import re
+    import tempfile as _tf
+    ass_file = None
+    # 临时文件放到系统临时目录，避免写入项目根目录
     name = re.sub(r'[^\w\-.]', '_', get_file_name_no_suffix(video_path))
-    srt_file = f'{name}.srt'
+    tmp_dir = _tf.gettempdir()
+    srt_file = os.path.join(tmp_dir, f'{name}.srt')
 
     # 纯文本自动转 SRT 格式
     if not _is_srt_format(subtitle_content):
@@ -1069,11 +1116,14 @@ def add_subtitle(video_path, subtitle_content, subtitle_type,
         ]
     else:
         # 硬字幕
-        ass_file = f'{name}.ass'
+        ass_file = os.path.join(tmp_dir, f'{name}.ass')
         # 字幕文件SRT转ASS
         str_to_ass(srt_file, ass_file)
         # 设置ass字体格式
-        string_util.set_ass_font(ass_file, fontname, fontsize, fontcolor, fontbordercolor, subtitle_bottom)
+        string_util.set_ass_font(ass_file, fontname, fontsize, fontcolor, fontbordercolor, subtitle_bottom,
+                                 bold=bold, outline_width=outline_width, shadow=shadow,
+                                 alignment=alignment, margin_l=margin_l, margin_r=margin_r,
+                                 bg_color=bg_color)
         # FFmpeg 字幕滤镜需要转义路径中的特殊字符（冒号、反斜杠）
         # Windows 路径需要转义：C\:/path/to/file.ass
         escaped_ass_path = ass_file.replace('\\', '/').replace(':', '\\:')
@@ -1084,8 +1134,7 @@ def add_subtitle(video_path, subtitle_content, subtitle_type,
             '-preset', "slow"
         ]
     if not output_path:
-        import tempfile
-        output_path = os.path.join(tempfile.gettempdir(), f"subtitle_{int(time.time())}{get_file_suffix(video_path)}")
+        output_path = os.path.join(_tf.gettempdir(), f"subtitle_{int(time.time())}{get_file_suffix(video_path)}")
     output_video = output_path
     cmd.append(output_video)
     run_ffmpeg_cmd(cmd)

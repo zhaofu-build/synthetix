@@ -140,6 +140,23 @@ def delete_audio(
         return error_response(error="NotFound", message=str(e), code=404)
 
 
+@router.post("/{audio_id}/set-default", summary="设为默认音色")
+def set_default_voice(
+    audio_id: int = PathParam(..., description="音色ID"),
+    service: AudioService = Depends(get_audio_service)
+):
+    """将指定音色设为默认（其他取消默认）"""
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.audio_source import AudioSource
+    with get_db_context(commit=True) as db:
+        db.query(AudioSource).filter(AudioSource.is_default == 1).update({AudioSource.is_default: 0})
+        audio = db.query(AudioSource).filter(AudioSource.id == audio_id).first()
+        if not audio:
+            return error_response(error="NotFound", message=f"音色 {audio_id} 不存在", code=404)
+        audio.is_default = 1
+    return success_response(data={"id": audio_id}, message="已设为默认")
+
+
 # ==================== TTS 语音合成 ====================
 
 @router.post("/tts/fish-speech", summary="Fish Speech TTS")
