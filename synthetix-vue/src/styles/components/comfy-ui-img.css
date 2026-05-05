@@ -1,0 +1,209 @@
+.dashboard {
+    padding: 20px;
+    height: calc(100vh - 40px);
+    overflow: hidden;
+    background-color: var(--el-bg-color-page);
+}
+
+.layout-container {
+    display: flex;
+    height: 100%;
+    gap: 20px;
+}
+
+.control-panel {
+    flex: 0 0 400px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.image-panel {
+    flex: 1;
+    height: 100%;
+    overflow-y: auto;
+}
+
+.card {
+    background: var(--el-bg-color);
+    border-radius: 12px;
+    box-shadow: var(--el-box-shadow-light);
+    padding: 20px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    transition: all 0.3s var(--el-transition-function-ease-in-out);
+}
+
+.card:hover {
+    box-shadow: var(--el-box-shadow);
+}
+
+.tab-content {
+    padding: 15px 0;
+}
+
+.prompt-input {
+    margin-bottom: 20px;
+}
+
+.prompt-input :deep(.el-textarea__inner) {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    padding: 12px;
+}
+
+.action-buttons {
+    margin-top: 15px;
+    display: flex;
+    gap: 12px;
+}
+
+.run-button {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.3s var(--el-transition-function-ease-in-out);
+}
+
+.run-button:hover {
+    transform: translateY(-2px);
+}
+
+.resource-controls {
+    margin-top: 25px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+}
+
+.interrupt-button, .free-button {
+    transition: all 0.3s var(--el-transition-function-ease-in-out);
+}
+
+.interrupt-button:hover {
+    transform: translateY(-2px);
+    background-color: var(--el-color-warning-light-9);
+}
+
+.free-button:hover {
+    transform: translateY(-2px);
+    background-color: var(--el-color-danger-light-9);
+}
+
+.section-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 15px;
+    color: var(--el-text-color-primary);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.image-gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 20px;
+    margin-top: 20px;
+    overflow-y: auto;
+    max-height: calc(100% - 40px);
+    padding: 5px;
+}
+
+.image-item {
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: var(--el-box-shadow-light);
+    background: var(--el-bg-color);
+    transition: all 0.3s var(--el-transition-function-ease-in-out);
+}
+
+.image-item:hover {
+    transform: translateY(-5px);
+    box-shadow: var(--el-box-shadow);
+}
+
+.generated-image {
+    width: 100%;
+    height: 280px;
+    object-fit: contain;
+    display: block;
+    background: linear-gradient(45deg, var(--el-color-primary-light-9) 25%, var(--el-color-primary-light-7) 25%, var(--el-color-primary-light-7) 50%, var(--el-color-primary-light-9) 50%, var(--el-color-primary-light-9) 75%, var(--el-color-primary-light-7) 75%);
+    background-size: 20px 20px;
+}
+
+.image-info {
+    padding: 12px 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-top: 1px solid var(--el-border-color-light);
+    background: var(--el-bg-color);
+}
+
+.image-info span {
+    font-size: 13px;
+    color: var(--el-text-color-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 180px;
+}
+
+.empty-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+}
+
+.upload-section {
+    margin-bottom: 20px;
+}
+
+.image-uploader {
+    height: 200px;
+    margin-bottom: 15px;
+    border: 2px dashed var(--el-border-color);
+    border-radius: 8px;
+    transition: border-color 0.3s;
+}
+
+.image-uploader:hover {
+    border-color: var(--el-color-primary);
+}
+
+.preview-image {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+.upload-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--el-text-color-secondary);
+    padding: 20px;
+    text-align: center;
+}
+
+.upload-icon {
+    font-size: 48px;
+    margin-bottom: 12px;
+    color: var(--el-text-color-placeholder);
+}
+
+.upload-text {
+    font-size: 14px;
+    margin-bottom: 5px;
+    font-weight: 500;
+}
+
+.upload-hint {
+    font-size: 12px;
+    color: var(--el-text-color-placeholder);
+}

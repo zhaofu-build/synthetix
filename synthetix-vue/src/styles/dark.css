@@ -1,0 +1,52 @@
+html.dark {
+  /* Element Plus CSS variable overrides for dark mode */
+  --el-bg-color: #1a1a2e;
+  --el-bg-color-page: #16162a;
+  --el-bg-color-overlay: #1e1e36;
+
+  --el-text-color-primary: #e0e0e0;
+  --el-text-color-regular: #c0c0c0;
+  --el-text-color-secondary: #8a8a9a;
+  --el-text-color-placeholder: #5a5a6a;
+  --el-text-color-disabled: #4a4a5a;
+
+  --el-border-color: #3a3a5a;
+  --el-border-color-light: #2a2a4a;
+  --el-border-color-lighter: #222240;
+  --el-border-color-extra-light: #1e1e38;
+
+  --el-fill-color: #2a2a4a;
+  --el-fill-color-light: #222240;
+  --el-fill-color-lighter: #1e1e38;
+  --el-fill-color-extra-light: #1a1a30;
+  --el-fill-color-blank: #1a1a2e;
+
+  --el-color-primary-light-9: rgba(64, 158, 255, 0.1);
+  --el-color-primary-light-7: rgba(64, 158, 255, 0.2);
+  --el-color-primary-light-5: rgba(64, 158, 255, 0.3);
+  --el-color-primary-light-3: rgba(64, 158, 255, 0.4);
+
+  color-scheme: dark;
+}
+
+html.dark .el-table {
+  --el-table-bg-color: #1a1a2e;
+  --el-table-tr-bg-color: #1a1a2e;
+  --el-table-row-hover-bg-color: #222240;
+  --el-table-header-bg-color: #16162a;
+  --el-table-border-color: #2a2a4a;
+}
+
+html.dark .el-dialog {
+  --el-dialog-bg-color: #1e1e36;
+}
+
+html.dark .el-card {
+  --el-card-bg-color: #1e1e36;
+}
+
+html.dark .el-input__wrapper,
+html.dark .el-textarea__inner {
+  background-color: #16162a;
+  box-shadow: 0 0 0 1px var(--el-border-color) inset;
+}

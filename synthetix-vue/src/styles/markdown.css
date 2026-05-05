@@ -1,0 +1,121 @@
+/* ==================== Markdown 富文本样式 ==================== */
+
+/* 代码块 */
+.code-block {
+  background: var(--el-fill-color-darker, #1e1e1e);
+  color: #d4d4d4;
+  padding: 12px 16px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
+/* 行内代码 */
+.inline-code {
+  background: var(--el-fill-color, #f0f0f0);
+  color: var(--el-color-danger, #e53935);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.9em;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
+/* Mermaid 图表容器 */
+.mermaid-chart {
+  background: var(--el-fill-color-lighter, #fafafa);
+  border: 1px solid var(--el-border-color-lighter, #eee);
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+  font-family: monospace;
+  font-size: 12px;
+  white-space: pre;
+  color: var(--el-text-color-secondary, #666);
+}
+
+/* 表格 */
+.md-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 13px;
+}
+.md-table th {
+  background: var(--el-fill-color-light, #f5f7fa);
+  font-weight: 600;
+  text-align: left;
+  padding: 8px 12px;
+  border: 1px solid var(--el-border-color-lighter, #eee);
+}
+.md-table td {
+  padding: 6px 12px;
+  border: 1px solid var(--el-border-color-lighter, #eee);
+}
+
+/* 引用块 */
+.md-quote {
+  border-left: 3px solid var(--el-color-primary, #409eff);
+  padding: 4px 12px;
+  margin: 8px 0;
+  color: var(--el-text-color-secondary, #666);
+  background: var(--el-fill-color-lighter, #fafafa);
+  border-radius: 0 4px 4px 0;
+}
+.md-quote p {
+  margin: 4px 0;
+}
+
+/* 分割线 */
+.md-hr {
+  border: none;
+  border-top: 1px solid var(--el-border-color, #dcdfe6);
+  margin: 12px 0;
+}
+
+/* Markdown 中的标题 */
+.message-text h1, .message-text h2, .message-text h3,
+.message-text h4, .message-text h5, .message-text h6 {
+  margin: 8px 0 4px;
+  font-weight: 600;
+}
+.message-text h1 { font-size: 1.3em; }
+.message-text h2 { font-size: 1.15em; }
+.message-text h3 { font-size: 1.05em; }
+
+.message-text ul, .message-text ol {
+  padding-left: 20px;
+  margin: 4px 0;
+}
+.message-text li {
+  margin: 2px 0;
+}
+
+.message-text p {
+  margin: 4px 0;
+}
+
+.message-text img {
+  border-radius: 4px;
+  max-height: 300px;
+}
+
+.message-text a {
+  color: var(--el-color-primary, #409eff);
+  text-decoration: none;
+}
+.message-text a:hover {
+  text-decoration: underline;
+}
+
+/* 深色主题适配 */
+.dark .inline-code {
+  background: rgba(255,255,255,0.1);
+}
+.dark .mermaid-chart {
+  background: rgba(255,255,255,0.05);
+}
+.dark .md-table th {
+  background: rgba(255,255,255,0.08);
+}

@@ -1,0 +1,80 @@
+
+.video-preview {
+    width: 100%;
+    height: 56%;
+}
+
+/* 视频容器设置宽高比（例如16:9） */
+.video-container {
+    width: 100%;
+    position: relative;
+    padding-top: 56.25%; /* 16:9 Aspect Ratio */
+}
+
+.preview-player {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover; /* 或 contain 根据需求 */
+}
+
+.empty-tip {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+/*color: #999;*/
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.operation-area {
+    margin-top: 30px;
+}
+
+.operation-group {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.description-cell {
+    min-height: 24px;
+}
+
+.clickable-text {
+    cursor: pointer;
+    padding: 5px;
+}
+
+.clickable-text:hover {
+/*background-color: #f5f7fa;*/
+}
+
+.log-container {
+    margin-top: 20px;
+    padding: 0 15px 15px;
+}
+
+:deep(.log-textarea) .el-textarea__inner {
+    /* 自定义样式 */
+/*background-color: #f8f9fa;*/
+    color: #333;
+    font-family: Monaco, Consolas, monospace;
+    font-size: 12px;
+    cursor: text;
+    /* 高度自适应 */
+    min-height: 100px;
+    max-height: 300px;
+    overflow-y: auto;
+}

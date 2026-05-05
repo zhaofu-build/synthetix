@@ -1,0 +1,750 @@
+
+:root {
+    /* ==================== 主题色调 ==================== */
+    /* 深色背景基础 */
+    --aqua-deep: #051f23;
+    --ocean-core: #0a2428;
+    --aqua-primary: #0f3340;
+    --deep-teal: #002b36;
+    --midnight-blue: #0d1b2a;
+
+    /* 青色调霓虹/强调色 */
+    --neon-aqua: #00ffcc;
+    --neon-teal: #00e6c3;
+    --neon-turquoise: #00d4ff;
+    --electric-blue: #00a8ff;
+    --cyan-glow: #0ff;
+
+    /* ==================== 文字颜色 ==================== */
+    --text-primary: rgba(230, 255, 255, 0.95);
+    --text-secondary: rgba(180, 220, 220, 0.8);
+    --text-tertiary: rgba(150, 200, 200, 0.6);
+    --text-disabled: rgba(120, 180, 180, 0.4);
+
+    /* ==================== 界面元素 ==================== */
+    /* 玻璃态效果 */
+    --glass-bg: rgba(10, 30, 35, 0.5);
+    --glass-bg-light: rgba(15, 40, 45, 0.4);
+    --glass-bg-dark: rgba(5, 25, 30, 0.7);
+
+    /* 边框 */
+    --border-color: rgba(0, 255, 204, 0.2);
+    --border-hover: rgba(0, 255, 204, 0.4);
+    --border-active: rgba(0, 255, 204, 0.6);
+
+    /* 阴影 */
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.2);
+    --shadow-md: 0 8px 16px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 16px 32px rgba(0, 0, 0, 0.4);
+    --shadow-glow: 0 0 20px rgba(0, 255, 204, 0.3);
+
+    /* 渐变 */
+    --gradient-primary: linear-gradient(145deg, rgba(0, 255, 204, 0.15), rgba(0, 212, 255, 0.25));
+    --gradient-secondary: linear-gradient(145deg, rgba(0, 168, 255, 0.1), rgba(0, 230, 195, 0.15));
+    --gradient-text: linear-gradient(to right, var(--text-primary), var(--neon-aqua));
+}
+
+/* ======================== 全局重置 ======================== */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body {
+    width: 100%;
+    height: 100%;
+    overflow-x: hidden;
+}
+
+#app {
+    width: 100%;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ======================== 全局背景系统 ======================== */
+body.dark {
+    background-image:
+            radial-gradient(ellipse at 20% 10%, var(--aqua-primary) 0%, transparent 45%),
+            radial-gradient(ellipse at 80% 90%, var(--deep-teal) 0%, transparent 45%),
+            radial-gradient(ellipse at 50% 50%, var(--midnight-blue) 0%, transparent 60%),
+            linear-gradient(165deg, var(--aqua-deep) 0%, var(--ocean-core) 100%);
+    background-attachment: fixed;
+    background-size: 200% 200%;
+    background-position: 0% 0%;
+    color: var(--text-primary);
+    font-family: 'Segoe UI', 'Roboto', 'Microsoft YaHei', sans-serif;
+    line-height: 1.6;
+    overflow-x: hidden;
+    position: relative;
+    animation: cosmicBackground 60s infinite alternate;
+}
+
+@keyframes cosmicBackground {
+    0% { background-position: 0% 0%; }
+    100% { background-position: 100% 100%; }
+}
+
+/* 水波粒子效果 - 优化层次感 */
+body.dark::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-image:
+            radial-gradient(circle, rgba(0, 255, 204, 0.25) 0%, rgba(0, 255, 204, 0.08) 1px, transparent 1px),
+            radial-gradient(circle, rgba(0, 212, 255, 0.18) 0%, rgba(0, 212, 255, 0.04) 2px, transparent 2px),
+            radial-gradient(circle, rgba(0, 168, 255, 0.12) 0%, rgba(0, 168, 255, 0.02) 1.5px, transparent 1.5px);
+    background-size: 350px 350px, 220px 220px, 120px 120px;
+    background-position: 0 0, 50px 70px, 140px 280px;
+    z-index: -1;
+    animation: waveMove 120s linear infinite;
+    opacity: 0.5;
+}
+
+@keyframes waveMove {
+    100% { background-position: 300px 300px, 240px 260px, 230px 370px; }
+}
+
+/* 水波纹网格 - 增强细节 */
+body.dark::after {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 200%;
+    height: 200%;
+    background-image:
+            linear-gradient(rgba(0, 255, 204, 0.04) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(0, 255, 204, 0.04) 1px, transparent 1px),
+            linear-gradient(rgba(0, 230, 195, 0.025) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(0, 230, 195, 0.025) 1px, transparent 1px);
+    background-size: 100px 100px, 100px 100px, 25px 25px, 25px 25px;
+    transform: translate(-25%, -25%) rotate(3deg);
+    z-index: -1;
+    pointer-events: none;
+    animation: gridMove 90s linear infinite;
+}
+
+@keyframes gridMove {
+    0% { transform: translate(-25%, -25%) rotate(5deg); }
+    100% { transform: translate(-25%, -75%) rotate(5deg); }
+}
+
+/* ======================== 界面容器系统 ======================== */
+/* 应用容器 */
+.app-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 2rem;
+    position: relative;
+    z-index: 10;
+}
+
+/* 内容区域发光边框 */
+.content-wrapper {
+    position: relative;
+    padding: 2rem;
+    border-radius: 24px;
+    overflow: hidden;
+    margin-bottom: 2rem;
+}
+
+.content-wrapper::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border-radius: 24px;
+    background: linear-gradient(
+            145deg,
+            rgba(0, 168, 255, 0.08),
+            rgba(10, 30, 35, 0.4),
+            rgba(0, 230, 195, 0.08)
+    );
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    z-index: -1;
+}
+
+.content-wrapper::after {
+    content: '';
+    position: absolute;
+    top: -1px;
+    left: -1px;
+    right: -1px;
+    bottom: -1px;
+    border-radius: 24px;
+    background: linear-gradient(
+            145deg,
+            rgba(0, 255, 204, 0.25),
+            rgba(0, 212, 255, 0.15),
+            rgba(0, 255, 204, 0.25)
+    );
+    z-index: -2;
+    filter: blur(12px);
+    opacity: 0.7;
+}
+
+/* ======================== 标题与文字系统 ======================== */
+h1, h2, h3 {
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    background: var(--gradient-text);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    margin-bottom: 1.5rem;
+    text-shadow: 0 2px 10px rgba(0, 255, 204, 0.4);
+    position: relative;
+}
+
+h1 {
+    font-size: 3rem;
+    line-height: 1.1;
+}
+
+h2 {
+    font-size: 2.2rem;
+    position: relative;
+    padding-bottom: 1rem;
+}
+
+h2::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100px;
+    height: 3px;
+    background: linear-gradient(
+            to right,
+            var(--neon-aqua),
+            var(--neon-turquoise),
+            transparent
+    );
+    border-radius: 3px;
+    box-shadow: 0 0 8px var(--neon-aqua);
+}
+
+/* ======================== 卡片系统 ======================== */
+.el-card {
+    background: var(--glass-bg) !important;
+    backdrop-filter: blur(15px);
+    -webkit-backdrop-filter: blur(15px);
+    border-radius: 16px !important;
+    border: none !important;
+    overflow: hidden;
+    position: relative;
+    box-shadow:
+            0 16px 30px -10px rgba(0, 0, 0, 0.5),
+            0 0 0 1px rgba(0, 255, 204, 0.2),
+            inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    margin-bottom: 1.5rem;
+    z-index: 20;
+}
+
+.el-card:hover {
+    transform: translateY(-3px);
+    box-shadow:
+            0 20px 40px -10px rgba(0, 0, 0, 0.6),
+            0 0 0 1px rgba(0, 255, 204, 0.3),
+            0 0 20px rgba(0, 255, 204, 0.15),
+            inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.el-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border-radius: 16px;
+    background: linear-gradient(
+            135deg,
+            rgba(0, 255, 204, 0.12) 0%,
+            rgba(0, 212, 255, 0.06) 50%,
+            rgba(0, 168, 255, 0.08) 100%
+    );
+    z-index: -1;
+    opacity: 0.8;
+}
+
+.el-card__header {
+    background: linear-gradient(
+            to right,
+            rgba(0, 168, 255, 0.15),
+            rgba(0, 212, 255, 0.1)
+    ) !important;
+    border-bottom: 1px solid rgba(0, 255, 204, 0.2) !important;
+    padding: 1.2rem !important;
+    font-weight: 600;
+    letter-spacing: 1px;
+    font-size: 1rem;
+    color: var(--text-primary) !important;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6);
+}
+
+.el-card__body {
+    padding: 1.5rem !important;
+    color: var(--text-secondary) !important;
+}
+
+/* ======================== 数据卡片系统 ======================== */
+.data-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1.5rem;
+    margin: 2rem 0;
+}
+
+.data-card {
+    background: linear-gradient(
+            145deg,
+            rgba(10, 30, 35, 0.7),
+            rgba(5, 25, 30, 0.9)
+    );
+    border-radius: 16px;
+    padding: 1.8rem;
+    position: relative;
+    overflow: hidden;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow:
+            0 10px 30px -10px rgba(0, 0, 0, 0.5),
+            0 0 0 1px rgba(0, 255, 204, 0.15),
+            inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.data-card:hover {
+    transform: translateY(-6px) scale(1.02);
+    box-shadow:
+            0 15px 40px -10px rgba(0, 0, 0, 0.6),
+            0 0 0 1px rgba(0, 255, 204, 0.25),
+            0 0 25px rgba(0, 255, 204, 0.2),
+            inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.data-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: linear-gradient(
+            to right,
+            var(--neon-aqua),
+            var(--neon-turquoise),
+            var(--electric-blue)
+    );
+    box-shadow: 0 0 10px var(--neon-aqua);
+}
+
+.data-card .metric-value {
+    font-size: 3rem;
+    font-weight: 700;
+    margin: 1.2rem 0;
+    background: linear-gradient(
+            135deg,
+            var(--neon-aqua),
+            var(--neon-turquoise),
+            var(--text-primary)
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-shadow: 0 0 20px rgba(0, 255, 204, 0.5);
+    letter-spacing: -1px;
+}
+
+.data-card .metric-label {
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 500;
+}
+
+/* ======================== 自定义Element Plus组件 ======================== */
+/* 按钮样式 */
+.el-button {
+    border-radius: 12px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.5px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    position: relative;
+    overflow: hidden;
+}
+
+.el-button--primary {
+    background: linear-gradient(
+            145deg,
+            rgba(0, 240, 255, 0.2),
+            rgba(0, 168, 255, 0.3)
+    ) !important;
+    border: 1px solid rgba(0, 240, 255, 0.5) !important;
+    color: var(--text-primary) !important;
+    box-shadow:
+            0 4px 15px rgba(0, 240, 255, 0.25),
+            0 0 20px rgba(0, 240, 255, 0.15),
+            inset 0 0 10px rgba(0, 240, 255, 0.15);
+    text-shadow: 0 0 8px rgba(0, 240, 255, 0.7);
+    backdrop-filter: blur(10px);
+}
+
+.el-button--primary:hover {
+    background: linear-gradient(
+            145deg,
+            rgba(0, 240, 255, 0.3),
+            rgba(0, 168, 255, 0.4)
+    ) !important;
+    border-color: rgba(0, 240, 255, 0.7) !important;
+    box-shadow:
+            0 6px 20px rgba(0, 240, 255, 0.4),
+            0 0 30px rgba(0, 240, 255, 0.3),
+            inset 0 0 15px rgba(0, 240, 255, 0.25);
+    transform: translateY(-3px) scale(1.02);
+}
+
+.el-button--primary:active {
+    transform: translateY(0) scale(0.98);
+    box-shadow:
+            0 2px 10px rgba(0, 240, 255, 0.2),
+            inset 0 0 15px rgba(0, 240, 255, 0.4);
+}
+
+/* 次要按钮 */
+.el-button--default {
+    background: var(--glass-bg-light) !important;
+    border: 1px solid var(--border-color) !important;
+    color: var(--text-secondary) !important;
+    backdrop-filter: blur(10px);
+}
+
+.el-button--default:hover {
+    border-color: var(--border-hover) !important;
+    background: var(--glass-bg) !important;
+    color: var(--text-primary) !important;
+    box-shadow: 0 0 15px rgba(0, 255, 204, 0.2);
+}
+
+/* 危险按钮 */
+.el-button--danger {
+    background: linear-gradient(
+            145deg,
+            rgba(255, 80, 80, 0.2),
+            rgba(255, 40, 40, 0.3)
+    ) !important;
+    border: 1px solid rgba(255, 80, 80, 0.5) !important;
+    color: rgba(255, 200, 200, 0.95) !important;
+}
+
+.el-button--danger:hover {
+    background: linear-gradient(
+            145deg,
+            rgba(255, 80, 80, 0.3),
+            rgba(255, 40, 40, 0.4)
+    ) !important;
+    box-shadow: 0 0 20px rgba(255, 80, 80, 0.4);
+}
+
+/* 输入框样式 */
+.el-input__wrapper {
+    background: var(--glass-bg-light) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: 12px !important;
+    box-shadow: var(--shadow-sm) !important;
+    backdrop-filter: blur(10px);
+    transition: all 0.3s ease !important;
+}
+
+.el-input__wrapper:hover {
+    border-color: var(--border-hover) !important;
+}
+
+.el-input__inner {
+    color: var(--text-primary) !important;
+    background: transparent !important;
+}
+
+.el-input__inner::placeholder {
+    color: var(--text-tertiary) !important;
+}
+
+.el-input__wrapper.is-focus {
+    border-color: var(--border-active) !important;
+    box-shadow: 0 0 0 3px rgba(0, 255, 204, 0.15),
+    0 0 15px rgba(0, 255, 204, 0.2) !important;
+}
+
+/* 文本域样式 */
+.el-textarea__inner {
+    background: var(--glass-bg-light) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: 12px !important;
+    color: var(--text-primary) !important;
+    backdrop-filter: blur(10px);
+}
+
+.el-textarea__inner:focus {
+    border-color: var(--border-active) !important;
+    box-shadow: 0 0 0 3px rgba(0, 255, 204, 0.15) !important;
+}
+
+/* 标签页样式 */
+.el-tabs__item {
+    color: var(--text-secondary) !important;
+    font-weight: 500 !important;
+    transition: all 0.3s ease !important;
+}
+
+.el-tabs__item:hover {
+    color: var(--neon-teal) !important;
+}
+
+.el-tabs__item.is-active {
+    color: var(--neon-aqua) !important;
+    font-weight: 600 !important;
+    text-shadow: 0 0 10px rgba(0, 255, 204, 0.5);
+}
+
+.el-tabs__active-bar {
+    background: linear-gradient(
+            to right,
+            var(--neon-aqua),
+            var(--neon-turquoise)
+    ) !important;
+    height: 3px !important;
+    box-shadow: 0 0 10px var(--neon-aqua) !important;
+}
+
+/* 菜单样式 */
+.el-menu {
+    background: transparent !important;
+    border-right: none !important;
+    padding: 0.5rem !important;
+}
+
+.el-menu-item {
+    color: var(--text-secondary) !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    border-radius: 12px !important;
+    margin: 6px 0 !important;
+    padding: 0 20px !important;
+    height: 48px !important;
+    line-height: 48px !important;
+}
+
+.el-menu-item:hover {
+    background: linear-gradient(
+            to right,
+            rgba(0, 255, 204, 0.15),
+            rgba(0, 212, 255, 0.1)
+    ) !important;
+    color: var(--neon-aqua) !important;
+    box-shadow: 0 0 15px rgba(0, 255, 204, 0.2);
+    transform: translateX(4px);
+}
+
+.el-menu-item.is-active {
+    background: linear-gradient(
+            to right,
+            rgba(0, 255, 204, 0.2),
+            rgba(0, 212, 255, 0.15)
+    ) !important;
+    color: var(--neon-aqua) !important;
+    font-weight: 600 !important;
+    box-shadow: 0 0 20px rgba(0, 255, 204, 0.3),
+    inset 0 0 10px rgba(0, 255, 204, 0.1);
+    border-left: 3px solid var(--neon-aqua);
+    text-shadow: 0 0 10px rgba(0, 255, 204, 0.6);
+}
+
+/* ======================== 额外组件样式 ======================== */
+/* 对话框 */
+.el-dialog {
+    background: var(--glass-bg-dark) !important;
+    backdrop-filter: blur(20px) !important;
+    border: 1px solid var(--border-color) !important;
+    box-shadow: var(--shadow-lg), var(--shadow-glow) !important;
+}
+
+.el-dialog__header {
+    /*background: var(--gradient-secondary) !important;*/
+    /*border-bottom: 1px solid var(--border-color) !important;*/
+}
+
+.el-dialog__title {
+    color: var(--text-primary) !important;
+    font-weight: 600 !important;
+}
+
+.el-dialog__body {
+    color: var(--text-secondary) !important;
+}
+
+/* 表格 */
+.el-table {
+    background: transparent !important;
+    color: var(--text-secondary) !important;
+}
+
+.el-table th {
+    background: var(--glass-bg) !important;
+    color: var(--text-primary) !important;
+    font-weight: 600 !important;
+    border-bottom: 2px solid var(--border-color) !important;
+}
+
+.el-table tr {
+    background: transparent !important;
+}
+
+.el-table tr:hover > td {
+    background: rgba(0, 255, 204, 0.05) !important;
+}
+
+.el-table td {
+    border-bottom: 1px solid rgba(0, 255, 204, 0.1) !important;
+}
+
+/* 分页 */
+.el-pagination {
+    color: var(--text-secondary) !important;
+}
+
+.el-pagination button {
+    background: var(--glass-bg-light) !important;
+    color: var(--text-secondary) !important;
+    border: 1px solid var(--border-color) !important;
+}
+
+.el-pagination button:hover {
+    color: var(--neon-aqua) !important;
+    border-color: var(--border-hover) !important;
+}
+
+.el-pager li {
+    background: var(--glass-bg-light) !important;
+    color: var(--text-secondary) !important;
+    border: 1px solid var(--border-color) !important;
+}
+
+.el-pager li:hover {
+    color: var(--neon-aqua) !important;
+}
+
+.el-pager li.is-active {
+    background: var(--gradient-primary) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-active) !important;
+    box-shadow: 0 0 15px rgba(0, 255, 204, 0.3);
+}
+
+/* 下拉菜单 */
+.el-dropdown-menu {
+    background: var(--glass-bg-dark) !important;
+    backdrop-filter: blur(15px) !important;
+    border: 1px solid var(--border-color) !important;
+    box-shadow: var(--shadow-lg) !important;
+}
+
+.el-dropdown-menu__item {
+    color: var(--text-secondary) !important;
+}
+
+.el-dropdown-menu__item:hover {
+    background: rgba(0, 255, 204, 0.1) !important;
+    color: var(--neon-aqua) !important;
+}
+
+/* 消息提示 */
+.el-message {
+    background: var(--glass-bg-dark) !important;
+    backdrop-filter: blur(20px) !important;
+    border: 1px solid var(--border-color) !important;
+    box-shadow: var(--shadow-lg), var(--shadow-glow) !important;
+}
+
+.el-message__content {
+    color: var(--text-primary) !important;
+}
+
+/* 加载动画 */
+.el-loading-mask {
+    background: rgba(5, 25, 30, 0.8) !important;
+    backdrop-filter: blur(10px) !important;
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--glass-bg);
+    border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: linear-gradient(
+            to bottom,
+            rgba(0, 255, 204, 0.3),
+            rgba(0, 212, 255, 0.3)
+    );
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(
+            to bottom,
+            rgba(0, 255, 204, 0.5),
+            rgba(0, 212, 255, 0.5)
+    );
+    background-clip: content-box;
+}
+
+/* ======================== 工具类 ======================== */
+/* 文字颜色 */
+.text-primary {
+    color: var(--text-primary) !important;
+}
+
+.text-secondary {
+    color: var(--text-secondary) !important;
+}
+
+.text-tertiary {
+    color: var(--text-tertiary) !important;
+}
+
+/* 发光效果 */
+.glow {
+    box-shadow: 0 0 20px var(--neon-aqua) !important;
+}
+
+.glow-text {
+    text-shadow: 0 0 15px var(--neon-aqua) !important;
+}
+
+/* 玻璃态 */
+.glass {
+    background: var(--glass-bg) !important;
+    backdrop-filter: blur(15px) !important;
+    -webkit-backdrop-filter: blur(15px) !important;
+}
