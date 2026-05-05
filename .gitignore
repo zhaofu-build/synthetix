@@ -39,7 +39,6 @@ env/
 
 # 日志
 *.log
-static/loginfo/*.log
 
 # IDE
 .idea/
@@ -48,12 +47,21 @@ static/loginfo/*.log
 *.swo
 *~
 
-# 上传文件和临时文件
-static/uploads/*
-!static/uploads/.gitkeep
-static/source_videos/*
-static/source_bgm/*
-static/source_timbre/*
+# static 目录：保留子目录结构，忽略内部文件
+# 先忽略所有子目录内容，再用 -f 强制添加 .gitkeep
+static/uploads/
+static/source_videos/
+static/source_bgm/
+static/source_timbre/
+static/bgm/
+static/fonts/
+static/loginfo/
+static/llm_log/
+static/temp/
+static/1/
+# 根目录下的静态图片也忽略
+static/*.png
+static/*.jpg
 
 # Tauri
 src-tauri/
@@ -67,3 +75,9 @@ synthetix-vue/app-icon.png
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 前端 (synthetix-vue)
+node_modules/
+*.local
+coverage/
+*.tsbuildinfo
