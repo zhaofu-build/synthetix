@@ -4,6 +4,7 @@
 提供基于 LLM 的创意内容生成功能，包括关键词提取、视频剪辑等
 """
 import logging
+import os
 from typing import List, Dict, Any, Optional
 
 from sqlalchemy.orm import Session
@@ -118,7 +119,8 @@ class CreativeService:
 
         # 解析剪辑方案
         bracket_json = string_util.get_bracket_json(keywords_resp)
-        final_video = config.UPLOAD_DIR + "concatenate_videos.mp4"
+        os.makedirs(config.UPLOAD_DIR, exist_ok=True)
+        final_video = os.path.join(config.UPLOAD_DIR, "concatenate_videos.mp4")
 
         # 执行视频合成
         use_ffmpeg.concatenate_videos_with_transitions(bracket_json, final_video)
@@ -126,8 +128,9 @@ class CreativeService:
         # 合并音频（如果有）
         if audio_url is not None:
             logger.info("=================================合并文案音频=================================")
-            use_ffmpeg.add_audio_to_video(final_video, audio_url, config.UPLOAD_DIR + "final_video.mp4")
-            final_video = config.UPLOAD_DIR + "final_video.mp4"
+            audio_out = os.path.join(config.UPLOAD_DIR, "final_video.mp4")
+            use_ffmpeg.add_audio_to_video(final_video, audio_url, audio_out)
+            final_video = audio_out
 
         return {"concatenate_web_url": final_video}
 

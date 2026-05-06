@@ -1796,6 +1796,17 @@ async def tool_analyze_video_vl(
                     analysis = await generate_response_async(
                         messages, temperature=0.5, max_tokens=2048
                     )
+                    # 将分析结果写入素材描述
+                    if video_id and analysis:
+                        try:
+                            with get_db_context() as db:
+                                repo = VideoRepository(db)
+                                v = repo.get_by_id(video_id)
+                                if v:
+                                    v.description = analysis[:500]
+                                    db.commit()
+                        except Exception:
+                            pass
                     return {
                         "success": True,
                         "analysis": {
@@ -1826,6 +1837,18 @@ async def tool_analyze_video_vl(
                 duration=duration_sec,
                 proxy_path=proxy_path
             )
+
+        # 将分析结果写入素材描述
+        if video_id and analysis:
+            try:
+                with get_db_context() as db:
+                    repo = VideoRepository(db)
+                    v = repo.get_by_id(video_id)
+                    if v:
+                        v.description = analysis[:500]
+                        db.commit()
+            except Exception:
+                pass
 
         return {
             "success": True,
@@ -6691,6 +6714,43 @@ async def tool_compress_image(video_id: int, quality: int = 75, **kwargs) -> Dic
         return {"success": False, "error": str(e)}
 
 
+def _find_font_path() -> str:
+    """查找可用的中文字体路径（绝对路径），供 Pillow 使用。"""
+    # 优先项目字体目录
+    _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    project_font = os.path.join(_project_root, 'static', 'fonts', 'simhei.ttf')
+    if os.path.exists(project_font):
+        return project_font
+    # 系统字体
+    import platform
+    if platform.system() == 'Windows':
+        fonts_dir = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
+        for name in ['simhei.ttf', 'msyh.ttc', 'simkai.ttf', 'simsun.ttc']:
+            p = os.path.join(fonts_dir, name)
+            if os.path.exists(p):
+                return p
+    elif platform.system() == 'Darwin':
+        for p in ['/System/Library/Fonts/PingFang.ttc', '/Library/Fonts/Arial Unicode.ttf']:
+            if os.path.exists(p):
+                return p
+    else:
+        for p in ['/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
+                   '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+                   '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf']:
+            if os.path.exists(p):
+                return p
+    return ''
+
+
+def _resolve_color(color_str: str):
+    """将颜色字符串转为 Pillow 可用的颜色值。"""
+    from PIL import ImageColor
+    try:
+        return ImageColor.getrgb(color_str)
+    except Exception:
+        return (255, 255, 255)
+
+
 @registry.register(
     name="add_text_to_image",
     description="在图片上叠加文字。重要：调整参数（改颜色/字号/位置等）时，应使用原始素材的 video_id 重新执行，而非对上一次的输出再次叠加，否则文字会重复叠加。",
@@ -6700,86 +6760,117 @@ async def tool_compress_image(video_id: int, quality: int = 75, **kwargs) -> Dic
         "font_size": {"type": "integer", "description": "字号（默认36）"},
         "color": {"type": "string", "description": "文字颜色，如 white、red、#FF0000（默认 white）"},
         "position": {"type": "string", "description": "位置预设：top-left/center/bottom-right 等，优先于 x/y"},
-        "x": {"type": "string", "description": "X 坐标（像素值或 FFmpeg 表达式如 w-tw-10，默认10）"},
-        "y": {"type": "string", "description": "Y 坐标（像素值或 FFmpeg 表达式如 h-th-10，默认10）"},
+        "x": {"type": "integer", "description": "X 坐标（像素值，默认10）"},
+        "y": {"type": "integer", "description": "Y 坐标（像素值，默认10）"},
+        "outline_width": {"type": "integer", "description": "描边宽度（默认0，无描边）"},
+        "outline_color": {"type": "string", "description": "描边颜色（默认 black）"},
     },
     examples=["在图片上写标题", "给图片加水印文字", "在右下角添加文字"],
     before_execute=validate_video_exists,
 )
 async def tool_add_text_to_image(video_id: int, text: str, font_size: int = 36,
                                  color: str = 'white', position: str = None,
-                                 x=None, y=None, **kwargs) -> Dict[str, Any]:
+                                 x=None, y=None, outline_width: int = 0,
+                                 outline_color: str = 'black', **kwargs) -> Dict[str, Any]:
     if not text:
         return {"success": False, "error": "请输入要叠加的文字"}
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
-    from src.application.services import ffmpeg_adapter as ffmpeg
-    from src.shared.utils.string_util import sanitize_ffmpeg_string
+    from PIL import Image, ImageDraw, ImageFont
     try:
-        safe_text = sanitize_ffmpeg_string(text)
-        safe_color = sanitize_ffmpeg_string(color)
-
-        # 解析位置：优先 position 预设，其次 x/y，最后默认
-        position_map = {
-            'top-left': ('10', '10'),
-            'top-center': ('(w-tw)/2', '10'),
-            'top-right': ('w-tw-10', '10'),
-            'center-left': ('10', '(h-th)/2'),
-            'center': ('(w-tw)/2', '(h-th)/2'),
-            'center-right': ('w-tw-10', '(h-th)/2'),
-            'bottom-left': ('10', 'h-th-10'),
-            'bottom-center': ('(w-tw)/2', 'h-th-10'),
-            'bottom-right': ('w-tw-10', 'h-th-10'),
-        }
-        if position and position.lower().replace('_', '-') in position_map:
-            pos_x, pos_y = position_map[position.lower().replace('_', '-')]
-        elif position:
-            # 尝试模糊匹配
-            pos_lower = position.lower()
-            if '右' in pos_lower or 'right' in pos_lower:
-                if '上' in pos_lower or 'top' in pos_lower:
-                    pos_x, pos_y = 'w-tw-10', '10'
-                elif '下' in pos_lower or 'bottom' in pos_lower:
-                    pos_x, pos_y = 'w-tw-10', 'h-th-10'
-                else:
-                    pos_x, pos_y = 'w-tw-10', '(h-th)/2'
-            elif '左' in pos_lower or 'left' in pos_lower:
-                if '上' in pos_lower or 'top' in pos_lower:
-                    pos_x, pos_y = '10', '10'
-                elif '下' in pos_lower or 'bottom' in pos_lower:
-                    pos_x, pos_y = '10', 'h-th-10'
-                else:
-                    pos_x, pos_y = '10', '(h-th)/2'
-            elif '中' in pos_lower or 'center' in pos_lower:
-                if '上' in pos_lower or 'top' in pos_lower:
-                    pos_x, pos_y = '(w-tw)/2', '10'
-                elif '下' in pos_lower or 'bottom' in pos_lower:
-                    pos_x, pos_y = '(w-tw)/2', 'h-th-10'
-                else:
-                    pos_x, pos_y = '(w-tw)/2', '(h-th)/2'
-            else:
-                pos_x, pos_y = '10', '10'
-        else:
-            pos_x = str(x) if x is not None and str(x).strip() else '10'
-            pos_y = str(y) if y is not None and str(y).strip() else '10'
-
         with get_db_context() as db:
             repo = VideoRepository(db)
             video = repo.get_by_id(video_id)
             local, ext, err = _get_image_info(video)
             if err:
                 return {"success": False, "error": err}
+
+            img = Image.open(local)
+            if img.mode != 'RGBA':
+                img = img.convert('RGBA')
+            overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
+
+            # 加载字体
+            font_path = _find_font_path()
+            if font_path:
+                try:
+                    font = ImageFont.truetype(font_path, font_size)
+                except Exception:
+                    font = ImageFont.load_default()
+            else:
+                font = ImageFont.load_default()
+
+            fill_color = _resolve_color(color)
+            stroke_color = _resolve_color(outline_color) if outline_width > 0 else None
+
+            # 计算文字尺寸
+            text_bbox = draw.textbbox((0, 0), text, font=font, stroke_width=outline_width)
+            tw = text_bbox[2] - text_bbox[0]
+            th = text_bbox[3] - text_bbox[1]
+            margin = 10
+
+            # 解析位置
+            pos_lower = (position or '').lower().replace('_', '-')
+            h_align = None  # 'left', 'center', 'right'
+            v_align = None  # 'top', 'center', 'bottom'
+
+            # 英文预设
+            preset_map = {
+                'top-left': ('left', 'top'), 'top-center': ('center', 'top'),
+                'top-right': ('right', 'top'),
+                'center-left': ('left', 'center'), 'center': ('center', 'center'),
+                'center-right': ('right', 'center'),
+                'bottom-left': ('left', 'bottom'), 'bottom-center': ('center', 'bottom'),
+                'bottom-right': ('right', 'bottom'),
+            }
+            if pos_lower in preset_map:
+                h_align, v_align = preset_map[pos_lower]
+            elif position:
+                if '右' in pos_lower or 'right' in pos_lower:
+                    h_align = 'right'
+                elif '左' in pos_lower or 'left' in pos_lower:
+                    h_align = 'left'
+                elif '中' in pos_lower or 'center' in pos_lower:
+                    h_align = 'center'
+                if '上' in pos_lower or 'top' in pos_lower:
+                    v_align = 'top'
+                elif '下' in pos_lower or 'bottom' in pos_lower:
+                    v_align = 'bottom'
+                elif '中' in pos_lower or 'center' in pos_lower:
+                    v_align = 'center'
+
+            # 计算 x 坐标
+            if h_align == 'center':
+                px = (img.width - tw) // 2
+            elif h_align == 'right':
+                px = img.width - tw - margin
+            elif h_align == 'left':
+                px = margin
+            else:
+                px = int(x) if x is not None else margin
+
+            # 计算 y 坐标
+            if v_align == 'center':
+                py = (img.height - th) // 2
+            elif v_align == 'bottom':
+                py = img.height - th - margin
+            elif v_align == 'top':
+                py = margin
+            else:
+                py = int(y) if y is not None else margin
+
+            draw.text((px, py), text, font=font, fill=fill_color,
+                      stroke_width=outline_width, stroke_fill=stroke_color)
+
+            result_img = Image.alpha_composite(img, overlay)
             tmp_out = _make_temp_output(f"_text{ext}", video_id)
-            vf_parts = f"text='{safe_text}':fontsize={font_size}:fontcolor={safe_color}:x={pos_x}:y={pos_y}"
-            font_file = _prepare_font_for_file(local)
-            if font_file:
-                vf_parts = f"fontfile={font_file}:" + vf_parts
-            vf = f"drawtext={vf_parts}"
-            ffmpeg.run_ffmpeg_cmd([
-                '-y', '-i', local,
-                '-vf', vf,
-                tmp_out
-            ])
+            if ext in ('.jpg', '.jpeg'):
+                result_img = result_img.convert('RGB')
+                result_img.save(tmp_out, quality=95)
+            else:
+                result_img.save(tmp_out)
+
             return _save_image_result(tmp_out, video_id, "加文字", ext, kwargs.get("project_id"))
     except Exception as e:
         logger.error(f"图片加文字失败: {e}")

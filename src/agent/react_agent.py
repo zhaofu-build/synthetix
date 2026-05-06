@@ -10,6 +10,7 @@ import re
 import logging
 import time
 import asyncio
+from datetime import datetime
 from typing import Dict, List, Optional, Any
 
 from src.agent.tool_registry import registry
@@ -74,11 +75,15 @@ def build_system_prompt(tools_description: str, project_id, project_name: str) -
         "3. 回复用中文，简洁自然",
         '4. 如果用户问"第X个"视频/素材，先调用 list_videos 获取列表，再根据序号找到对应 ID 调用其他工具',
         "5. 剪辑任务时，必须先调用 list_videos 查看项目已有素材，优先使用已有素材。只有素材不足或没有合适的时，才调用 search_material 下载新素材",
+        "6. 尽可能在一轮中同时调用多个互不依赖的工具（例如同时分析多个视频、同时下载多个素材）",
+        "7. 避免重复调用已获取过的信息（如多次 list_views），已获取的数据直接使用",
+        "8. 如果素材不匹配需求，直接更换素材或调整方案，不要反复分析同一个不合适的素材",
         "",
         "## 当前上下文",
         "",
         "- 项目 ID: " + str(pid),
         "- 项目名: " + str(pname),
+        "- 当前日期: " + datetime.now().strftime("%Y年%m月%d日"),
         "",
     ]
     return "\n".join(parts)
@@ -113,6 +118,7 @@ def build_comic_system_prompt(tools_description: str, project_id, project_name: 
         "",
         "- 项目 ID: " + str(pid),
         "- 项目名: " + str(pname),
+        "- 当前日期: " + datetime.now().strftime("%Y年%m月%d日"),
         "",
     ]
     return "\n".join(parts)
@@ -416,11 +422,12 @@ class ReActAgent:
                 tool_calls = self._parse_tool_calls(response_text)
 
                 if not tool_calls:
-                    # 有临时素材产出时不输出冗余文字，直接结束
-                    if has_temp_asset:
-                        final_reply = ""
-                        break
                     final_reply = self._strip_tool_call_hints(response_text)
+                    if not final_reply.strip() and has_temp_asset:
+                        # 有临时素材但 LLM 没有文字回复，用 LLM 原始输出作为回复
+                        final_reply = response_text.strip()
+                    if not final_reply.strip():
+                        final_reply = "处理完成。"
                     yield {"type": "reply", "content": final_reply}
                     break
 

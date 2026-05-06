@@ -1208,8 +1208,10 @@ def cut_video(input_path, start_time, end_time=None, duration=None,
     return output_path
 
 
-def cut_video_silence(input_path, start_time, end_time, output_suffix, output_path=None):
+def cut_video_silence(input_path, start_time, end_time=None, output_suffix="", output_path=None):
     """剪切视频并强制静音"""
+    if not input_path or not os.path.isfile(input_path):
+        raise RuntimeError(f"输入文件不存在: {input_path}")
     if not output_path:
         import tempfile
         import re
@@ -1230,9 +1232,7 @@ def cut_video_silence(input_path, start_time, end_time, output_suffix, output_pa
         '-preset', 'fast'
     ]
     if end_time:
-        command.extend(['-to', end_time])
-    elif duration:
-        command.extend(['-t', duration])
+        command.extend(['-to', str(end_time)])
     command.append(str(output_path))
     run_ffmpeg_cmd(command)
     return output_path
@@ -1267,6 +1267,9 @@ def concatenate_videos_with_transitions(clip_infos, output_path):
         video_source = video_dict.get(clip['id'])
         if not video_source:
             raise ValueError(f"Video with id {clip['id']} not found")
+        local = video_source.get("local_path")
+        if not local or not os.path.isfile(local):
+            raise RuntimeError(f"视频 {clip['id']} 的本地文件不存在: {local}")
 
         output_file = cut_video_silence(
             video_source["local_path"],

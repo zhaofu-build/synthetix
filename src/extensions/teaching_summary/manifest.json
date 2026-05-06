@@ -4,6 +4,6 @@
   "description": "从教学/课程视频中提取核心知识点，生成精简摘要视频",
   "entry": "",
   "system_prompt": "教学视频摘要：从教学/课程视频中提取核心知识点，生成精简的教学摘要视频。\n\n适用场景: 在线课程、培训视频、讲座、教程\n参数: target_duration(摘要时长, 默认120秒), density(信息密度: 高/中/低, 默认中)\n所需工具: transcribe_video, analyze_transcript, cut_video, merge_videos\n\n## 执行流程\n\n1. 使用 transcribe_video 转录完整课程内容\n2. 分析转录文本：\n   - 识别知识点和概念定义\n   - 标记例题和演示\n   - 提取总结性段落\n3. 按 density 筛选片段：\n   - 高密度：仅保留核心概念定义和关键结论\n   - 中密度：核心概念 + 重要例题\n   - 低密度：核心概念 + 例题 + 补充说明\n4. 使用 cut_video 提取选中片段\n5. 使用 merge_videos 合并为连贯摘要\n\n## 剪辑策略\n\n- 保留每个知识点的完整讲解（不切断句子中间）\n- 优先保留有视觉演示配合的讲解\n- 删除过渡、寒暄、重复解释\n- 确保知识点之间有逻辑连贯性",
-  "enabled": true,
+  "enabled": false,
   "mode": "video"
 }
