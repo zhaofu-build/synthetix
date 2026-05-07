@@ -1564,6 +1564,8 @@ async def tool_search_material(
                 videos = video_downloader_adapter.search_videos(kw, minimum_duration=0, source="pexels")
                 if not videos:
                     videos = video_downloader_adapter.search_videos(kw, minimum_duration=0, source="pixabay")
+                if not videos:
+                    videos = video_downloader_adapter.search_videos(kw, minimum_duration=0, source="coverr")
                 for v in videos[:2]:
                     try:
                         dl_result = video_downloader_adapter.download_video(

@@ -265,8 +265,63 @@ def search_videos_pixabay(
     return video_items
 
 
+# Coverr 视频搜索
+def search_videos_coverr(
+        search_term: str,
+        minimum_duration: int,
+):
+    api_key = config.coverr_api_key or config.video_api_keys
+    if not api_key:
+        logger.warning("Coverr API key 未配置 (COVERR_API_KEY)")
+        return []
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    params = {
+        "query": search_term,
+        "page_size": 20,
+        "sort": "popular",
+        "urls": "true",
+    }
+    query_url = f"https://api.coverr.co/videos?{urlencode(params)}"
+
+    proxies = config.proxy if config.proxy else None
+    r = requests.get(
+        query_url,
+        headers=headers,
+        proxies={"http": proxies, "https": proxies} if proxies else None,
+        timeout=(30, 60),
+    )
+    response = r.json()
+    video_items = []
+
+    hits = response.get("hits", [])
+    for v in hits:
+        duration = v.get("duration", 0)
+        if duration < minimum_duration:
+            continue
+
+        urls = v.get("urls", {})
+        mp4_url = urls.get("mp4", "")
+        preview_url = urls.get("mp4_preview", "")
+        if not mp4_url:
+            continue
+
+        item = {
+            "provider": "coverr",
+            "url": mp4_url,
+            "preview_url": preview_url or mp4_url,
+            "duration": int(duration),
+            "duration_hms": time_util.seconds_to_hms(duration),
+            "search_term": search_term,
+            "image": v.get("poster", "") or v.get("thumbnail", ""),
+        }
+        video_items.append(item)
+
+    return video_items
+
+
 def search_videos(search_term: str, minimum_duration: int = 3, source: str = None):
-    """统一搜索入口，支持 pexels / pixabay / all"""
+    """统一搜索入口，支持 pexels / pixabay / coverr / all"""
     source = source or getattr(config, 'video_type', 'pexels')
     results = []
 
@@ -281,6 +336,12 @@ def search_videos(search_term: str, minimum_duration: int = 3, source: str = Non
             results.extend(search_videos_pixabay(search_term, minimum_duration))
         except Exception as e:
             logger.error(f"Pixabay 搜索失败: {e}")
+
+    if source in ('coverr', 'all'):
+        try:
+            results.extend(search_videos_coverr(search_term, minimum_duration))
+        except Exception as e:
+            logger.error(f"Coverr 搜索失败: {e}")
 
     return results
 

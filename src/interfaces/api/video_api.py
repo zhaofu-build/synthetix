@@ -96,8 +96,8 @@ def get_random_video(
 
 @router.get("/search-online", summary="在线搜索视频素材")
 def search_online(query: str = Query(..., description="搜索关键词"),
-                  source: str = Query(default="all", description="来源: pexels/pixabay/all")):
-    """搜索在线视频素材（Pexels + Pixabay）"""
+                  source: str = Query(default="all", description="来源: pexels/pixabay/coverr/all")):
+    """搜索在线视频素材（Pexels + Pixabay + Coverr）"""
     from src.application.services.video_downloader_adapter import search_videos
     try:
         results = search_videos(query, minimum_duration=3, source=source)

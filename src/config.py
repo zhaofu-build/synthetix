@@ -60,6 +60,7 @@ CORE_NEXUS_BASE_URL = os.getenv('CORE_NEXUS_BASE_URL', '')
 video_type = os.getenv('VIDEO_TYPE', 'pexels')
 video_api_keys = os.getenv('VIDEO_API_KEYS', '')
 pixabay_api_key = os.getenv('PIXABAY_API_KEY', '')
+coverr_api_key = os.getenv('COVERR_API_KEY', '')
 
 # CORS配置 - 允许的来源，逗号分隔
 cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:9528,http://127.0.0.1:9528,http://localhost:9527,http://127.0.0.1:9527').split(',')
@@ -88,6 +89,7 @@ _CONFIG_KEY_MAP = {
     "core_nexus.slow_model": "SLOW_MODEL",
     "video_api_keys": "video_api_keys",
     "pixabay_api_key": "pixabay_api_key",
+    "coverr_api_key": "coverr_api_key",
 }
 
 

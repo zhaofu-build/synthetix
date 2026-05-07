@@ -354,6 +354,13 @@ def _wait_for_api(port, timeout=15):
 def _build_frontend():
     """构建前端 dist"""
     frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "synthetix-vue")
+    dist_dir = os.path.join(frontend_dir, "dist")
+
+    # dist 已存在则跳过构建
+    if os.path.isfile(os.path.join(dist_dir, "index.html")):
+        logger.info("前端 dist 已存在，跳过构建")
+        return True
+
     npm_cmd = shutil.which("npm") or shutil.which("npm.cmd")
     if not npm_cmd:
         logger.warning("npm 未找到，跳过前端构建")
@@ -370,6 +377,9 @@ def _build_frontend():
     )
     if result.returncode != 0:
         logger.error(f"前端构建失败:\n{result.stderr}")
+        return False
+    if not os.path.isfile(os.path.join(dist_dir, "index.html")):
+        logger.error("前端构建完成但 dist/index.html 未生成，跳过 Tauri")
         return False
     logger.info("前端构建完成")
     return True
@@ -393,7 +403,7 @@ def run():
         raise
 
     # 先构建前端（避免 Tauri beforeDevCommand 并行导致覆盖 dist）
-    _build_frontend()
+    frontend_ok = _build_frontend()
 
     # 后台线程启动 uvicorn API 服务
     def _run_api():
@@ -415,7 +425,7 @@ def run():
 
     # 前台运行 Tauri 桌面窗口
     npx_cmd = shutil.which("npx") or shutil.which("npx.cmd")
-    if npx_cmd:
+    if npx_cmd and frontend_ok:
         # 确保 cargo 在 PATH 中
         cargo_dir = os.path.expanduser("~/.cargo/bin")
         if os.path.isdir(cargo_dir) and cargo_dir not in os.environ.get("PATH", ""):
@@ -430,7 +440,10 @@ def run():
         except KeyboardInterrupt:
             logger.info("用户中断，正在关闭...")
     else:
-        logger.warning("npx 未安装，回退到 Web 模式")
+        if not frontend_ok:
+            logger.warning("前端构建失败，跳过 Tauri，回退到 Web 模式")
+        else:
+            logger.warning("npx 未安装，回退到 Web 模式")
         uvicorn.run(
             app='main:app',
             host="127.0.0.1",
