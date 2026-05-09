@@ -35,6 +35,7 @@ def detect_best_encoder() -> str:
             result = subprocess.run(
                 ["ffmpeg", "-hide_banner", "-encoders"],
                 capture_output=True, text=True, timeout=10,
+                encoding='utf-8', errors='replace',
                 creationflags=0 if sys.platform != 'win32' else subprocess.CREATE_NO_WINDOW
             )
             if enc.lstrip("lib") in result.stdout or enc in result.stdout:
@@ -111,6 +112,7 @@ def detect_silence_segments(input_path: str, min_duration: float = 0.5, noise_db
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=120,
+            encoding='utf-8', errors='replace',
             creationflags=0 if sys.platform != "win32" else subprocess.CREATE_NO_WINDOW,
         )
         silences = []
@@ -152,6 +154,7 @@ def detect_scene_changes(input_path: str, threshold: float = 0.3) -> List[Dict]:
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=180,
+            encoding='utf-8', errors='replace',
             creationflags=0 if sys.platform != "win32" else subprocess.CREATE_NO_WINDOW,
         )
         changes = []
@@ -303,7 +306,8 @@ def get_video_info(input_path):
             '-of', 'json',
             str(input_path)
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True,
+                               encoding='utf-8', errors='replace')
         info = json.loads(result.stdout)
         # 提取视频信息
         stream_info = info['streams'][0] if 'streams' in info and len(info['streams']) > 0 else {}
@@ -624,9 +628,10 @@ def extract_video_clips(input_video_path, output_dir, interval=5):
     # result = run_ffprobe_cmd(duration_command)
     # total_duration = float(result.stdout.strip())
     video_info = get_video_info(input_video_path)
-    duration_hms = video_info['duration_hms']
+    duration = float(video_info.get('duration', 0))
+    interval = int(interval)
     # 计算需要截取的片段数量
-    num_clips = int(duration_hms // interval)
+    num_clips = int(duration // interval) if interval > 0 else 1
     # 构建并执行命令
     for i in range(num_clips):
         start_time = i * interval
@@ -743,7 +748,8 @@ def _has_audio_stream(video_path):
             '-of', 'csv=p=0',
             str(video_path)
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10,
+                               encoding='utf-8', errors='replace')
         return bool(result.stdout.strip())
     except Exception:
         return False
@@ -759,6 +765,7 @@ def _get_video_codec_info(video_path):
             str(video_path)
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10,
+                                encoding='utf-8', errors='replace',
                                 creationflags=0 if sys.platform != 'win32' else subprocess.CREATE_NO_WINDOW)
         info = json.loads(result.stdout)
         streams = info.get('streams', [])
@@ -1577,7 +1584,8 @@ def run_ffmpeg_cmd(cmd, timeout=300, cwd=None):
         logger.error(f"Command: {e.cmd}")
         logger.error(f"Return code: {e.returncode}")
         logger.error(f"Output: {e.output}")
-        raise RuntimeError(f"ffmpeg 命令执行失败 (返回码 {e.returncode}): {e.output[:500] if e.output else '无输出'}") from e
+        output_tail = e.output[-1000:] if e.output and len(e.output) > 1000 else (e.output or '无输出')
+        raise RuntimeError(f"ffmpeg 命令执行失败 (返回码 {e.returncode}): {output_tail}") from e
 
 
 def run_ffmpeg_cmd_atomic(cmd, output_path, timeout=300):

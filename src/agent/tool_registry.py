@@ -231,8 +231,17 @@ class AddSubtitleParams(BaseModel):
     bold: bool = Field(default=False, description="粗体")
     outline_width: float = Field(default=2, ge=0, le=6, description="描边宽度")
     shadow: float = Field(default=0, ge=0, le=4, description="阴影深度")
-    alignment: int = Field(default=2, description="位置: 2=底部居中 5=上方居中 8=居中")
+    alignment: int = Field(default=2, description="位置: 2=底部居中 5=上方居中 8=居中，也接受 bottom/top/center")
     bg_color: str = Field(default=None, description="背景颜色(ASS格式&HBBGGRR)，空则无背景")
+
+    @field_validator("alignment", mode="before")
+    @classmethod
+    def normalize_alignment(cls, v):
+        _map = {"bottom": 2, "top": 8, "center": 5, "bottom_center": 2,
+                "top_center": 8, "middle": 5, "底部": 2, "顶部": 8, "居中": 5}
+        if isinstance(v, str):
+            return _map.get(v.lower().strip(), 2)
+        return v
 
 
 class ChangeSpeedParams(BaseModel):
@@ -366,6 +375,13 @@ class ExtractFramesParams(BaseModel):
     """提取帧参数"""
     video_id: int = Field(..., description="视频 ID")
     timestamps: Opt[str] = Field(default=None, description="时间点列表，逗号分隔 (HH:MM:SS)")
+
+    @field_validator("timestamps", mode="before")
+    @classmethod
+    def normalize_timestamps(cls, v):
+        if isinstance(v, list):
+            return ",".join(str(x) for x in v)
+        return v
 
 
 class ConvertToGifParams(BaseModel):
@@ -939,12 +955,32 @@ async def tool_image_to_video(
     from src.application.services import ffmpeg_adapter as ffmpeg
 
     try:
-        # 解析图片路径
+        # 支持 URL 下载
         abs_path = image_path
-        if not os.path.isabs(abs_path):
-            abs_path = os.path.join(str(config.ROOT_DIR_WIN), abs_path.lstrip('/'))
-            if not os.path.isfile(abs_path):
-                abs_path = os.path.abspath(image_path.lstrip('/'))
+        if image_path.startswith(('http://', 'https://')):
+            import tempfile, requests
+            tmp_img = os.path.join(tempfile.gettempdir(), f"img_dl_{int(time.time())}.jpg")
+            resp = requests.get(image_path, timeout=30, stream=True)
+            resp.raise_for_status()
+            with open(tmp_img, 'wb') as f:
+                for chunk in resp.iter_content(8192):
+                    f.write(chunk)
+            abs_path = tmp_img
+        else:
+            # 支持素材 ID、web_path、绝对路径
+            try:
+                aid = int(image_path)
+                with get_db_context() as db:
+                    repo = VideoRepository(db)
+                    src = repo.get_by_id(aid)
+                    if src and src.local_path and os.path.isfile(src.local_path):
+                        abs_path = src.local_path
+            except (ValueError, TypeError):
+                pass
+            if not os.path.isabs(abs_path):
+                abs_path = os.path.join(str(config.ROOT_DIR_WIN), abs_path.lstrip('/'))
+                if not os.path.isfile(abs_path):
+                    abs_path = os.path.abspath(image_path.lstrip('/'))
 
         if not os.path.isfile(abs_path):
             return {"success": False, "error": f"图片文件不存在: {image_path}"}
@@ -1067,6 +1103,26 @@ async def tool_add_subtitle(
                     "error": f"视频 {video_id} 不存在"
                 }
 
+            # 检测字幕时长 vs 视频时长不匹配
+            sub_warning = None
+            try:
+                from src.application.services import ffmpeg_adapter as _ff
+                from src.shared.utils import time_util
+                v_info = _ff.get_video_info(video.local_path)
+                v_dur = float(v_info.get('duration', 0)) if v_info else 0
+                if v_dur > 0:
+                    # 粗略估算：中文约 4 字/秒
+                    text_len = len(subtitle_content.replace(' ', ''))
+                    est_dur = text_len / 4
+                    if est_dur > v_dur * 1.5:
+                        sub_warning = (
+                            f"⚠️ 字幕内容约需 {time_util.seconds_to_hms(est_dur)} 播完，"
+                            f"但视频仅 {time_util.seconds_to_hms(v_dur)}，字幕会过快。"
+                            f"建议先延长视频（合并更多素材或循环）或精简字幕文本。"
+                        )
+            except Exception:
+                pass
+
             # subtitle_type: True=软字幕, False=硬字幕
             output_name = ffmpeg.add_subtitle(
                 video_path=video.local_path,
@@ -1083,12 +1139,15 @@ async def tool_add_subtitle(
                 bg_color=bg_color,
             )
 
+            msg = "字幕添加完成"
+            if sub_warning:
+                msg = f"{sub_warning}\n{msg}"
             return _save_tool_output(
                 output_name, video_id, "add_subtitle",
                 project_id,
                 file_type="video",
                 file_name=f"subtitle_{video_id}_{int(time.time())}{os.path.splitext(output_name)[1]}",
-                message="字幕添加完成",
+                message=msg,
             )
 
     except Exception as e:
@@ -1189,9 +1248,30 @@ async def tool_smart_clip(
                 from src.application.services import whisper_adapter, ffmpeg_adapter
                 from src.infrastructure.db.session import get_db_context
                 from src.domain.entities.video_source import VideoSource
+                from src.domain.entities.video_project import VideoProject
 
                 with get_db_context() as db:
-                    videos = db.query(VideoSource).filter(VideoSource.video_type == 1).all()
+                    project_id = kwargs.get("project_id")
+                    if project_id:
+                        # 按项目素材 ID 查询
+                        project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
+                        mat_ids = (project.material_ids or []) if project else []
+                        if mat_ids:
+                            videos = db.query(VideoSource).filter(
+                                VideoSource.id.in_(mat_ids),
+                                VideoSource.file_type == "video",
+                            ).all()
+                        else:
+                            videos = []
+                    else:
+                        # 无项目时查最近素材，排除临时文件
+                        videos = db.query(VideoSource).filter(
+                            VideoSource.file_type == "video",
+                            VideoSource.is_temp == False,
+                        ).order_by(VideoSource.id.desc()).limit(5).all()
+
+                # 过滤掉文件不存在的记录
+                videos = [v for v in videos if v.local_path and os.path.isfile(v.local_path)]
 
                 transcripts = []
                 for v in videos[:2]:  # 最多处理 2 个素材，防止内存溢出
@@ -2624,12 +2704,28 @@ async def tool_add_audio(
             # 将 web_path 或相对路径转为绝对文件系统路径
             abs_audio = audio_path
             if not os.path.isabs(abs_audio):
-                # web_path 如 "static/uploads/xxx.wav" 或 "/static/temp/7/tts_xxx.wav"
                 abs_audio = abs_audio.lstrip('/')
                 abs_audio = os.path.join(str(config.ROOT_DIR_WIN), abs_audio)
             if not os.path.isfile(abs_audio):
-                # 回退：基于 CWD 解析
                 abs_audio = os.path.abspath(audio_path.lstrip('/'))
+
+            # 时长校验：检测音画时长不匹配
+            duration_warning = None
+            try:
+                from src.application.services import ffmpeg_adapter as _ff
+                v_info = _ff.get_video_info(video.local_path)
+                a_info = _ff.get_video_info(abs_audio)
+                v_dur = float(v_info.get('duration', 0)) if v_info else 0
+                a_dur = float(a_info.get('duration', 0)) if a_info else 0
+                if v_dur > 0 and a_dur > 0 and abs(v_dur - a_dur) / max(v_dur, a_dur) > 0.3:
+                    from src.shared.utils import time_util
+                    duration_warning = (
+                        f"⚠️ 时长不匹配：视频 {time_util.seconds_to_hms(v_dur)}，"
+                        f"音频 {time_util.seconds_to_hms(a_dur)}。"
+                        f"建议先调整视频或音频时长使其接近。"
+                    )
+            except Exception:
+                pass
 
 
             service = VideoService(db)
@@ -2637,6 +2733,10 @@ async def tool_add_audio(
                 video_path=video.local_path,
                 audio_path=abs_audio
             )
+
+            msg = f"已添加{'配音' if audio_type == 'dubbing' else '背景音乐'}"
+            if duration_warning:
+                msg = f"{duration_warning}\n{msg}"
 
             output_path = result.get("local_path") or result.get("output_path") if isinstance(result, dict) else str(result)
             if output_path:
@@ -2646,7 +2746,7 @@ async def tool_add_audio(
                         project_id,
                         file_type="video",
                         file_name=f"audio_{video_id}_{int(time.time())}{os.path.splitext(str(output_path))[1]}",
-                        message=f"已添加{'配音' if audio_type == 'dubbing' else '背景音乐'}",
+                        message=msg,
                     )
                 except Exception as e:
                     print(f"[add_audio] _save_tool_output 失败: {e}", flush=True)
@@ -3271,11 +3371,11 @@ async def tool_extract_audio(video_id: int, **kwargs) -> Dict[str, Any]:
 
 @registry.register(
     name="mix_audio_to_video",
-    description="将配音和背景音乐同时混入视频（自动混合多路音频）",
+    description="将配音和背景音乐同时混入视频（自动混合多路音频）。tts_path 和 bgm_path 支持传视频/音频 ID（整数）或文件路径（字符串）",
     parameters={
         "video_id": {"type": "integer", "description": "视频 ID"},
-        "tts_path": {"type": "string", "description": "配音文件路径"},
-        "bgm_path": {"type": "string", "description": "背景音乐文件路径"},
+        "tts_path": {"type": "string", "description": "配音文件路径或素材 ID"},
+        "bgm_path": {"type": "string", "description": "背景音乐文件路径或素材 ID"},
         "bgm_volume": {"type": "number", "description": "背景音乐音量 (0.0-1.0)"},
     },
     examples=["给视频加配音和背景音乐", "混合配音和 BGM"],
@@ -3283,8 +3383,8 @@ async def tool_extract_audio(video_id: int, **kwargs) -> Dict[str, Any]:
 )
 async def tool_mix_audio_to_video(
     video_id: int,
-    tts_path: str = None,
-    bgm_path: str = None,
+    tts_path = None,
+    bgm_path = None,
     bgm_volume: float = 0.3,
     **kwargs
 ) -> Dict[str, Any]:
@@ -3301,10 +3401,20 @@ async def tool_mix_audio_to_video(
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            # 将 web_path 或相对路径转为绝对文件系统路径
+            # 将 web_path 或相对路径转为绝对文件系统路径；支持传素材 ID
             def _resolve_audio_path(p):
-                if not p:
-                    return p
+                if p is None:
+                    return None
+                # 支持传素材 ID（整数或纯数字字符串）
+                try:
+                    aid = int(p)
+                    src = repo.get_by_id(aid)
+                    if src and src.local_path and os.path.isfile(src.local_path):
+                        return src.local_path
+                except (ValueError, TypeError):
+                    pass
+                # 字符串路径解析
+                p = str(p)
                 if os.path.isabs(p):
                     return p
                 abs_p = os.path.join(str(config.ROOT_DIR_WIN), p.lstrip('/'))
@@ -3314,6 +3424,15 @@ async def tool_mix_audio_to_video(
 
             abs_tts = _resolve_audio_path(tts_path)
             abs_bgm = _resolve_audio_path(bgm_path)
+
+            # 预检：确认视频文件存在
+            if not video.local_path or not os.path.isfile(video.local_path):
+                return {"success": False, "error": f"视频 {video_id} 的本地文件不存在: {video.local_path}"}
+            # 预检：确认音频文件存在
+            if abs_tts and not os.path.isfile(abs_tts):
+                return {"success": False, "error": f"配音文件不存在: {abs_tts}"}
+            if abs_bgm and not os.path.isfile(abs_bgm):
+                return {"success": False, "error": f"BGM 文件不存在: {abs_bgm}"}
 
             ext = os.path.splitext(video.local_path)[1] or '.mp4'
             output_path = _make_temp_output(ext, video_id)
@@ -3499,7 +3618,24 @@ async def tool_set_cover(video_id: int, cover_image: str, **kwargs) -> Dict[str,
             if not video:
                 return {"success": False, "error": f"视频 {video_id} 不存在"}
 
-            ffmpeg.set_video_cover(video.local_path, cover_image)
+            # 解析封面图片路径（支持 web_path、素材 ID、绝对路径）
+            abs_cover = cover_image
+            try:
+                cid = int(cover_image)
+                src = repo.get_by_id(cid)
+                if src and src.local_path and os.path.isfile(src.local_path):
+                    abs_cover = src.local_path
+            except (ValueError, TypeError):
+                pass
+            if not os.path.isabs(abs_cover):
+                abs_cover = os.path.join(str(config.ROOT_DIR_WIN), abs_cover.lstrip('/'))
+                if not os.path.isfile(abs_cover):
+                    abs_cover = os.path.abspath(cover_image.lstrip('/'))
+
+            if not os.path.isfile(abs_cover):
+                return {"success": False, "error": f"封面图片不存在: {cover_image}"}
+
+            ffmpeg.set_video_cover(video.local_path, abs_cover)
 
             return {"success": True, "message": "封面设置完成"}
 
@@ -4690,12 +4826,12 @@ async def tool_color_adjust(
 
 @registry.register(
     name="convert_format",
-    description="视频格式转换（MP4/MKV/AVI/MOV/WEBM 等）",
+    description="视频/音频格式转换（MP4/MKV/AVI/MOV/WEBM/MP3/WAV/AAC/FLAC 等）",
     parameters={
-        "video_id": {"type": "integer", "description": "视频 ID"},
-        "target_format": {"type": "string", "description": "目标格式: mp4/mkv/avi/mov/webm"},
+        "video_id": {"type": "integer", "description": "素材 ID"},
+        "target_format": {"type": "string", "description": "目标格式: mp4/mkv/avi/mov/webm/mp3/wav/aac/flac"},
     },
-    examples=["转成MKV格式", "把视频转为WEBM"],
+    examples=["转成MKV格式", "把视频转为WEBM", "提取音频为MP3"],
     before_execute=validate_video_exists
 )
 async def tool_convert_format(video_id: int, target_format: str = "mp4", **kwargs) -> Dict[str, Any]:
@@ -4704,31 +4840,42 @@ async def tool_convert_format(video_id: int, target_format: str = "mp4", **kwarg
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import ffmpeg_adapter as ffmpeg
 
-    allowed = {"mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "ts"}
+    video_formats = {"mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "ts"}
+    audio_formats = {"mp3", "wav", "aac", "flac", "ogg", "m4a", "wma"}
+    allowed = video_formats | audio_formats
     target_format = target_format.lower().lstrip('.')
     if target_format not in allowed:
-        return {"success": False, "error": f"不支持的格式: {target_format}"}
+        return {"success": False, "error": f"不支持的格式: {target_format}，支持: {', '.join(sorted(allowed))}"}
+
+    is_audio = target_format in audio_formats
 
     try:
         with get_db_context() as db:
             repo = VideoRepository(db)
             video = repo.get_by_id(video_id)
             if not video:
-                return {"success": False, "error": f"视频 {video_id} 不存在"}
+                return {"success": False, "error": f"素材 {video_id} 不存在"}
 
             output_path = _make_temp_output(f".{target_format}", video_id)
 
-            # 尝试流复制（无重编码），失败则重编码
-            try:
+            if is_audio:
+                # 音频提取/转换
                 ffmpeg.run_ffmpeg_cmd([
                     '-y', '-i', video.local_path,
-                    '-c', 'copy', output_path
+                    '-vn', output_path
                 ])
-            except Exception:
-                ffmpeg.run_ffmpeg_cmd([
-                    '-y', '-i', video.local_path,
-                    '-c:v', 'libx264', '-c:a', 'aac', output_path
-                ])
+            else:
+                # 视频格式转换：尝试流复制，失败则重编码
+                try:
+                    ffmpeg.run_ffmpeg_cmd([
+                        '-y', '-i', video.local_path,
+                        '-c', 'copy', output_path
+                    ])
+                except Exception:
+                    ffmpeg.run_ffmpeg_cmd([
+                        '-y', '-i', video.local_path,
+                        '-c:v', 'libx264', '-c:a', 'aac', output_path
+                    ])
 
             return _save_tool_output(output_path, video_id, "convert_format",
                                      kwargs.get("project_id"),
