@@ -15,6 +15,7 @@ import httpx
 
 from src.shared.utils.core_nexus_client import get_client
 from src.shared.models.response import success_response, error_response
+from src.shared.exceptions.exceptions import ValidationException, ResourceNotFoundException, ExternalServiceException
 from src.shared.utils.config_manager import get as cfg_get
 from src import config
 
@@ -98,8 +99,7 @@ async def list_models(
 
         return success_response(data=data, to_camel=False)
     except Exception as e:
-        logger.error(f"获取模型列表失败: {e}")
-        return error_response(error="ModelListError", message=str(e), code=500)
+        raise ExternalServiceException(service_name="CoreNexus", message="获取模型列表失败，请检查服务配置")
 
 
 class TestConnectionRequest(BaseModel):
@@ -121,7 +121,7 @@ async def test_connection(req: TestConnectionRequest):
             resp.raise_for_status()
         return success_response(data={"status": "ok", "tested_url": test_url}, message="连接成功")
     except Exception as e:
-        return error_response(error="ConnectionError", message=f"连接失败 ({test_url}): {e}", code=500)
+        raise ExternalServiceException(service_name="CoreNexus", message="连接测试失败，请检查服务地址和密钥")
 
 
 # ==================== LLM 接口 ====================
@@ -133,32 +133,27 @@ async def llm_generate(request: LLMRequest):
 
     支持 prompt 单轮对话或 messages 多轮对话
     """
-    try:
-        client = get_client()
+    client = get_client()
 
-        # 构建 messages
-        if request.messages:
-            messages = request.messages
-        elif request.prompt:
-            messages = [{"role": "user", "content": request.prompt}]
-        else:
-            return error_response(error="BadRequest", message="需要提供 prompt 或 messages", code=400)
+    # 构建 messages
+    if request.messages:
+        messages = request.messages
+    elif request.prompt:
+        messages = [{"role": "user", "content": request.prompt}]
+    else:
+        raise ValidationException("需要提供 prompt 或 messages")
 
-        # 生成参数
-        gen_config = request.generation or GenerationConfig()
+    # 生成参数
+    gen_config = request.generation or GenerationConfig()
 
-        result = await client.llm_generate_async(
-            messages=messages,
-            model=request.model,
-            temperature=gen_config.temperature,
-            max_tokens=gen_config.max_tokens
-        )
+    result = await client.llm_generate_async(
+        messages=messages,
+        model=request.model,
+        temperature=gen_config.temperature,
+        max_tokens=gen_config.max_tokens
+    )
 
-        return success_response(data={"text": result})
-
-    except Exception as e:
-        logger.error(f"LLM 生成失败: {e}", exc_info=True)
-        return error_response(error="LLMError", message=str(e), code=500)
+    return success_response(data={"text": result})
 
 
 @router.post("/llm/stream")
@@ -168,46 +163,41 @@ async def llm_generate_stream(request: LLMRequest):
 
     返回 SSE 流
     """
-    try:
-        client = get_client()
+    client = get_client()
 
-        # 构建 messages
-        if request.messages:
-            messages = request.messages
-        elif request.prompt:
-            messages = [{"role": "user", "content": request.prompt}]
-        else:
-            return error_response(error="BadRequest", message="需要提供 prompt 或 messages", code=400)
+    # 构建 messages
+    if request.messages:
+        messages = request.messages
+    elif request.prompt:
+        messages = [{"role": "user", "content": request.prompt}]
+    else:
+        raise ValidationException("需要提供 prompt 或 messages")
 
-        # 生成参数
-        gen_config = request.generation or GenerationConfig()
+    # 生成参数
+    gen_config = request.generation or GenerationConfig()
 
-        async def generate():
-            try:
-                async for chunk in client.llm_generate_stream_async(
-                    messages=messages,
-                    model=request.model,
-                    temperature=gen_config.temperature,
-                    max_tokens=gen_config.max_tokens
-                ):
-                    yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
-                yield "data: [DONE]\n\n"
-            except Exception as e:
-                logger.error(f"LLM 流式生成失败: {e}", exc_info=True)
-                yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+    async def generate():
+        try:
+            async for chunk in client.llm_generate_stream_async(
+                messages=messages,
+                model=request.model,
+                temperature=gen_config.temperature,
+                max_tokens=gen_config.max_tokens
+            ):
+                yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            logger.error(f"LLM 流式生成失败: {e}", exc_info=True)
+            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
 
-        return StreamingResponse(
-            generate(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"LLM 流式生成失败: {e}", exc_info=True)
-        return error_response(error="LLMError", message=str(e), code=500)
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
 
 
 # ==================== TTS 接口 ====================
@@ -219,31 +209,26 @@ async def tts_generate(request: TTSRequest):
 
     返回音频文件
     """
-    try:
-        client = get_client()
+    client = get_client()
 
-        audio_data = await client.tts_generate_async(
-            text=request.text,
-            model=request.model,
-            speaker=request.speaker,
-            ref_audio=request.ref_audio,
-            ref_text=request.ref_text,
-            language=request.language,
-            instruct=request.instruct,
-            generation=request.generation
-        )
+    audio_data = await client.tts_generate_async(
+        text=request.text,
+        model=request.model,
+        speaker=request.speaker,
+        ref_audio=request.ref_audio,
+        ref_text=request.ref_text,
+        language=request.language,
+        instruct=request.instruct,
+        generation=request.generation
+    )
 
-        return Response(
-            content=audio_data,
-            media_type="audio/wav",
-            headers={
-                "Content-Disposition": "attachment; filename=tts_output.wav"
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"TTS 生成失败: {e}", exc_info=True)
-        return error_response(error="TTSError", message=str(e), code=500)
+    return Response(
+        content=audio_data,
+        media_type="audio/wav",
+        headers={
+            "Content-Disposition": "attachment; filename=tts_output.wav"
+        }
+    )
 
 
 @router.post("/tts/upload")
@@ -259,35 +244,32 @@ async def tts_with_upload(
 
     用于语音克隆场景
     """
-    try:
-        client = get_client()
+    client = get_client()
 
-        # 处理上传的参考音频
-        ref_audio_data = None
-        if ref_audio:
-            audio_bytes = await ref_audio.read()
-            ref_audio_data = base64.b64encode(audio_bytes).decode('utf-8')
+    # 处理上传的参考音频
+    ref_audio_data = None
+    if ref_audio:
+        audio_bytes = await ref_audio.read()
+        if len(audio_bytes) > 20 * 1024 * 1024:  # 20MB
+            raise ValidationException("参考音频文件不能超过 20MB")
+        ref_audio_data = base64.b64encode(audio_bytes).decode('utf-8')
 
-        audio_data = await client.tts_generate_async(
-            text=text,
-            speaker=speaker,
-            ref_audio=ref_audio_data,
-            ref_text=ref_text,
-            language=language,
-            model=cfg_get("core_nexus.tts_model") or None,
-        )
+    audio_data = await client.tts_generate_async(
+        text=text,
+        speaker=speaker,
+        ref_audio=ref_audio_data,
+        ref_text=ref_text,
+        language=language,
+        model=cfg_get("core_nexus.tts_model") or None,
+    )
 
-        return Response(
-            content=audio_data,
-            media_type="audio/wav",
-            headers={
-                "Content-Disposition": "attachment; filename=tts_output.wav"
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"TTS 生成失败: {e}", exc_info=True)
-        return error_response(error="TTSError", message=str(e), code=500)
+    return Response(
+        content=audio_data,
+        media_type="audio/wav",
+        headers={
+            "Content-Disposition": "attachment; filename=tts_output.wav"
+        }
+    )
 
 
 # ==================== ASR 接口 ====================
@@ -299,21 +281,16 @@ async def asr_transcribe(request: ASRRequest):
 
     接收 base64 音频数据
     """
-    try:
-        client = get_client()
+    client = get_client()
 
-        result = await client.asr_transcribe_async(
-            audio=request.audio,
-            language=request.language,
-            model=cfg_get("core_nexus.asr_model") or None,
-            **(request.generation or {})
-        )
+    result = await client.asr_transcribe_async(
+        audio=request.audio,
+        language=request.language,
+        model=cfg_get("core_nexus.asr_model") or None,
+        **(request.generation or {})
+    )
 
-        return success_response(data=result)
-
-    except Exception as e:
-        logger.error(f"ASR 识别失败: {e}", exc_info=True)
-        return error_response(error="ASRError", message=str(e), code=500)
+    return success_response(data=result)
 
 
 @router.post("/asr/upload")
@@ -326,24 +303,21 @@ async def asr_with_upload(
 
     支持上传音频文件进行识别
     """
-    try:
-        client = get_client()
+    client = get_client()
 
-        # 读取上传的音频文件
-        audio_bytes = await audio.read()
-        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+    # 读取上传的音频文件
+    audio_bytes = await audio.read()
+    if len(audio_bytes) > 20 * 1024 * 1024:  # 20MB
+        raise ValidationException("音频文件不能超过 20MB")
+    audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
 
-        result = await client.asr_transcribe_async(
-            audio=audio_base64,
-            language=language,
-            model=cfg_get("core_nexus.asr_model") or None,
-        )
+    result = await client.asr_transcribe_async(
+        audio=audio_base64,
+        language=language,
+        model=cfg_get("core_nexus.asr_model") or None,
+    )
 
-        return success_response(data=result)
-
-    except Exception as e:
-        logger.error(f"ASR 识别失败: {e}", exc_info=True)
-        return error_response(error="ASRError", message=str(e), code=500)
+    return success_response(data=result)
 
 
 # ==================== VL 接口 ====================
@@ -355,23 +329,18 @@ async def vl_generate(request: VLRequest):
 
     支持单图或多图输入
     """
-    try:
-        client = get_client()
+    client = get_client()
 
-        result = await client.vl_generate_async(
-            prompt=request.prompt,
-            image=request.image,
-            images=request.images,
-            messages=request.messages,
-            model=cfg_get("core_nexus.vl_model") or None,
-            **(request.generation or {})
-        )
+    result = await client.vl_generate_async(
+        prompt=request.prompt,
+        image=request.image,
+        images=request.images,
+        messages=request.messages,
+        model=cfg_get("core_nexus.vl_model") or None,
+        **(request.generation or {})
+    )
 
-        return success_response(data={"text": result})
-
-    except Exception as e:
-        logger.error(f"VL 生成失败: {e}", exc_info=True)
-        return error_response(error="VLError", message=str(e), code=500)
+    return success_response(data={"text": result})
 
 
 @router.post("/vl/stream")
@@ -381,37 +350,32 @@ async def vl_generate_stream(request: VLRequest):
 
     返回 SSE 流
     """
-    try:
-        client = get_client()
+    client = get_client()
 
-        async def generate():
-            try:
-                async for chunk in client.vl_generate_stream_async(
-                    prompt=request.prompt,
-                    image=request.image,
-                    images=request.images,
-                    messages=request.messages,
-                    model=cfg_get("core_nexus.vl_model") or None,
-                    **(request.generation or {})
-                ):
-                    yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
-                yield "data: [DONE]\n\n"
-            except Exception as e:
-                logger.error(f"VL 流式生成失败: {e}", exc_info=True)
-                yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+    async def generate():
+        try:
+            async for chunk in client.vl_generate_stream_async(
+                prompt=request.prompt,
+                image=request.image,
+                images=request.images,
+                messages=request.messages,
+                model=cfg_get("core_nexus.vl_model") or None,
+                **(request.generation or {})
+            ):
+                yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            logger.error(f"VL 流式生成失败: {e}", exc_info=True)
+            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
 
-        return StreamingResponse(
-            generate(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"VL 流式生成失败: {e}", exc_info=True)
-        return error_response(error="VLError", message=str(e), code=500)
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
 
 
 @router.post("/vl/upload")
@@ -424,26 +388,23 @@ async def vl_with_upload(
 
     支持上传图片进行分析
     """
-    try:
-        client = get_client()
+    client = get_client()
 
-        # 处理上传的图片
-        image_data = None
-        if image:
-            image_bytes = await image.read()
-            image_data = base64.b64encode(image_bytes).decode('utf-8')
+    # 处理上传的图片
+    image_data = None
+    if image:
+        image_bytes = await image.read()
+        if len(image_bytes) > 10 * 1024 * 1024:  # 10MB
+            raise ValidationException("图片文件不能超过 10MB")
+        image_data = base64.b64encode(image_bytes).decode('utf-8')
 
-        result = await client.vl_generate_async(
-            prompt=prompt,
-            image=image_data,
-            model=cfg_get("core_nexus.vl_model") or None,
-        )
+    result = await client.vl_generate_async(
+        prompt=prompt,
+        image=image_data,
+        model=cfg_get("core_nexus.vl_model") or None,
+    )
 
-        return success_response(data={"text": result})
-
-    except Exception as e:
-        logger.error(f"VL 生成失败: {e}", exc_info=True)
-        return error_response(error="VLError", message=str(e), code=500)
+    return success_response(data={"text": result})
 
 
 # ==================== Music 接口 ====================
@@ -489,81 +450,68 @@ async def text_to_music(request: TextToMusicRequest):
 
     支持 generate/retake/repaint/edit/extend/cover 模式
     """
-    try:
-        client = get_client()
+    client = get_client()
 
-        result = await client.text_to_music_async(
-            prompt=request.prompt,
-            duration=request.duration,
-            style=request.style,
-            model=request.model,
-            mode=request.mode,
-            lyrics=request.lyrics,
-            audio=request.audio,
-            variance=request.variance,
-            start_time=request.start_time,
-            end_time=request.end_time,
-            extend_left=request.extend_left,
-            extend_right=request.extend_right,
-            **(request.generation or {})
-        )
+    result = await client.text_to_music_async(
+        prompt=request.prompt,
+        duration=request.duration,
+        style=request.style,
+        model=request.model,
+        mode=request.mode,
+        lyrics=request.lyrics,
+        audio=request.audio,
+        variance=request.variance,
+        start_time=request.start_time,
+        end_time=request.end_time,
+        extend_left=request.extend_left,
+        extend_right=request.extend_right,
+        **(request.generation or {})
+    )
 
-        audio_bytes = _decode_audio_response(result)
-        return Response(
-            content=audio_bytes,
-            media_type="audio/wav",
-            headers={"Content-Disposition": "attachment; filename=music_output.wav"}
-        )
-
-    except Exception as e:
-        logger.error(f"音乐生成失败: {e}", exc_info=True)
-        return error_response(error="MusicError", message=str(e), code=500)
+    audio_bytes = _decode_audio_response(result)
+    return Response(
+        content=audio_bytes,
+        media_type="audio/wav",
+        headers={"Content-Disposition": "attachment; filename=music_output.wav"}
+    )
 
 
 @router.post("/music-to-music")
 async def music_to_music(request: MusicToMusicRequest):
     """音乐风格迁移"""
-    try:
-        client = get_client()
-        result = await client.music_to_music_async(
-            audio=request.audio,
-            prompt=request.prompt,
-            style=request.style,
-            model=request.model,
-            **(request.generation or {})
-        )
-        audio_bytes = _decode_audio_response(result)
-        return Response(
-            content=audio_bytes,
-            media_type="audio/wav",
-            headers={"Content-Disposition": "attachment; filename=style_transfer.wav"}
-        )
-    except Exception as e:
-        logger.error(f"音乐风格迁移失败: {e}", exc_info=True)
-        return error_response(error="MusicError", message=str(e), code=500)
+    client = get_client()
+    result = await client.music_to_music_async(
+        audio=request.audio,
+        prompt=request.prompt,
+        style=request.style,
+        model=request.model,
+        **(request.generation or {})
+    )
+    audio_bytes = _decode_audio_response(result)
+    return Response(
+        content=audio_bytes,
+        media_type="audio/wav",
+        headers={"Content-Disposition": "attachment; filename=style_transfer.wav"}
+    )
 
 
 @router.get("/music/bgm-audio/{bgm_id}")
 async def get_bgm_audio(bgm_id: int):
     """获取 BGM 的 base64 音频数据（供前端音乐编辑模式使用）"""
-    try:
-        from src.infrastructure.db.session import get_db_context
-        from src.domain.entities.bgm_item import BGMItem
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.bgm_item import BGMItem
 
-        with get_db_context() as db:
-            bgm = db.query(BGMItem).filter(BGMItem.id == bgm_id).first()
-            if not bgm:
-                return error_response(error="NotFound", message="BGM 不存在", code=404)
-            bgm_data = bgm.to_dict()
-            local_path = bgm.local_path
+    with get_db_context() as db:
+        bgm = db.query(BGMItem).filter(BGMItem.id == bgm_id).first()
+        if not bgm:
+            raise ResourceNotFoundException(resource_type="BGMItem", resource_id=bgm_id)
+        bgm_data = bgm.to_dict()
+        local_path = bgm.local_path
 
-        if not local_path or not os.path.exists(local_path):
-            return error_response(error="FileNotFound", message="BGM 文件不存在", code=404)
+    if not local_path or not os.path.exists(local_path):
+        raise ResourceNotFoundException(resource_type="BGMFile", resource_id=bgm_id)
 
-        with open(local_path, "rb") as f:
-            audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+    with open(local_path, "rb") as f:
+        audio_b64 = base64.b64encode(f.read()).decode("utf-8")
 
-        return success_response(data={"audio": audio_b64, "bgm": bgm_data})
-    except Exception as e:
-        logger.error(f"获取 BGM 音频失败: {e}", exc_info=True)
-        return error_response(error="MusicError", message=str(e), code=500)
+    return success_response(data={"audio": audio_b64, "bgm": bgm_data})

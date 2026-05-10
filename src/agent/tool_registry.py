@@ -289,6 +289,7 @@ class AnalyzeVideoVlParams(BaseModel):
     video_id: Opt[int] = Field(default=None, description="视频 ID")
     file_path: Opt[str] = Field(default=None, description="直接传入文件路径（与 video_id 二选一）")
     prompt: Opt[str] = Field(default="请详细描述这个视频的内容、场景和风格", description="分析提示")
+    depth: Opt[str] = Field(default="standard", description="分析深度: quick(快速)/standard(标准)/deep(深度)")
 
 
 class GenerateMusicParams(BaseModel):
@@ -525,6 +526,7 @@ class Tool:
     after_execute: Optional[Callable] = None
     permission: str = "modify"  # read_only / modify / destructive
     category: str = "video"     # "common" | "video" | "comic"
+    result_template: Optional[str] = None  # 快速路径结果模板，如 "剪切完成: {start_time} - {end_time}"
 
     def __post_init__(self):
         if self.examples is None:
@@ -590,7 +592,8 @@ class ToolRegistry:
         before_execute: Optional[Callable] = None,
         after_execute: Optional[Callable] = None,
         permission: str = "modify",
-        category: str = "video"
+        category: str = "video",
+        result_template: Optional[str] = None,
     ) -> Callable:
         """
         注册工具装饰器
@@ -603,6 +606,7 @@ class ToolRegistry:
             param_model: Pydantic 参数校验模型
             before_execute: 执行前钩子（异步函数，接收 params dict，返回修改后的 params）
             after_execute: 执行后钩子（异步函数，接收 result dict，返回修改后的 result）
+            result_template: 快速路径结果模板
 
         Returns:
             装饰器函数
@@ -618,7 +622,8 @@ class ToolRegistry:
                 before_execute=before_execute,
                 after_execute=after_execute,
                 permission=permission,
-                category=category
+                category=category,
+                result_template=result_template,
             )
             logger.info(f"注册工具: {name}")
             return func
@@ -721,7 +726,8 @@ def validate_videos_exist(params: Dict) -> Dict:
     },
     examples=["帮我把视频前30秒剪出来", "从第10秒到第30秒剪切"],
     param_model=CutVideoParams,
-    before_execute=validate_video_exists
+    before_execute=validate_video_exists,
+    result_template="剪切完成: {start_time} - {end_time or '结尾'}"
 )
 async def tool_cut_video(
     video_id: int,
@@ -1442,6 +1448,7 @@ async def tool_generate_tts(
     examples=["有什么素材", "查看素材库"],
     permission="read_only",
     category="common",
+    result_template="共找到 {total} 个素材"
 )
 async def tool_list_videos(**kwargs) -> Dict[str, Any]:
     """列出视频工具，支持按项目筛选"""
@@ -1539,6 +1546,7 @@ async def tool_list_videos(**kwargs) -> Dict[str, Any]:
     examples=["第一个视频的描述", "这个视频讲了什么", "查看描述"],
     permission="read_only",
     category="common",
+    result_template="视频信息已获取"
 )
 async def tool_get_video_description(video_id: int, **kwargs) -> Dict[str, Any]:
     """查询视频素材的描述信息"""
@@ -1821,6 +1829,7 @@ async def tool_transcribe_video(
         "video_id": {"type": "integer", "description": "视频 ID（与 file_path 二选一）"},
         "file_path": {"type": "string", "description": "文件路径（与 video_id 二选一，支持图片和视频）"},
         "prompt": {"type": "string", "description": "分析提示（可选）"},
+        "depth": {"type": "string", "description": "分析深度: quick(快速)/standard(标准)/deep(深度)", "default": "standard"},
     },
     examples=["这个视频讲了什么", "分析视频内容和风格", "详细描述一下这个视频"],
     param_model=AnalyzeVideoVlParams,
@@ -1830,9 +1839,16 @@ async def tool_analyze_video_vl(
     video_id: int = None,
     file_path: str = None,
     prompt: str = "请详细描述这个视频的内容、场景和风格",
+    depth: str = "standard",
     **kwargs
 ) -> Dict[str, Any]:
-    """AI 视觉理解工具（优化版：优先使用镜头索引 + 文本 LLM，降级到 VL）"""
+    """AI 视觉理解工具（优化版：优先使用镜头索引 + 文本 LLM，降级到 VL）
+
+    depth 参数:
+    - quick: 仅提取中间帧快速分析
+    - standard: 索引优先 → VL fallback（默认）
+    - deep: 强制完整索引 + VL 分析
+    """
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import qwen_vl_adapter
@@ -1862,6 +1878,20 @@ async def tool_analyze_video_vl(
         ext = os.path.splitext(local_path)[1].lower()
         if ext in {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'}:
             analysis = qwen_vl_adapter.image_summary(tmp_path=local_path, prompt=prompt)
+        elif depth == "quick":
+            # 快速模式：提取中间帧直接分析
+            try:
+                import tempfile
+                mid_time = (duration_sec or 10) / 2
+                tmp_dir = tempfile.mkdtemp()
+                frame_path = os.path.join(tmp_dir, "mid_frame.jpg")
+                ffmpeg.extract_frame(local_path, mid_time, frame_path)
+                analysis = qwen_vl_adapter.image_summary(
+                    tmp_path=frame_path,
+                    prompt=f"快速分析: {prompt}" if prompt else "简要描述这个画面"
+                )
+            except Exception as e:
+                analysis = f"快速分析失败: {e}"
         elif video_id:
             # 视频文件 + 有 video_id → 优先尝试索引分析
             try:
@@ -1869,7 +1899,9 @@ async def tool_analyze_video_vl(
                 from src.application.services.llm_adapter import generate_response_async
 
                 indexer = VideoIndexer()
-                context = indexer.build_structured_context(video_id, prompt)
+                # deep 模式强制重新索引 max_shots=30
+                max_shots = 30 if depth == "deep" else 10
+                context = indexer.build_structured_context(video_id, prompt, max_shots=max_shots)
                 if context:
                     messages = [
                         {"role": "system", "content": "你是一个视频分析专家。根据以下视频的镜头级索引数据回答用户问题，给出详细、准确的分析。"},
@@ -2202,12 +2234,15 @@ async def tool_generate_image(
 ) -> Dict[str, Any]:
     """AI 图片生成工具"""
     from src.shared.utils.core_nexus_client import get_client
+    from src.shared.utils.config_manager import get as cfg_get
 
     try:
         client = get_client()
+        image_model = cfg_get("core_nexus.image_model") or None
         result = await client.text_to_image_async(
             prompt=prompt,
             negative_prompt=negative_prompt,
+            model=image_model,
             width=width,
             height=height,
         )
@@ -2276,8 +2311,11 @@ async def tool_edit_image(
 ) -> Dict[str, Any]:
     """AI 图片编辑工具"""
     from src.shared.utils.core_nexus_client import get_client
+    from src.shared.utils.config_manager import get as cfg_get
     from src.infrastructure.db.session import get_db_context
     from src.domain.entities.video_source import VideoSource
+
+    image_model = cfg_get("core_nexus.image_model") or None
 
     try:
         # 查找原图
@@ -2304,6 +2342,7 @@ async def tool_edit_image(
             prompt=prompt,
             image=image_path,
             mask=mask_path if mask_path and os.path.isfile(mask_path) else None,
+            model=image_model,
         )
 
         image_bytes = result.get("image_bytes")
@@ -2345,6 +2384,200 @@ async def tool_edit_image(
         }
     except Exception as e:
         logger.error(f"图片编辑失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+class GenerateVideoParams(BaseModel):
+    prompt: str = Field(..., description="视频描述")
+    negative_prompt: Opt[str] = Field(default=None, description="反向提示词")
+    duration: int = Field(default=5, ge=3, le=15, description="视频时长（秒）")
+    resolution: str = Field(default="720P", description="分辨率：720P / 1080P")
+
+    @field_validator("resolution")
+    @classmethod
+    def validate_resolution(cls, v):
+        if v and v not in ("720P", "1080P"):
+            raise ValueError(f"分辨率必须是 720P 或 1080P: {v}")
+        return v
+
+
+@registry.register(
+    name="generate_video",
+    description="AI 文本生成视频：根据文字描述生成视频。适合创意短片、动画等场景",
+    parameters={
+        "prompt": {"type": "string", "description": "视频内容描述（如 '一只小猫在草地上奔跑'）"},
+        "negative_prompt": {"type": "string", "description": "反向提示词（可选）"},
+        "duration": {"type": "integer", "description": "视频时长（秒，3-15）", "default": 5},
+        "resolution": {"type": "string", "description": "分辨率：720P / 1080P", "default": "720P"},
+    },
+    examples=["生成一段小猫在草地上奔跑的视频", "海边日落的唯美画面"],
+    param_model=GenerateVideoParams,
+    category="common",
+)
+async def tool_generate_video(
+    prompt: str,
+    negative_prompt: str = None,
+    duration: int = 5,
+    resolution: str = "720P",
+    **kwargs
+) -> Dict[str, Any]:
+    """AI 文本生成视频"""
+    from src.shared.utils.core_nexus_client import get_client
+    from src.shared.utils.config_manager import get as cfg_get
+
+    try:
+        client = get_client()
+        video_model = cfg_get("core_nexus.video_model") or None
+        result = await client.text_to_video_async(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            model=video_model,
+            duration=duration,
+            resolution=resolution,
+        )
+
+        video_bytes = result.get("video_bytes")
+        if not video_bytes or len(video_bytes) < 10000:
+            return {"success": False, "error": "视频生成失败，返回数据异常，请重试"}
+
+        project_id = kwargs.get("project_id")
+
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False, dir=tempfile.gettempdir()) as f:
+            f.write(video_bytes)
+            temp_path = f.name
+
+        if project_id:
+            saved = _save_temp_file(
+                temp_path, project_id, "video", "generate_video",
+                file_name=f"ai_video_{int(time.time())}.mp4",
+            )
+            if saved:
+                return {
+                    "success": True,
+                    "message": f"视频生成完成 ({resolution}, {duration}秒)",
+                    **saved,
+                }
+
+        import uuid
+        from src import config
+        save_dir = os.path.join(str(config.ROOT_DIR_WIN), "static", "source_videos")
+        os.makedirs(save_dir, exist_ok=True)
+        filename = f"ai_video_{uuid.uuid4().hex[:8]}.mp4"
+        save_path = os.path.join(save_dir, filename)
+        shutil.move(temp_path, save_path)
+        web_path = f"static/source_videos/{filename}"
+        return {
+            "success": True,
+            "message": f"视频生成完成 ({resolution}, {duration}秒)",
+            "web_path": web_path,
+            "local_path": save_path,
+        }
+    except Exception as e:
+        logger.error(f"视频生成失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+class ImageToVideoAIParams(BaseModel):
+    video_id: int = Field(..., description="原始图片素材 ID")
+    prompt: Opt[str] = Field(default=None, description="运动/场景描述（可选）")
+    duration: int = Field(default=5, ge=3, le=15, description="视频时长（秒）")
+    resolution: str = Field(default="720P", description="分辨率：720P / 1080P")
+
+    @field_validator("resolution")
+    @classmethod
+    def validate_resolution(cls, v):
+        if v and v not in ("720P", "1080P"):
+            raise ValueError(f"分辨率必须是 720P 或 1080P: {v}")
+        return v
+
+
+@registry.register(
+    name="image_to_video_ai",
+    description="AI 图生视频：将图片通过 AI 动态化为视频（非 FFmpeg 静态展示，而是 AI 生成运动画面）",
+    parameters={
+        "video_id": {"type": "integer", "description": "图片素材 ID"},
+        "prompt": {"type": "string", "description": "运动描述（如 '人物转头微笑'，可选）"},
+        "duration": {"type": "integer", "description": "视频时长（秒，3-15）", "default": 5},
+        "resolution": {"type": "string", "description": "分辨率：720P / 1080P", "default": "720P"},
+    },
+    examples=["把这张图片变成视频", "让这张图中的人物动起来"],
+    param_model=ImageToVideoAIParams,
+    category="common",
+)
+async def tool_image_to_video_ai(
+    video_id: int,
+    prompt: str = None,
+    duration: int = 5,
+    resolution: str = "720P",
+    **kwargs
+) -> Dict[str, Any]:
+    """AI 图生视频"""
+    from src.shared.utils.core_nexus_client import get_client
+    from src.shared.utils.config_manager import get as cfg_get
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.video_source import VideoSource
+
+    try:
+        with get_db_context() as db:
+            source = db.query(VideoSource).filter(VideoSource.id == video_id).first()
+            if not source:
+                return {"success": False, "error": f"素材 ID {video_id} 不存在"}
+            image_path = source.local_path or source.web_path
+            if image_path and not os.path.isabs(image_path):
+                image_path = os.path.join(str(config.ROOT_DIR_WIN), image_path.lstrip('/'))
+            if not image_path or not os.path.isfile(image_path):
+                return {"success": False, "error": f"素材文件不存在: {image_path}"}
+
+        client = get_client()
+        video_model = cfg_get("core_nexus.video_model") or None
+        result = await client.image_to_video_async(
+            image=image_path,
+            prompt=prompt,
+            model=video_model,
+            duration=duration,
+            resolution=resolution,
+        )
+
+        video_bytes = result.get("video_bytes")
+        if not video_bytes or len(video_bytes) < 10000:
+            return {"success": False, "error": "视频生成失败，返回数据异常，请重试"}
+
+        project_id = kwargs.get("project_id")
+
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False, dir=tempfile.gettempdir()) as f:
+            f.write(video_bytes)
+            temp_path = f.name
+
+        if project_id:
+            saved = _save_temp_file(
+                temp_path, project_id, "video", "image_to_video_ai",
+                file_name=f"ai_i2v_{int(time.time())}.mp4",
+            )
+            if saved:
+                return {
+                    "success": True,
+                    "message": f"视频生成完成 ({resolution}, {duration}秒)",
+                    **saved,
+                }
+
+        import uuid
+        from src import config
+        save_dir = os.path.join(str(config.ROOT_DIR_WIN), "static", "source_videos")
+        os.makedirs(save_dir, exist_ok=True)
+        filename = f"ai_i2v_{uuid.uuid4().hex[:8]}.mp4"
+        save_path = os.path.join(save_dir, filename)
+        shutil.move(temp_path, save_path)
+        web_path = f"static/source_videos/{filename}"
+        return {
+            "success": True,
+            "message": f"视频生成完成 ({resolution}, {duration}秒)",
+            "web_path": web_path,
+            "local_path": save_path,
+        }
+    except Exception as e:
+        logger.error(f"AI 图生视频失败: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -2859,6 +3092,7 @@ async def tool_download_video(
     examples=["现在几点了", "今天几号", "当前时间"],
     permission="read_only",
     category="common",
+    result_template="当前时间已获取"
 )
 async def tool_get_current_time(**kwargs) -> Dict[str, Any]:
     """查询当前时间"""
@@ -3012,7 +3246,8 @@ async def tool_search_files(
     },
     examples=["压缩这个视频", "把视频文件变小一点"],
     param_model=CompressVideoParams,
-    before_execute=validate_video_exists
+    before_execute=validate_video_exists,
+    result_template="压缩完成"
 )
 async def tool_compress_video(
     video_id: int,
@@ -3149,7 +3384,8 @@ class ExtractKeyframesParams(BaseModel):
     },
     param_model=ExtractKeyframesParams,
     before_execute=validate_video_exists,
-    permission="read_only"
+    permission="read_only",
+    result_template="关键帧已提取"
 )
 async def tool_extract_keyframes(
     video_id: int,
@@ -3213,7 +3449,8 @@ async def tool_extract_keyframes(
     },
     examples=["把前5秒转成GIF", "做个动图"],
     param_model=ConvertToGifParams,
-    before_execute=validate_video_exists
+    before_execute=validate_video_exists,
+    result_template="已转换为 GIF"
 )
 async def tool_convert_to_gif(
     video_id: int,
@@ -3339,7 +3576,8 @@ async def tool_separate_vocal(
         "video_id": {"type": "integer", "description": "视频 ID"},
     },
     examples=["提取视频的音频", "把视频的声音导出来"],
-    before_execute=validate_video_exists
+    before_execute=validate_video_exists,
+    result_template="音频已提取"
 )
 async def tool_extract_audio(video_id: int, **kwargs) -> Dict[str, Any]:
     """提取音频工具"""
@@ -3653,6 +3891,7 @@ async def tool_set_cover(video_id: int, cover_image: str, **kwargs) -> Dict[str,
     examples=["系统信息", "有 GPU 吗", "磁盘还剩多少"],
     permission="read_only",
     category="common",
+    result_template="系统信息已获取"
 )
 async def tool_get_system_info(**kwargs) -> Dict[str, Any]:
     """获取系统信息"""
@@ -4192,7 +4431,8 @@ async def tool_sharpen_video(video_id: int, amount: float = 1.5, **kwargs) -> Di
         "angle": {"type": "integer", "description": "旋转角度: 90/180/270"},
     },
     examples=["把视频旋转90度", "旋转180度"],
-    before_execute=validate_video_exists
+    before_execute=validate_video_exists,
+    result_template="旋转完成"
 )
 async def tool_rotate_video(video_id: int, angle: int = 90, **kwargs) -> Dict[str, Any]:
     """旋转视频"""
@@ -4243,7 +4483,8 @@ async def tool_rotate_video(video_id: int, angle: int = 90, **kwargs) -> Dict[st
         "direction": {"type": "string", "description": "翻转方向: horizontal/vertical"},
     },
     examples=["水平翻转视频", "垂直翻转"],
-    before_execute=validate_video_exists
+    before_execute=validate_video_exists,
+    result_template="翻转完成"
 )
 async def tool_flip_video(video_id: int, direction: str = "horizontal", **kwargs) -> Dict[str, Any]:
     """翻转视频"""
@@ -4577,7 +4818,8 @@ async def tool_add_text_overlay(
         "video_id": {"type": "integer", "description": "视频 ID"},
     },
     examples=["倒放视频", "视频反过来播放"],
-    before_execute=validate_video_exists
+    before_execute=validate_video_exists,
+    result_template="倒放完成"
 )
 async def tool_reverse_video(video_id: int, **kwargs) -> Dict[str, Any]:
     """视频倒放"""
@@ -5603,8 +5845,10 @@ async def tool_comic_generate_image(project_id: int, panel_index: int, **kwargs)
     from src.infrastructure.db.session import get_db_context
     from src.domain.entities.comic_project import ComicProject
     from src.shared.utils.core_nexus_client import get_client
+    from src.shared.utils.config_manager import get as cfg_get
     try:
         client = get_client()
+        image_model = cfg_get("core_nexus.image_model") or None
         with get_db_context() as db:
             project = db.query(ComicProject).get(project_id)
             if not project:
@@ -5623,7 +5867,7 @@ async def tool_comic_generate_image(project_id: int, panel_index: int, **kwargs)
                 "美漫": "western comic style, bold lines, vibrant colors",
             }
             full_prompt = f"{style_map.get(style, 'anime style')}, {prompt}"
-            result = await client.text_to_image_async(prompt=full_prompt)
+            result = await client.text_to_image_async(prompt=full_prompt, model=image_model)
             if result.get("status") == "stub":
                 return {"success": False, "error": "图片生成服务尚未就绪"}
             image_path = result.get("image_url") or result.get("image_path")
@@ -5654,8 +5898,10 @@ async def tool_comic_generate_video(
     from src.infrastructure.db.session import get_db_context
     from src.domain.entities.comic_project import ComicProject
     from src.shared.utils.core_nexus_client import get_client
+    from src.shared.utils.config_manager import get as cfg_get
     try:
         client = get_client()
+        video_model = cfg_get("core_nexus.video_model") or None
         with get_db_context() as db:
             project = db.query(ComicProject).get(project_id)
             if not project:
@@ -5666,10 +5912,15 @@ async def tool_comic_generate_video(
             panel = panels[panel_index]
             prompt = panel.get("scene_description", "")
             ref_image = panel.get("generated_image_path")
-            result = await client.text_to_video_async(
-                prompt=prompt, duration=duration, ref_image=ref_image
-            )
-            if result.get("status") == "stub":
+            if ref_image:
+                result = await client.image_to_video_async(
+                    image=ref_image, prompt=prompt, model=video_model,
+                )
+            else:
+                result = await client.text_to_video_async(
+                    prompt=prompt, model=video_model,
+                )
+            if not result.get("video"):
                 return {"success": False, "error": "视频生成服务尚未就绪"}
             video_path = result.get("video_url") or result.get("video_path")
             if video_path:

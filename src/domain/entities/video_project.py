@@ -18,7 +18,7 @@ class VideoProject(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), nullable=False, comment="项目名称")
     description = Column(Text, nullable=True, comment="项目描述")
-    mode = Column(String(20), default="workflow", comment="模式: workflow/conversation")
+    mode = Column(String(20), default="workflow", comment="模式: workflow/conversation", index=True)
     status = Column(String(50), default="draft", comment="状态: draft/processing/completed", index=True)
     duration = Column(Float, default=0.0, comment="总时长（秒）")
 
@@ -87,7 +87,7 @@ class ClipPlanItem(Base):
     __tablename__ = "clip_plan_items"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    project_id = Column(Integer, ForeignKey('video_projects.id'), nullable=False, comment="项目 ID")
+    project_id = Column(Integer, ForeignKey('video_projects.id', ondelete='CASCADE'), nullable=False, index=True, comment="项目 ID")
     sequence = Column(Integer, default=0, comment="顺序")
     material_id = Column(Integer, nullable=True, comment="素材 ID")
     material_name = Column(String(255), nullable=True, comment="素材名称")

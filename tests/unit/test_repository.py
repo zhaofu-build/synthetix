@@ -3,10 +3,10 @@ import pytest
 from unittest.mock import Mock, MagicMock, patch
 from sqlalchemy.orm import Session
 
-from src.repository.video_repository import VideoRepository
-from src.repository.audio_repository import AudioRepository
-from src.model.entity.video_source import VideoSource
-from src.model.entity.audio_source import AudioSource
+from src.infrastructure.repositories.video_repository import VideoRepository
+from src.infrastructure.repositories.audio_repository import AudioRepository
+from src.domain.entities.video_source import VideoSource
+from src.domain.entities.audio_source import AudioSource
 
 
 class TestVideoRepository:

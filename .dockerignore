@@ -8,6 +8,10 @@ synthetix-vue/node_modules/
 .claude/
 *.md
 doc/
+docs/
 models/
 *.db
 .env
+venv/
+.venv/
+synthetix-tauri/

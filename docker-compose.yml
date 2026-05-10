@@ -8,7 +8,7 @@ services:
     volumes:
       - ./src/db:/app/src/db
       - ./static:/app/static
-      - model_cache:/root/.synthetix
+      - model_cache:/home/app/.cache
     restart: unless-stopped
     deploy:
       resources:

@@ -7,10 +7,12 @@ from src.infrastructure.repositories.base_repository import BaseRepository, T
 from src.infrastructure.repositories.video_repository import VideoRepository
 from src.infrastructure.repositories.audio_repository import AudioRepository
 from src.infrastructure.repositories.shot_repository import ShotRepository
+from src.infrastructure.repositories.config_store_repository import ConfigStoreRepository
 
 __all__ = [
     'BaseRepository',
     'VideoRepository',
     'AudioRepository',
     'ShotRepository',
+    'ConfigStoreRepository',
 ]

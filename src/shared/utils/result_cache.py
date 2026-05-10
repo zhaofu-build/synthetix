@@ -103,3 +103,15 @@ def cache_stats() -> dict:
     files = [f for f in os.listdir(CACHE_DIR) if f.endswith(".json")]
     total_size = sum(os.path.getsize(os.path.join(CACHE_DIR, f)) for f in files)
     return {"count": len(files), "total_size_mb": round(total_size / 1024 / 1024, 2)}
+
+
+# ==================== 镜头级缓存 ====================
+
+def get_shot_cached(video_id: int, shot_index: int, prefix: str, ttl: int = DEFAULT_TTL) -> Optional[Any]:
+    """镜头级缓存 — 按 video_id + shot_index + prefix 查找"""
+    return get_cached(str(video_id), f"shot_{shot_index}_{prefix}", ttl=ttl)
+
+
+def set_shot_cached(video_id: int, shot_index: int, prefix: str, result: Any):
+    """镜头级缓存 — 存储"""
+    set_cached(str(video_id), f"shot_{shot_index}_{prefix}", result)

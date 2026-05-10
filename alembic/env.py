@@ -23,6 +23,7 @@ from src.domain.entities.comic_project import ComicProject
 from src.domain.entities.comic_series import ComicSeries
 from src.domain.entities.project_temp_file import ProjectTempFile
 from src.domain.entities.video_shot import VideoShot
+from src.domain.entities.config_store import ConfigStore
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

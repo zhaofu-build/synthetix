@@ -1,7 +1,7 @@
 """API 请求模型验证测试"""
 import pytest
 from pydantic import ValidationError
-from src.model.request import (
+from src.shared.models.request import (
     BaseQueryRequest,
     VideoQueryRequest,
     DeleteRequest,

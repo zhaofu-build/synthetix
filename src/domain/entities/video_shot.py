@@ -17,7 +17,7 @@ class VideoShot(Base):
     __tablename__ = 'video_shots'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    video_id = Column(Integer, ForeignKey('video_source.id'), nullable=False, index=True)
+    video_id = Column(Integer, ForeignKey('video_source.id', ondelete='CASCADE'), nullable=False, index=True)
     shot_index = Column(Integer, default=0, comment="镜头序号（从 0 开始）")
     scene_group = Column(Integer, default=0, comment="场景组号")
 
@@ -27,6 +27,7 @@ class VideoShot(Base):
     keyframe_paths = Column(JSON, default=list, comment="关键帧路径列表 [{path, timestamp}]")
     subtitle_text = Column(Text, nullable=True, comment="该时段的字幕文本")
     description = Column(Text, nullable=True, comment="镜头描述（来自关键帧 VL 分析）")
+    shot_type = Column(String(20), default="unknown", comment="镜头类型: closeup/medium/wide/unknown")
 
     index_status = Column(
         String(20), default="pending",
@@ -52,6 +53,7 @@ class VideoShot(Base):
             "keyframe_paths": self.keyframe_paths or [],
             "subtitle_text": self.subtitle_text,
             "description": self.description,
+            "shot_type": self.shot_type or "unknown",
             "index_status": self.index_status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

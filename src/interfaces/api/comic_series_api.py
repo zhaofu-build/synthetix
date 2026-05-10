@@ -67,7 +67,8 @@ def list_series(
             "page_size": page_size,
         })
     except Exception as e:
-        return error_response(error="QueryError", message=str(e), code=500)
+        logger.error("查询漫剧系列失败: %s", e)
+        return error_response(error="QueryError", message="查询失败，请稍后重试", code=500)
 
 
 @router.get("/{series_id}", summary="获取漫剧系列")
@@ -99,7 +100,7 @@ def update_series(series_id: int, req: dict, db: Session = Depends(get_db)):
         return success_response(data=series.to_dict(), message="更新成功")
     except Exception as e:
         db.rollback()
-        return error_response(error="UpdateError", message=str(e), code=500)
+        return error_response(error="UpdateError", message="更新失败，请稍后重试", code=500)
 
 
 @router.delete("/{series_id}", summary="删除漫剧系列")
@@ -116,7 +117,7 @@ def delete_series(series_id: int, db: Session = Depends(get_db)):
         return success_response(message="系列已删除")
     except Exception as e:
         db.rollback()
-        return error_response(error="DeleteError", message=str(e), code=500)
+        return error_response(error="DeleteError", message="删除失败，请稍后重试", code=500)
 
 
 # ==================== 集数管理 ====================

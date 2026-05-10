@@ -1,6 +1,57 @@
+import json
 import logging
 import os
-from datetime import datetime
+import threading
+from datetime import datetime, timezone
+
+
+# ---------------------------------------------------------------------------
+# Trace‑id 上下文（线程局部，可选使用）
+# ---------------------------------------------------------------------------
+_trace_local = threading.local()
+
+
+def set_trace_id(trace_id: str):
+    """为当前线程设置 trace_id，之后 JSON 日志会自动包含此字段。"""
+    _trace_local.trace_id = trace_id
+
+
+def clear_trace_id():
+    """清除当前线程的 trace_id。"""
+    _trace_local.trace_id = None
+
+
+def get_trace_id() -> str:
+    return getattr(_trace_local, "trace_id", "") or ""
+
+
+# ---------------------------------------------------------------------------
+# JSON 结构化 Formatter
+# ---------------------------------------------------------------------------
+class JsonFormatter(logging.Formatter):
+    """当 LOG_FORMAT=json 时使用的结构化 JSON 格式化器。
+
+    输出字段：timestamp, level, logger, message, trace_id（如果存在）。
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_entry = {
+            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+
+        # 仅在 trace_id 非空时包含
+        trace_id = get_trace_id()
+        if trace_id:
+            log_entry["trace_id"] = trace_id
+
+        # 附加异常信息（如果有）
+        if record.exc_info and record.exc_info[0] is not None:
+            log_entry["exception"] = self.formatException(record.exc_info)
+
+        return json.dumps(log_entry, ensure_ascii=False)
 
 
 # 基础版 - 每次启动生成当天日志文件
@@ -28,6 +79,9 @@ from datetime import datetime
 def setup_advanced_logging():
     from logging.handlers import TimedRotatingFileHandler
     import sys
+
+    # 是否启用 JSON 结构化日志
+    use_json = os.environ.get("LOG_FORMAT", "").strip().lower() == "json"
 
     # 创建日志目录
     log_dir = "static/loginfo"
@@ -58,10 +112,13 @@ def setup_advanced_logging():
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.DEBUG)  # 控制台显示所有级别的日志
 
-    # 统一的日志格式
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
+    # 根据 LOG_FORMAT 环境变量选择格式
+    if use_json:
+        formatter = JsonFormatter()
+    else:
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
     file_handler.setFormatter(formatter)
     console_handler.setFormatter(formatter)
 

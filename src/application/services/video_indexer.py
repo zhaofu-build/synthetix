@@ -45,12 +45,14 @@ class VideoIndexer:
                 return [s.to_dict() for s in shots]
         return None
 
-    def build_structured_context(self, video_id: int, prompt: str = None) -> Optional[str]:
+    def build_structured_context(self, video_id: int, prompt: str = None, max_shots: int = 10) -> Optional[str]:
         """从镜头索引构建结构化文本上下文，供 LLM 分析使用。"""
         from src.infrastructure.db.session import get_db_context
         from src.infrastructure.repositories import VideoRepository
 
         shots = self.get_or_create_index(video_id)
+        if shots and max_shots:
+            shots = shots[:max_shots]
         if not shots:
             return None
 
@@ -76,6 +78,56 @@ class VideoIndexer:
 
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self._run_index_pipeline, video_id)
+
+    async def index_video_progressive(self, video_id: int):
+        """渐进式索引，yield 进度事件。"""
+        lock = self._indexing_locks.get(video_id)
+        if lock and lock.locked():
+            yield {"stage": "skipped", "message": "正在索引中", "progress": 0}
+            return
+
+        yield {"stage": "resolving", "message": "获取视频信息...", "progress": 0.1}
+        video_info = self._resolve_video(video_id)
+        if not video_info:
+            yield {"stage": "error", "message": f"视频不存在: video_id={video_id}"}
+            return
+
+        video_path = video_info["local_path"]
+        duration = video_info["duration"]
+
+        yield {"stage": "detecting", "message": "检测场景切换...", "progress": 0.2}
+        try:
+            shots = self._detect_shots(video_path, duration)
+        except Exception:
+            shots = [{"start_time": 0.0, "end_time": duration}]
+
+        yield {"stage": "keyframes", "message": f"提取关键帧 ({len(shots)} 个镜头)...", "progress": 0.4}
+        keyframe_dir = os.path.join(os.path.dirname(video_path), f"index_keyframes_{video_id}")
+        try:
+            shots = self._extract_shot_keyframes(video_path, shots, keyframe_dir)
+        except Exception:
+            pass
+
+        yield {"stage": "asr", "message": "语音转录中...", "progress": 0.6}
+        try:
+            segments = self._run_asr(video_path)
+            shots = self._align_subtitles_to_shots(shots, segments, video_id=video_id)
+        except Exception:
+            pass
+
+        yield {"stage": "vl", "message": "分析镜头...", "progress": 0.7}
+        try:
+            shots = self._analyze_keyframes(shots, max_shots=10, video_id=video_id)
+        except Exception:
+            pass
+
+        success = self._persist_shots(video_id, shots)
+        yield {
+            "stage": "complete" if success else "error",
+            "message": f"索引完成: {len(shots)} 个镜头" if success else "索引失败",
+            "progress": 1.0,
+            "shots_count": len(shots),
+        }
 
     # ── Pipeline Steps ──
 
@@ -197,13 +249,22 @@ class VideoIndexer:
             return []
 
     def _align_subtitles_to_shots(
-        self, shots: List[Dict], segments: List[Dict]
+        self, shots: List[Dict], segments: List[Dict], video_id: int = None
     ) -> List[Dict]:
         """将 ASR segments 按时间重叠对齐到镜头。"""
         if not segments:
             return shots
 
         for shot in shots:
+            # 镜头级字幕缓存
+            si = shot.get("shot_index", 0)
+            if video_id is not None:
+                from src.shared.utils.result_cache import get_shot_cached, set_shot_cached
+                shot_sub = get_shot_cached(video_id, si, "subtitle")
+                if shot_sub is not None:
+                    shot["subtitle_text"] = shot_sub
+                    continue
+
             s_start = shot["start_time"]
             s_end = shot["end_time"]
             texts = []
@@ -219,11 +280,15 @@ class VideoIndexer:
                 if seg_dur <= 0 or overlap / seg_dur > 0.5:
                     texts.append(seg["text"])
             shot["subtitle_text"] = " ".join(texts).strip() or None
+            # 镜头级字幕缓存保存
+            if video_id is not None and shot.get("subtitle_text"):
+                from src.shared.utils.result_cache import set_shot_cached
+                set_shot_cached(video_id, si, "subtitle", shot["subtitle_text"])
 
         return shots
 
     def _analyze_keyframes(
-        self, shots: List[Dict], max_shots: int = 10
+        self, shots: List[Dict], max_shots: int = 10, video_id: int = None
     ) -> List[Dict]:
         """对关键帧图像调用 image_summary 进行 VL 分析（限制调用次数）。"""
         from src.application.services import qwen_vl_adapter
@@ -241,7 +306,17 @@ class VideoIndexer:
             if not os.path.exists(kf_path):
                 continue
 
-            # 检查缓存
+            # 检查镜头级缓存（优先于文件级缓存）
+            si = shot.get("shot_index", 0)
+            if video_id is not None:
+                from src.shared.utils.result_cache import get_shot_cached, set_shot_cached
+                shot_vl = get_shot_cached(video_id, si, "vl_desc")
+                if shot_vl is not None:
+                    shot["description"] = shot_vl
+                    analyzed += 1
+                    continue
+
+            # 检查文件级缓存
             cached = get_cached(kf_path, "vl_image", ttl=3600 * 4)
             if cached is not None:
                 shot["description"] = cached
@@ -251,16 +326,38 @@ class VideoIndexer:
             try:
                 desc = qwen_vl_adapter.image_summary(
                     tmp_path=kf_path,
-                    prompt="简述这个画面中的场景、人物、动作和氛围，一句话即可"
+                    prompt="分析这个画面，输出两行：\n1. 镜头类型（从 closeup/medium/wide/unknown 中选择一个）\n2. 一句话描述场景、人物、动作和氛围\n格式：类型: xxx\n描述: xxx"
                 )
                 if desc:
-                    shot["description"] = desc
+                    parsed = self._parse_vl_result(desc)
+                    shot["description"] = parsed["description"]
+                    shot["shot_type"] = parsed["shot_type"]
                     set_cached(kf_path, "vl_image", desc)
+                    # 保存镜头级缓存
+                    if video_id is not None:
+                        from src.shared.utils.result_cache import set_shot_cached
+                        set_shot_cached(video_id, si, "vl_desc", desc)
+                        set_shot_cached(video_id, si, "shot_type", parsed["shot_type"])
                 analyzed += 1
             except Exception as e:
                 logger.warning(f"[Indexer] 关键帧 VL 分析失败: {e}")
 
         return shots
+
+    def _parse_vl_result(self, text: str) -> Dict[str, str]:
+        """解析 VL 结果，提取 shot_type 和 description"""
+        result = {"shot_type": "unknown", "description": text}
+        if not text:
+            return result
+        for line in text.strip().split("\n"):
+            line = line.strip()
+            if line.startswith("类型:") or line.startswith("类型："):
+                type_str = line.split(":", 1)[-1].strip().split("：", 1)[-1].strip().lower()
+                if type_str in ("closeup", "medium", "wide", "unknown"):
+                    result["shot_type"] = type_str
+            elif line.startswith("描述:") or line.startswith("描述："):
+                result["description"] = line.split(":", 1)[-1].strip().split("：", 1)[-1].strip()
+        return result
 
     def _build_context_text(
         self, video_info: Dict, shots: List[Dict], prompt: str = None
@@ -313,6 +410,7 @@ class VideoIndexer:
                         keyframe_paths=shot.get("keyframe_paths", []),
                         subtitle_text=shot.get("subtitle_text"),
                         description=shot.get("description"),
+                        shot_type=shot.get("shot_type", "unknown"),
                         index_status="complete",
                     )
                     db.add(s)
@@ -359,13 +457,13 @@ class VideoIndexer:
         # 4. ASR + 字幕对齐
         try:
             segments = self._run_asr(video_path)
-            shots = self._align_subtitles_to_shots(shots, segments)
+            shots = self._align_subtitles_to_shots(shots, segments, video_id=video_id)
         except Exception as e:
             logger.warning(f"[Indexer] ASR 失败（降级继续）: {e}")
 
         # 5. 关键帧 VL 分析（限制调用次数）
         try:
-            shots = self._analyze_keyframes(shots, max_shots=10)
+            shots = self._analyze_keyframes(shots, max_shots=10, video_id=video_id)
         except Exception as e:
             logger.warning(f"[Indexer] 关键帧 VL 失败（降级继续）: {e}")
 

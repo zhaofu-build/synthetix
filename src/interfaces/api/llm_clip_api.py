@@ -39,8 +39,8 @@ def get_source_by_keywords(
         result = service.get_source_by_keywords(req.creative)
         return success_response(data=result, message="获取视频素材成功")
     except Exception as e:
-        logger.error(f"获取视频素材失败: {e}")
-        return error_response(error="CreativeError", message=str(e), code=500)
+        logger.error("获取视频素材失败: %s", e)
+        return error_response(error="CreativeError", message="获取视频素材失败，请稍后重试", code=500)
 
 
 @router.post("/video-transitions", summary="创建带转场的视频")
@@ -65,10 +65,10 @@ def create_video_transitions(
         )
         return success_response(data=result, message="视频处理成功")
     except ValueError as e:
-        return error_response(error="VideoProcessError", message=str(e), code=400)
+        return error_response(error="VideoProcessError", message="视频处理参数错误", code=400)
     except Exception as e:
-        logger.error(f"视频处理失败: {e}")
-        return error_response(error="VideoProcessError", message=str(e), code=500)
+        logger.error("视频处理失败: %s", e)
+        return error_response(error="VideoProcessError", message="视频处理失败，请稍后重试", code=500)
 
 
 @router.get("/optimize-prompt", summary="优化提示词")
@@ -93,5 +93,5 @@ def optimize_prompt(
             message="提示词优化成功"
         )
     except Exception as e:
-        logger.error(f"提示词优化失败: {e}")
-        return error_response(error="LLMError", message=str(e), code=500)
+        logger.error("提示词优化失败: %s", e)
+        return error_response(error="LLMError", message="提示词优化失败，请稍后重试", code=500)

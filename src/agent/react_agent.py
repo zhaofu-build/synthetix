@@ -11,7 +11,7 @@ import logging
 import time
 import asyncio
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 from src.agent.tool_registry import registry
 from src.agent.session_manager import DialogState, SessionStatus, get_session_manager
@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 
 # ==================== 超时配置 ====================
 LLM_TIMEOUT = 180  # LLM 调用超时 3 分钟
+LLM_MAX_RETRIES = 2  # LLM 调用重试次数
+LLM_RETRY_DELAY = 2  # 重试间隔（秒）
+
+# ==================== 工具调用解析 ====================
+TOOL_CALL_PATTERN = r'<tool_call\s+name=["\']([^"\']+)["\']>\s*\n?(.*?)\n?\s*</tool_call\s*>?'
+END_CALL = "<" + "/tool_call>"
 TOOL_TIMEOUTS = {
     "default": 120,
     "download_video": 300,
@@ -35,9 +41,91 @@ TOOL_TIMEOUTS = {
     "generate_music": 300,
 }
 
-# ==================== 系统提示词 ====================
+# ==================== 快速通道规则 ====================
+# 简单指令直接匹配正则 → 调用工具 → 跳过 LLM TAOR 循环
 
-END_CALL = "<" + "/tool_call>"  # 避免被当成 XML 或 format 占位符
+_FAST_PATH_RULES: List[Tuple[str, str, Dict]] = [
+    # (regex, tool_name, param_extractors: {param: group_index_or_const})
+    (r"^(?:把|将|请)?(?:第?(\d+)[个号]?)?\s*视频?\s*(?:从|在)?(.+?)(?:到|至|-)(.+?)\s*(?:剪切|剪出来|裁剪|截取|剪出|切出)",
+     "cut_video", {"video_index": 1, "start_time": 2, "end_time": 3}),
+    (r"^(?:把|将)?\s*(?:第?(\d+)[个号]?)?\s*视频?\s*合并",
+     "merge_videos", {}),
+    (r"^(?:把|将)?\s*(?:第?(\d+)[个号]?)?\s*视频?\s*(?:旋转|转)\s*(\d+)\s*度",
+     "rotate_video", {"video_index": 1, "angle": 2}),
+    (r"^(?:把|将)?\s*(?:第?(\d+)[个号]?)?\s*视频?\s*压缩",
+     "compress_video", {"video_index": 1}),
+    (r"^(?:从|把)?\s*(?:第?(\d+)[个号]?)?\s*视频?\s*提取音频",
+     "extract_audio", {"video_index": 1}),
+    (r"^(?:把|将)?\s*(?:第?(\d+)[个号]?)?\s*视频?\s*转\s*GIF",
+     "convert_to_gif", {"video_index": 1}),
+    (r"^(?:查看|列出|显示|看看|有什么|所有|全部)\s*(?:素材|视频|材料|视频列表)",
+     "list_videos", {}),
+    (r"^(?:第?(\d+)[个号]?)?\s*视频?\s*(?:的)?(?:信息|详情|描述|元数据)",
+     "get_video_description", {"video_index": 1}),
+    (r"^提取\s*(?:第?(\d+)[个号]?)?\s*视频?\s*(?:的)?(?:关键帧|帧)",
+     "extract_keyframes", {"video_index": 1}),
+    (r"^(?:把|将)?\s*(?:第?(\d+)[个号]?)?\s*视频?\s*(?:水平|左右)?\s*翻转",
+     "flip_video", {"video_index": 1}),
+    (r"^(?:把|将)?\s*(?:第?(\d+)[个号]?)?\s*视频?\s*(?:倒放|倒播|反向播放)",
+     "reverse_video", {"video_index": 1}),
+    (r"^当前时间|几点了|现在几点",
+     "get_current_time", {}),
+    (r"^系统信息|系统状态",
+     "get_system_info", {}),
+]
+
+# 编译缓存
+_FAST_PATH_COMPILED: List[Tuple[re.Pattern, str, Dict]] = []
+
+def _get_compiled_rules() -> List[Tuple[re.Pattern, str, Dict]]:
+    """懒编译快速通道正则"""
+    global _FAST_PATH_COMPILED
+    if not _FAST_PATH_COMPILED:
+        for pattern, tool_name, extractors in _FAST_PATH_RULES:
+            _FAST_PATH_COMPILED.append((re.compile(pattern, re.IGNORECASE), tool_name, extractors))
+    return _FAST_PATH_COMPILED
+
+# ==================== 工具链预设 ====================
+
+_TOOL_CHAIN_PRESETS = {
+    "多素材混剪": {
+        "trigger": r"(?:自动)?混剪|自动剪辑|一键剪辑|批量剪辑",
+        "llm_prompt": (
+            "用户要做多素材混剪。从用户消息中提取：目标时长(秒,默认30)、风格(默认动感)。\n"
+            "输出JSON: {\"duration\": N, \"style\": \"...\"}\n用户消息："
+        ),
+        "steps": ["list_videos", "smart_clip"],
+    },
+    "字幕配音": {
+        "trigger": r"加字幕.*配音|配音.*加字幕|字幕.*配.*音|完整字幕配音",
+        "llm_prompt": (
+            "用户要给视频添加字幕和配音。提取：视频序号。\n"
+            "输出JSON: {\"video_index\": N}\n用户消息："
+        ),
+        "steps": ["transcribe_video", "generate_tts", "add_subtitle"],
+    },
+    "社交导出": {
+        "trigger": r"社交.*导出|导出.*社交|抖音.*格式|小红书.*格式|导出.*竖屏",
+        "llm_prompt": (
+            "用户要导出社交媒体格式视频。提取：平台(抖音/小红书/视频号)。\n"
+            "输出JSON: {\"platform\": \"...\"}\n用户消息："
+        ),
+        "steps": ["cut_video", "compress_video"],
+    },
+}
+
+# ==================== 批量操作模式 ====================
+
+_BATCH_PATTERNS = {
+    "batch_compress": {
+        "trigger": r"批量压缩|压缩所有|全部压缩",
+    },
+    "batch_analyze": {
+        "trigger": r"批量分析|分析所有|全部分析",
+    },
+}
+
+# ==================== 系统提示词 ====================
 
 
 def build_system_prompt(tools_description: str, project_id, project_name: str) -> str:
@@ -141,6 +229,182 @@ class ReActAgent:
         event = self._confirm_events.get(tool_name)
         if event:
             event.set()
+
+    def _resolve_video_index(self, index_str: Optional[str], state: DialogState) -> Optional[int]:
+        """将用户输入的 1-based 索引映射到 last_video_list 中的 video_id"""
+        if not index_str or not state.last_video_list:
+            return None
+        try:
+            idx = int(index_str) - 1  # 用户输入从 1 开始
+            if 0 <= idx < len(state.last_video_list):
+                v = state.last_video_list[idx]
+                return v.get("id") or v.get("video_id")
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    async def _try_fast_path(self, user_input: str, state: DialogState) -> Optional[Dict[str, Any]]:
+        """尝试快速通道：正则匹配简单指令，直接执行工具，跳过 LLM"""
+        text = user_input.strip()
+        if len(text) > 100 or len(text) < 2:
+            return None
+
+        for regex, tool_name, extractors in _get_compiled_rules():
+            m = regex.search(text)
+            if not m:
+                continue
+
+            # 提取参数
+            params = {}
+            skip = False
+            for param_name, source in extractors.items():
+                if isinstance(source, int):
+                    val = m.group(source) if source <= len(m.groups()) else None
+                    if val is None:
+                        skip = True
+                        break
+                    if param_name == "video_index":
+                        video_id = self._resolve_video_index(val, state)
+                        if video_id is None:
+                            skip = True
+                            break
+                        params["video_id"] = video_id
+                    else:
+                        params[param_name] = val.strip()
+            if skip:
+                continue
+
+            # 填充 project_id
+            if state.project_id:
+                params["project_id"] = state.project_id
+
+            logger.info(f"[ReAct-FastPath] 命中规则: {tool_name}, params={params}")
+            try:
+                result = await self._execute_tool(tool_name, params, state)
+                # 构造简洁回复
+                if result.get("success", True):
+                    data = result.get("analysis") or result.get("data") or result.get("output_path") or result.get("videos") or result.get("message", "")
+                    if isinstance(data, (list, dict)):
+                        reply = json.dumps(data, ensure_ascii=False, default=str)[:500]
+                    else:
+                        reply = str(data) if data else "操作完成"
+                else:
+                    reply = f"操作失败: {result.get('error', '未知错误')}"
+                return {"reply": reply, "status": "completed", "session_id": state.session_id, "fast_path": True}
+            except Exception as e:
+                logger.warning(f"[ReAct-FastPath] 快速路径执行失败，回退到 LLM: {e}")
+                return None
+
+        return None
+
+    async def _try_tool_chain(self, user_input: str, state: DialogState) -> Optional[Dict[str, Any]]:
+        """尝试工具链预设：匹配工作流触发词 → LLM 提参 → 按序执行工具"""
+        import re as _re
+        text = user_input.strip()
+
+        for chain_name, preset in _TOOL_CHAIN_PRESETS.items():
+            if not _re.search(preset["trigger"], text, _re.IGNORECASE):
+                continue
+
+            logger.info(f"[ReAct-Chain] 命中工具链: {chain_name}")
+            try:
+                # 一次快速 LLM 调用提取参数
+                from src.application.services.llm_adapter import generate_response_async
+                params_text = await asyncio.wait_for(
+                    generate_response_async(
+                        messages=[
+                            {"role": "system", "content": "你是一个参数提取助手。只输出JSON，不输出其他内容。"},
+                            {"role": "user", "content": preset["llm_prompt"] + text}
+                        ],
+                        temperature=0.1, max_tokens=200
+                    ),
+                    timeout=30
+                )
+                import json as _json
+                try:
+                    chain_params = _json.loads(params_text.strip().strip('`'))
+                except Exception:
+                    chain_params = {}
+
+                if state.project_id:
+                    chain_params["project_id"] = state.project_id
+
+                # 按序执行工具链
+                results = []
+                for step_tool in preset["steps"]:
+                    step_params = dict(chain_params)
+                    # 从前一步结果提取输入
+                    if results:
+                        last = results[-1].get("result", {})
+                        if "video_id" in last and "video_id" not in step_params:
+                            step_params["video_id"] = last["video_id"]
+                        if "output_path" in last and "file_path" not in step_params:
+                            step_params["file_path"] = last["output_path"]
+
+                    r = await self._execute_tool(step_tool, step_params, state)
+                    results.append({"tool": step_tool, "result": r})
+
+                # 构造汇总回复
+                summary_parts = []
+                for r in results:
+                    tool_name = r["tool"]
+                    res = r["result"]
+                    if res.get("success", True):
+                        summary_parts.append(f"{tool_name}: 成功")
+                    else:
+                        summary_parts.append(f"{tool_name}: 失败 - {res.get('error', '未知')}")
+
+                reply = f"[{chain_name}] 工具链执行完成\n" + "\n".join(summary_parts)
+                return {"reply": reply, "status": "completed", "session_id": state.session_id, "tool_chain": chain_name}
+
+            except Exception as e:
+                logger.warning(f"[ReAct-Chain] 工具链 {chain_name} 执行失败，回退到 LLM: {e}")
+                return None
+
+        return None
+
+    async def _try_batch_route(self, user_input: str, state: DialogState) -> Optional[Dict[str, Any]]:
+        """尝试批量操作路由：匹配批量指令 → 列出素材 → 循环执行"""
+        import re as _re
+        text = user_input.strip()
+
+        for batch_tool, pattern in _BATCH_PATTERNS.items():
+            if not _re.search(pattern["trigger"], text, _re.IGNORECASE):
+                continue
+
+            logger.info(f"[ReAct-Batch] 命中批量操作: {batch_tool}")
+            try:
+                # 获取素材列表
+                list_params = {}
+                if state.project_id:
+                    list_params["project_id"] = state.project_id
+                list_result = await self._execute_tool("list_videos", list_params, state)
+
+                videos = []
+                if list_result.get("success"):
+                    videos = list_result.get("videos", list_result.get("data", []))
+
+                if not videos:
+                    return {"reply": "没有可操作的素材", "status": "completed", "session_id": state.session_id}
+
+                # 逐个执行
+                results = []
+                for v in videos:
+                    vid = v.get("id") or v.get("video_id")
+                    if not vid:
+                        continue
+                    r = await self._execute_tool(batch_tool, {"video_id": vid}, state)
+                    results.append(r)
+
+                success_count = sum(1 for r in results if r.get("success", True))
+                reply = f"批量{batch_tool}完成: {success_count}/{len(results)} 成功"
+                return {"reply": reply, "status": "completed", "session_id": state.session_id, "batch": True}
+
+            except Exception as e:
+                logger.warning(f"[ReAct-Batch] 批量操作 {batch_tool} 失败，回退到 LLM: {e}")
+                return None
+
+        return None
 
     async def _compact_history(self, state: DialogState, max_messages: int = 30) -> bool:
         """智能压缩历史消息：保留最近 15 条 + LLM 摘要"""
@@ -319,6 +583,27 @@ class ReActAgent:
 
         logger.info(f"[ReAct] 用户输入: '{user_input}', project_id={state.project_id}")
 
+        # 快速通道：简单指令直接执行，跳过 LLM
+        fast_result = await self._try_fast_path(user_input, state)
+        if fast_result is not None:
+            state.add_message("assistant", fast_result["reply"])
+            self.sessions.persist_session(state)
+            return fast_result
+
+        # 工具链预设：匹配工作流一键执行
+        chain_result = await self._try_tool_chain(user_input, state)
+        if chain_result is not None:
+            state.add_message("assistant", chain_result["reply"])
+            self.sessions.persist_session(state)
+            return chain_result
+
+        # 批量操作路由：一次 LLM 提参 + 代码循环
+        batch_result = await self._try_batch_route(user_input, state)
+        if batch_result is not None:
+            state.add_message("assistant", batch_result["reply"])
+            self.sessions.persist_session(state)
+            return batch_result
+
         try:
             # TAOR 循环
             final_reply, tool_summary = await self._taor_loop(state, user_input)
@@ -381,6 +666,33 @@ class ReActAgent:
 
         yield {"type": "session", "session_id": state.session_id}
         logger.info(f"[ReAct-Stream] 用户输入: '{user_input}', project_id={state.project_id}")
+
+        # 快速通道：简单指令直接执行，跳过 LLM
+        fast_result = await self._try_fast_path(user_input, state)
+        if fast_result is not None:
+            yield {"type": "reply", "content": fast_result["reply"]}
+            yield {"type": "done", "status": "completed", "session_id": state.session_id, "fast_path": True}
+            state.add_message("assistant", fast_result["reply"])
+            self.sessions.persist_session(state)
+            return
+
+        # 工具链预设
+        chain_result = await self._try_tool_chain(user_input, state)
+        if chain_result is not None:
+            yield {"type": "reply", "content": chain_result["reply"]}
+            yield {"type": "done", "status": "completed", "session_id": state.session_id, "tool_chain": chain_result.get("tool_chain")}
+            state.add_message("assistant", chain_result["reply"])
+            self.sessions.persist_session(state)
+            return
+
+        # 批量操作路由
+        batch_result = await self._try_batch_route(user_input, state)
+        if batch_result is not None:
+            yield {"type": "reply", "content": batch_result["reply"]}
+            yield {"type": "done", "status": "completed", "session_id": state.session_id, "batch": True}
+            state.add_message("assistant", batch_result["reply"])
+            self.sessions.persist_session(state)
+            return
 
         pending_tasks: set = set()
         try:
@@ -794,16 +1106,28 @@ class ReActAgent:
             if kv_session_id:
                 provider_options["session_id"] = kv_session_id
 
-            response_text = await asyncio.wait_for(
-                generate_response_async(
-                    messages=messages,
-                    model_name=model,
-                    temperature=0.7,
-                    max_tokens=2048,
-                    provider_options=provider_options,
-                ),
-                timeout=LLM_TIMEOUT,
-            )
+            response_text = None
+            for retry in range(LLM_MAX_RETRIES + 1):
+                try:
+                    response_text = await asyncio.wait_for(
+                        generate_response_async(
+                            messages=messages,
+                            model_name=model,
+                            temperature=0.7,
+                            max_tokens=2048,
+                            provider_options=provider_options,
+                        ),
+                        timeout=LLM_TIMEOUT,
+                    )
+                    break
+                except (asyncio.TimeoutError, Exception) as llm_err:
+                    if retry < LLM_MAX_RETRIES:
+                        logger.warning("[ReAct] LLM 调用失败 (retry=%d/%d): %s", retry + 1, LLM_MAX_RETRIES, llm_err)
+                        await asyncio.sleep(LLM_RETRY_DELAY * (retry + 1))
+                    else:
+                        raise
+            if response_text is None:
+                raise RuntimeError("LLM 返回空响应")
 
             # 提取 session_id 供下一轮 KV Cache 使用
             client = get_client()
@@ -982,14 +1306,14 @@ class ReActAgent:
         格式: <tool_call name="tool_name">\n{"key": "value"}\n</tool_call}>
         """
         calls = []
-        pattern = r'<tool_call\s+name=["\']([^"\']+)["\']>\s*\n?(.*?)\n?\s*</tool_call\s*>?'
-        matches = re.findall(pattern, text, re.DOTALL)
+        matches = re.findall(TOOL_CALL_PATTERN, text, re.DOTALL)
 
         for name, params_str in matches:
             try:
                 params = json.loads(params_str.strip())
-            except (json.JSONDecodeError, ValueError):
-                params = {}
+            except (json.JSONDecodeError, ValueError) as parse_err:
+                logger.warning("[ReAct] JSON 解析失败 (tool=%s): %s, raw: %.200s", name, parse_err, params_str)
+                params = {"_parse_error": f"JSON 格式错误，请修正后重试。原始内容: {params_str[:200]}"}
             calls.append({"name": name.strip(), "params": params})
 
         return calls
@@ -1001,16 +1325,17 @@ class ReActAgent:
         """执行单个工具（支持 registry 工具和 MCP 外部工具）"""
         tool = registry.get_tool(tool_name)
 
-        # 权限门控：destructive 工具需确认
-        if tool and tool.permission == "destructive":
+        # 权限门控：modify/destructive 工具需确认
+        if tool and tool.permission in ("modify", "destructive"):
             confirm_key = f"{tool_name}_{id(params)}"
             confirm_event = asyncio.Event()
             self._confirm_events[confirm_key] = confirm_event
-            logger.warning(f"[ReAct] destructive 工具 {tool_name} 等待确认...")
+            confirm_timeout = 5 if tool.permission == "modify" else 10
+            logger.warning(f"[ReAct] {tool.permission} 工具 {tool_name} 等待确认...")
             try:
-                await asyncio.wait_for(confirm_event.wait(), timeout=10)
+                await asyncio.wait_for(confirm_event.wait(), timeout=confirm_timeout)
             except asyncio.TimeoutError:
-                logger.warning(f"[ReAct] destructive 工具 {tool_name} 确认超时，自动执行")
+                logger.warning(f"[ReAct] {tool.permission} 工具 {tool_name} 确认超时，自动执行")
             finally:
                 self._confirm_events.pop(confirm_key, None)
 

@@ -19,6 +19,7 @@ from src.interfaces.api.schemas.audio_schemas import (
 )
 from src.infrastructure.db.session import get_db
 from src.application.services.audio_service import AudioService
+from src.shared.utils.path_security import validate_path_in_allowed_dir
 import logging
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ async def create_audio(
         )
         return success_response(data={"id": result["id"]}, message="保存音色成功", code=201)
     except (ValueError, IOError) as e:
-        return error_response(error="SaveError", message=str(e), code=400)
+        return error_response(error="SaveError", message="保存失败，请检查参数", code=400)
 
 
 @router.get("/random", summary="获取随机音色")
@@ -88,8 +89,8 @@ def get_random_audio(
             return success_response(data=audio_data, message="获取成功")
         return error_response(error="NotFound", message="没有可用的音色", code=404)
     except Exception as e:
-        logger.error(f"获取随机音色失败: {e}")
-        return error_response(error="DatabaseError", message=f"获取失败: {str(e)}", code=500)
+        logger.error("获取随机音色失败: %s", e)
+        return error_response(error="DatabaseError", message="获取失败，请稍后重试", code=500)
 
 
 @router.get("/{audio_id}", summary="获取音色详情")
@@ -137,7 +138,7 @@ def delete_audio(
         service.delete_audio(audio_id)
         return success_response(data={"id": audio_id}, message="删除成功")
     except FileNotFoundError as e:
-        return error_response(error="NotFound", message=str(e), code=404)
+        return error_response(error="NotFound", message="音色不存在", code=404)
 
 
 @router.post("/{audio_id}/set-default", summary="设为默认音色")
@@ -190,10 +191,10 @@ async def fish_speech_tts(
         )
         return success_response(data=result, message="语音生成成功")
     except ValueError as e:
-        return error_response(error="TTSError", message=str(e), code=500)
+        return error_response(error="TTSError", message="语音生成参数错误", code=500)
     except Exception as e:
-        logger.error(f"语音生成失败: {e}")
-        return error_response(error="TTSError", message=f"语音生成失败: {str(e)}", code=500)
+        logger.error("语音生成失败: %s", e)
+        return error_response(error="TTSError", message="语音生成失败，请稍后重试", code=500)
 
 
 # ==================== 音频处理 ====================
@@ -205,10 +206,11 @@ async def separate_audio(
 ):
     """分离音频和伴奏"""
     try:
+        validate_path_in_allowed_dir(req.audio_path)
         result = service.separate_audio(req.audio_path)
         return success_response(data=result, message="分离成功")
     except ValueError as e:
-        return error_response(error="SeparateError", message=str(e), code=500)
+        return error_response(error="SeparateError", message="音频分离失败，请检查音频文件", code=500)
 
 
 @router.post("/merge", summary="合并音频")
@@ -218,10 +220,11 @@ async def merge_audio(
 ):
     """合并伴奏"""
     try:
+        validate_path_in_allowed_dir(req.sourceAudioPath)
         result = service.merge_audio(
             source_audio_path=req.sourceAudioPath,
             accompaniment_url=req.accompanimentUrl
         )
         return success_response(data=result, message="合并成功")
     except ValueError as e:
-        return error_response(error="MergeError", message=str(e), code=500)
+        return error_response(error="MergeError", message="音频合并失败，请检查音频文件", code=500)

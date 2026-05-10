@@ -7,12 +7,18 @@ import logging
 from contextlib import asynccontextmanager
 
 os.environ['HF_ENDPOINT'] = "https://hf-mirror.com"
-os.environ['HF_HOME'] = 'D:/hf-model'
+if os.name == 'nt':
+    # Windows 开发环境：使用固定目录避免占用 C 盘空间
+    os.environ['HF_HOME'] = 'D:/hf-model'
+else:
+    # Linux / macOS / Docker：使用标准缓存目录
+    os.environ['HF_HOME'] = os.path.join(os.path.expanduser('~'), '.cache', 'huggingface')
 
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from src.shared.middleware.rate_limit import RateLimitMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from src import log_config, config
 from src.infrastructure.db.alembic_manager import init_database_with_alembic
@@ -154,7 +160,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],  # 允许所有方法
     allow_headers=["*"],  # 允许所有头部
-)
+    )
+
+# 速率限制中间件
+app.add_middleware(RateLimitMiddleware, default_limit=60, default_window=60)
 
 # 配置静态文件目录
 os.makedirs(config.UPLOAD_DIR, exist_ok=True)

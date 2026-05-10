@@ -3,7 +3,7 @@
 
 提供对话式视频剪辑的 REST API 接口
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -12,6 +12,7 @@ import asyncio
 
 from src.agent.react_agent import get_react_agent
 from src.shared.models.response import success_response, error_response
+from src.shared.exceptions.exceptions import ValidationException, ResourceNotFoundException, ExternalServiceException
 
 router = APIRouter()
 
@@ -66,22 +67,14 @@ async def chat(request: ChatRequest):
     Returns:
         对话响应
     """
-    try:
-        agent = get_react_agent()
-        result = await agent.process_message(
-            session_id=request.session_id,
-            user_input=request.message,
-            context=request.context
-        )
+    agent = get_react_agent()
+    result = await agent.process_message(
+        session_id=request.session_id,
+        user_input=request.message,
+        context=request.context
+    )
 
-        return success_response(data=result)
-
-    except Exception as e:
-        return error_response(
-            error="ChatError",
-            message=str(e),
-            code=500
-        )
+    return success_response(data=result)
 
 
 @router.post("/chat/stream", summary="流式对话")
@@ -107,7 +100,8 @@ async def chat_stream(request: ChatRequest):
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+            logger.error("SSE 流式处理失败: %s", e)
+            yield f"data: {json.dumps({'type': 'error', 'message': '处理请求时发生错误，请稍后重试'}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -139,7 +133,8 @@ async def deep_research(request: DeepResearchRequest):
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+            logger.error("SSE 流式处理失败: %s", e)
+            yield f"data: {json.dumps({'type': 'error', 'message': '处理请求时发生错误，请稍后重试'}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -188,54 +183,51 @@ async def generate_plan(request: ChatRequest):
 
     返回一组可编辑、可逐一确认的操作卡片。
     """
-    try:
-        from src.shared.utils.core_nexus_client import get_client
-        from src.shared.utils.config_manager import get as cfg_get
+    from src.shared.utils.core_nexus_client import get_client
+    from src.shared.utils.config_manager import get as cfg_get
 
-        client = get_client()
-        model = cfg_get("core_nexus.model") or None
+    client = get_client()
+    model = cfg_get("core_nexus.model") or None
 
-        # 获取可用工具描述
-        agent = get_react_agent()
-        from src.agent.tool_registry import registry
-        tools_desc = "\n".join(
-            f"- {t.name}: {t.description}"
-            for t in registry.list_tools()
-            if t.name in ["cut_video", "merge_videos", "add_subtitle", "add_audio",
-                          "change_speed", "generate_tts", "smart_clip",
-                          "transcribe_video", "analyze_transcript", "extract_audio"]
-        )
+    # 获取可用工具描述
+    agent = get_react_agent()
+    from src.agent.tool_registry import registry
+    tools_desc = "\n".join(
+        f"- {t.name}: {t.description}"
+        for t in registry.list_tools()
+        if t.name in ["cut_video", "merge_videos", "add_subtitle", "add_audio",
+                      "change_speed", "generate_tts", "smart_clip",
+                      "transcribe_video", "analyze_transcript", "extract_audio"]
+    )
 
-        messages = [
-            {"role": "system", "content": PLAN_SYSTEM_PROMPT + f"\n\n可用工具：\n{tools_desc}"},
-            {"role": "user", "content": request.message}
-        ]
+    messages = [
+        {"role": "system", "content": PLAN_SYSTEM_PROMPT + f"\n\n可用工具：\n{tools_desc}"},
+        {"role": "user", "content": request.message}
+    ]
 
-        response = client.llm_generate(messages=messages, model=model)
-        plan_text = response.get("text", "")
+    response = client.llm_generate(messages=messages, model=model)
+    plan_text = response.get("text", "")
 
-        # 尝试解析 JSON
-        import re
-        json_match = re.search(r'\{[\s\S]*\}', plan_text)
-        if json_match:
+    # 尝试解析 JSON
+    import re
+    json_match = re.search(r'\{[\s\S]*\}', plan_text)
+    if json_match:
+        try:
             plan_data = json.loads(json_match.group())
-        else:
+        except json.JSONDecodeError:
             plan_data = {
-                "summary": plan_text[:200],
+                "summary": "方案生成完成（格式解析失败）",
                 "operations": [],
                 "raw": plan_text
             }
-
-        return success_response(data=plan_data)
-
-    except json.JSONDecodeError:
-        return success_response(data={
-            "summary": "方案生成完成（格式解析失败）",
+    else:
+        plan_data = {
+            "summary": plan_text[:200],
             "operations": [],
             "raw": plan_text
-        })
-    except Exception as e:
-        return error_response(error="PlanError", message=str(e), code=500)
+        }
+
+    return success_response(data=plan_data)
 
 
 # ==================== 直接执行接口 ====================
@@ -255,22 +247,10 @@ async def execute_tool(request: ExecuteRequest):
 
     tool = registry.get_tool(request.tool)
     if not tool:
-        return error_response(
-            error="ToolNotFound",
-            message=f"工具 '{request.tool}' 不存在",
-            code=404
-        )
+        raise ResourceNotFoundException(resource_type="Tool", resource_id=request.tool)
 
-    try:
-        result = await tool.execute(**request.params)
-        return success_response(data=result)
-
-    except Exception as e:
-        return error_response(
-            error="ExecutionError",
-            message=str(e),
-            code=500
-        )
+    result = await tool.execute(**request.params)
+    return success_response(data=result)
 
 
 # ==================== 视频分析接口 ====================
@@ -290,22 +270,10 @@ async def analyze_video(video_id: int):
 
     tool = registry.get_tool("analyze_video")
     if not tool:
-        return error_response(
-            error="ToolNotFound",
-            message="分析工具不可用",
-            code=500
-        )
+        raise ResourceNotFoundException(resource_type="Tool", resource_id="analyze_video")
 
-    try:
-        result = await tool.execute(video_id=video_id)
-        return success_response(data=result)
-
-    except Exception as e:
-        return error_response(
-            error="AnalysisError",
-            message=str(e),
-            code=500
-        )
+    result = await tool.execute(video_id=video_id)
+    return success_response(data=result)
 
 
 # ==================== 工具列表接口 ====================

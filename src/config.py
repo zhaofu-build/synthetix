@@ -116,3 +116,61 @@ def sync_from_config_manager():
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"配置同步失败: {e}")
+
+
+# ==================== 统一配置入口 ====================
+
+class UnifiedConfig:
+    """统一配置入口 — 合并 config_manager + 环境变量 + 模块变量
+
+    用法:
+        from src.config import unified_config
+        api_key = unified_config.get("core_nexus.api_key")
+    """
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def get(self, key_path: str, default=None):
+        """按点分隔路径获取配置值，优先 config_manager → 环境变量 → default"""
+        try:
+            from src.shared.utils.config_manager import get as cfg_get
+            val = cfg_get(key_path, None)
+            if val is not None:
+                return val
+        except Exception:
+            pass
+        # 回退到环境变量（点转下划线、大写）
+        env_key = key_path.replace('.', '_').upper()
+        env_val = os.environ.get(env_key)
+        if env_val is not None:
+            return env_val
+        return default
+
+    def set(self, key_path: str, value):
+        """设置并持久化配置值"""
+        from src.shared.utils.config_manager import set_value as cfg_set
+        cfg_set(key_path, value)
+        # 同步到模块级变量
+        var_name = _CONFIG_KEY_MAP.get(key_path)
+        if var_name and value:
+            import src.config as _self
+            setattr(_self, var_name, value)
+
+    def reload(self):
+        """重新加载所有配置"""
+        from src.shared.utils.config_manager import reload_config
+        reload_config()
+        sync_from_config_manager()
+
+    def get_all(self) -> dict:
+        """获取完整合并配置"""
+        from src.shared.utils.config_manager import get_all
+        return get_all()
+
+
+unified_config = UnifiedConfig()

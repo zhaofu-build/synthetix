@@ -108,8 +108,11 @@ FastAPI 静态路由必须在动态路由（`/{id}`）之前定义，否则 `"bg
 
 ### 前端请求层
 - `API_HOST` 单一来源：`synthetix-vue/src/utils/request.js`（读 `VITE_API_BASE_URL` 环境变量或默认 `http://127.0.0.1:9527`）
-- `src/api/request.js`（axios）：API 模块使用，拦截器自动提取 `data.data`，业务错误弹 ElMessage
-- `src/utils/request.js`（fetch）：导出 `assetUrl`、`API_HOST`，部分组件直接使用
+- `src/api/request.js`（axios）：所有 API 模块使用，拦截器自动提取 `data.data`，`success: false` 自动 reject 并弹 ElMessage
+- `src/api/modules/` 下的 API 模块统一导出，通过 `src/api/modules/index.js` 聚合
+- **SSE/流式请求**（`/api/agent/chat/stream`、`/api/nexus/llm/stream`）必须用原始 `fetch` + `ReadableStream`，不能用 axios
+- `src/utils/request.js`（fetch）：仅导出 `assetUrl`、`API_HOST`，供 SSE 流式和外部 URL 使用
+- 新增 API 方法：在 `src/api/modules/` 对应模块中添加，自动获得 axios 拦截器处理（`data.data` 提取、错误处理）
 
 ## Tauri 桌面应用
 
@@ -316,7 +319,7 @@ CHROME_CDP_URL=          # CDP 浏览器地址（可选，默认 http://127.0.0.
 ```
 
 ### 分层配置
-`config/default.json` 提供默认值，`config/settings.json` 覆盖（注意：settings.json 含 API Key 等敏感信息，但**未加入 .gitignore**，手动加入或避免在公开仓库使用）。通过 `config_manager.py` 管理，支持 API 热重载。
+`config/default.json` 提供默认值，`config/settings.json` 覆盖（注意：settings.json 含 API Key 等敏感信息，已加入 `.gitignore`，包括 `.bak` 等变体）。通过 `config_manager.py` 管理，支持 API 热重载。`config_manager.py` 使用线程锁保护读写，内置 9 条参数校验规则（类型 + 范围）。
 
 ## Docker 部署
 
@@ -337,10 +340,12 @@ docker-compose up --build
 - **el-tag type**: 合法值为 `success/warning/danger/info/primary`，不能传空字符串 `''`
 - **ErrorBoundary**: `MainLayout.vue` 用 `ErrorBoundary.vue` 包裹 `router-view`
 - **工具页面**: TTS/ASR/VL 等工具页通过 `defineAsyncComponent` 懒加载，以 `el-dialog` 弹窗形式打开，不使用独立路由
-- **安全**: Pydantic `validate_params` 失败抛异常（不静默返回）；LLM 修正后的参数会重新校验；FFmpeg 字符串参数经 `sanitize_ffmpeg_string()` 清洗
+- **安全**: Pydantic `validate_params` 失败抛异常（不静默返回）；LLM 修正后的参数会重新校验；FFmpeg 字符串参数经 `sanitize_ffmpeg_string()` 清洗；`RateLimitMiddleware`（`src/shared/middleware/rate_limit.py`）按路由前缀限流（Agent 20/min、Core-Nexus 10/min、TTS 10/min、默认 60/min）
 - **健康检查**: `GET /health` 检查数据库、ffmpeg、core-nexus 连接、活跃会话数
 - **WebSocket**: 三个通道 `/ws`（Agent 对话）、`/ws/render`（渲染进度）、`/ws/system`（系统通知）
-- **国际化**: `vue-i18n@9`，locale 文件在 `synthetix-vue/src/locales/`，设置页可切换语言
+- **国际化**: `vue-i18n@9`，locale 文件在 `synthetix-vue/src/locales/`，设置页可切换语言。核心 UI 组件已使用 `t('key')` 替代硬编码中文，新增 UI 文字时需同步添加到 `zh-CN.js` 和 `en-US.js`
+- **路径安全**: `src/shared/utils/path_security.py` 提供 `validate_path_in_allowed_dir()`，API 端点接受文件路径参数时必须调用该校验（限制在 `ROOT_DIR` 和 `static/` 内）
+- **文件上传限制**: 各 API 端点有大小/扩展名校验（图片 10MB、音频 50MB、项目导入 10MB、TTS 参考音频 20MB）
 
 ## 项目临时文件系统
 
@@ -473,9 +478,15 @@ FFmpeg `drawtext` 滤镜在 Windows 上不能使用含盘符冒号的绝对路�
 
 `alembic revision --autogenerate` 在 SQLite batch 模式下可能生成无名的 FK 约束（`batch_op.create_foreign_key(None, ...)`），执行时会报 `ValueError: Constraint must have a name`。解决方法：检查生成的迁移文件，移除不需要的 FK/index 操作，只保留实际新增的列。
 
+**SQLite batch mode 迁移注意事项**：
+- `batch_alter_table` 通过重建表实现 ALTER TABLE，操作在 `__exit__` 时 flush 执行，`try/except` 无法捕获单个操作失败
+- `drop_constraint` 会报 `No such constraint` — 如果旧约束名不存在。**不要用 `drop_constraint`**，直接 `create_foreign_key` 即可（重建表时会自动使用新 FK 定义）
+- `create_index` 不检查 `IF NOT EXISTS`，重复执行会报 `index already exists`。对于可能重复运行的迁移，先用 `sqlite_master` 查询检查索引是否存在
+- 之前失败的迁移会残留 `_alembic_tmp_*` 临时表，需在迁移开头清理：`DROP TABLE IF EXISTS "_alembic_tmp_xxx"`
+
 ### subprocess 编码（Windows）
 
-`subprocess.run()` 在 Windows 上 `text=True` 默认使用系统编码（GBK/CP936），处理中文路径时会报 `UnicodeDecodeError`。所有 `subprocess.run/call` 应使用 `encoding='utf-8', errors='replace'`。目前 `run_ffmpeg_cmd()` 已修复，但 `ffmpeg_adapter.py`、`quality_service.py`、`ffmpeg_util.py` 中仍有遗漏。
+`subprocess.run()` 在 Windows 上 `text=True` 默认使用系统编码（GBK/CP936），处理中文路径时会报 `UnicodeDecodeError`。所有 `subprocess.run/call` 应使用 `encoding='utf-8', errors='replace'`。`run_ffmpeg_cmd()` 已修复；`ffmpeg_adapter.py`、`quality_service.py`、`ffmpeg_util.py` 中仍有遗漏，新增 subprocess 调用时务必指定 `encoding='utf-8'`。
 
 ### Element Plus 图标导入
 

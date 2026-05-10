@@ -129,6 +129,7 @@ class CoreNexusClient:
             "VL": getattr(config, "VL_KEY", "") or llm_key,
             "MUSIC": getattr(config, "MUSIC_KEY", "") or llm_key,
             "IMAGE": llm_key,
+            "VIDEO": llm_key,
         }
         for svc, raw_keys in key_map.items():
             keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
@@ -165,6 +166,7 @@ class CoreNexusClient:
         if '/vl' in endpoint: return 'VL'
         if '/music' in endpoint or '/text-to-music' in endpoint: return 'MUSIC'
         if '/text-to-image' in endpoint or '/image-to-image' in endpoint: return 'IMAGE'
+        if '/text-to-video' in endpoint or '/image-to-video' in endpoint: return 'VIDEO'
         return 'UNKNOWN'
 
     def _is_cooled_down(self, url: str) -> bool:
@@ -1073,38 +1075,112 @@ class CoreNexusClient:
             header, b64 = image_data.split(',', 1)
             result["image_bytes"] = base64.b64decode(b64)
             result["image_base64"] = b64
+        elif image_data.startswith('http://') or image_data.startswith('https://'):
+            # core-nexus 返回图片 URL，下载获取字节
+            import requests
+            resp = requests.get(image_data, timeout=60)
+            resp.raise_for_status()
+            result["image_bytes"] = resp.content
+            result["image_base64"] = base64.b64encode(resp.content).decode('utf-8')
         else:
             result["image_bytes"] = base64.b64decode(image_data)
             result["image_base64"] = image_data
         return result
 
-    # ==================== Video Generation 接口（stub） ====================
+    # ==================== Video Generation 接口 ====================
 
     def text_to_video(
         self,
         prompt: str,
-        duration: float = 3.0,
-        fps: int = 8,
+        negative_prompt: Optional[str] = None,
         model: Optional[str] = None,
-        ref_image: Optional[str] = None,
         **generation_params
     ) -> Dict[str, Any]:
-        """文本/图片生成视频（stub，等待 core-nexus-ai 实现）"""
-        logger.warning("text_to_video called - stub implementation")
-        return {"status": "stub", "message": "text_to_video not yet implemented in core-nexus-ai"}
+        """文本生成视频（POST /text-to-video）"""
+        payload = {"prompt": prompt}
+        if negative_prompt:
+            payload["negative_prompt"] = negative_prompt
+        if model:
+            payload["model"] = model
+        if generation_params:
+            payload["generation"] = generation_params
+
+        response = self._request('POST', '/text-to-video', json_data=payload, timeout=600)
+        return self._extract_video_output(response)
 
     async def text_to_video_async(
         self,
         prompt: str,
-        duration: float = 3.0,
-        fps: int = 8,
+        negative_prompt: Optional[str] = None,
         model: Optional[str] = None,
-        ref_image: Optional[str] = None,
         **generation_params
     ) -> Dict[str, Any]:
-        """异步文本生成视频（stub）"""
-        logger.warning("text_to_video_async called - stub implementation")
-        return {"status": "stub", "message": "text_to_video not yet implemented in core-nexus-ai"}
+        """异步文本生成视频（POST /text-to-video）"""
+        payload = {"prompt": prompt}
+        if negative_prompt:
+            payload["negative_prompt"] = negative_prompt
+        if model:
+            payload["model"] = model
+        if generation_params:
+            payload["generation"] = generation_params
+
+        response = await self._request_async('POST', '/text-to-video', json_data=payload, timeout=600)
+        return self._extract_video_output(response)
+
+    def image_to_video(
+        self,
+        image: str,
+        prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        **generation_params
+    ) -> Dict[str, Any]:
+        """图像生成视频（POST /image-to-video）"""
+        payload = {"image": self._process_image_input(image)}
+        if prompt:
+            payload["prompt"] = prompt
+        if model:
+            payload["model"] = model
+        if generation_params:
+            payload["generation"] = generation_params
+
+        response = self._request('POST', '/image-to-video', json_data=payload, timeout=600)
+        return self._extract_video_output(response)
+
+    async def image_to_video_async(
+        self,
+        image: str,
+        prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        **generation_params
+    ) -> Dict[str, Any]:
+        """异步图像生成视频（POST /image-to-video）"""
+        payload = {"image": self._process_image_input(image)}
+        if prompt:
+            payload["prompt"] = prompt
+        if model:
+            payload["model"] = model
+        if generation_params:
+            payload["generation"] = generation_params
+
+        response = await self._request_async('POST', '/image-to-video', json_data=payload, timeout=600)
+        return self._extract_video_output(response)
+
+    @staticmethod
+    def _extract_video_output(response: Dict) -> Dict[str, Any]:
+        """从 core-nexus-ai 响应中提取视频数据"""
+        output = (response or {}).get('output') or {}
+        video_data = output.get('video', '')
+        if not video_data:
+            return {"video": None}
+        result = {"video": video_data}
+        if video_data.startswith('data:'):
+            header, b64 = video_data.split(',', 1)
+            result["video_bytes"] = base64.b64decode(b64)
+            result["video_base64"] = b64
+        else:
+            result["video_bytes"] = base64.b64decode(video_data)
+            result["video_base64"] = video_data
+        return result
 
     # ==================== 工具方法 ====================
 

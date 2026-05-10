@@ -17,10 +17,10 @@ class ComicProject(Base):
     description = Column(Text, nullable=True, comment="项目描述")
     genre = Column(String(50), nullable=True, comment="类型: drama/comedy/action/romance/horror")
     style = Column(String(50), nullable=True, default="动漫", comment="画风: 动漫/写实/水墨/像素/美漫")
-    status = Column(String(50), default="draft", comment="状态: draft/scripting/generating/compositing/completed")
+    status = Column(String(50), default="draft", index=True, comment="状态: draft/scripting/generating/compositing/completed")
 
     # 系列关联（多集支持）
-    series_id = Column(Integer, ForeignKey("comic_series.id"), nullable=True, comment="所属系列 ID")
+    series_id = Column(Integer, ForeignKey("comic_series.id", ondelete='SET NULL'), nullable=True, index=True, comment="所属系列 ID")
     episode_number = Column(Integer, default=1, comment="集数序号")
     target_duration = Column(Float, nullable=True, comment="目标时长（秒）")
 

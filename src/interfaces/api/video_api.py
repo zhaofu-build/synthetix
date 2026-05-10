@@ -20,6 +20,8 @@ from sqlalchemy.orm import Session
 
 from src import config
 from src.shared.models.response import success_response, error_response
+from src.shared.exceptions.exceptions import ValidationException, ResourceNotFoundException, ExternalServiceException
+from src.shared.utils.path_security import validate_path_in_allowed_dir
 from src.shared.models.request import VideoUpdateRequest, VideoProcessRequest, TranscribeRequest
 from src.interfaces.api.schemas.video_schemas import (
     VideoDownloadRequest,
@@ -77,7 +79,7 @@ async def upload_video(
         )
         return success_response(data={"id": result["id"]}, message="上传成功", code=201)
     except (ValueError, IOError) as e:
-        return error_response(error="UploadError", message=str(e), code=400)
+        raise ValidationException(str(e))
 
 
 @router.get("/random", summary="获取随机视频")
@@ -103,8 +105,7 @@ def search_online(query: str = Query(..., description="搜索关键词"),
         results = search_videos(query, minimum_duration=3, source=source)
         return success_response(data={"videos": results})
     except Exception as e:
-        logger.error(f"在线搜索失败: {e}")
-        return error_response(error="SearchError", message=str(e), code=500)
+        raise ExternalServiceException(service_name="VideoSearch", message=str(e))
 
 
 # ==================== 视频下载 ====================
@@ -120,7 +121,7 @@ async def download_video(
         result = service.download_video(req.video_url, tags=req.tags)
         return success_response(data=result, message="下载成功")
     except ValueError as e:
-        return error_response(error="DownloadError", message=str(e), code=400)
+        raise ValidationException(str(e))
 
 
 # ==================== 视频处理 ====================
@@ -132,6 +133,7 @@ async def process_video(
 ):
     """处理视频（剪辑、变速、调整音量等）"""
     try:
+        validate_path_in_allowed_dir(req.input_path)
         result = service.process_video(
             input_path=req.input_path,
             output_format=req.output_format,
@@ -146,9 +148,9 @@ async def process_video(
         )
         return success_response(data=result, message="处理成功")
     except FileNotFoundError:
-        return error_response(error="FileNotFound", message="输入文件不存在", code=404)
+        raise ResourceNotFoundException(resource_type="File", resource_id=req.input_path)
     except ValueError as e:
-        return error_response(error="ProcessError", message=str(e), code=400)
+        raise ValidationException(str(e))
 
 
 @router.post("/extract-frame", summary="提取视频帧")
@@ -158,10 +160,11 @@ async def extract_frame(
 ):
     """提取视频帧为图片"""
     try:
+        validate_path_in_allowed_dir(req.video_input)
         result = service.extract_frame(req.video_input, req.time_ss)
         return success_response(data=result, message="提取成功")
     except ValueError as e:
-        return error_response(error="ExtractError", message=str(e), code=400)
+        raise ValidationException(str(e))
 
 
 @router.post("/extract-audio", summary="提取音频")
@@ -171,10 +174,11 @@ async def extract_audio(
 ):
     """从视频中提取音频"""
     try:
+        validate_path_in_allowed_dir(req.video_url)
         result = service.extract_audio(req.video_url)
         return success_response(data=result, message="提取成功")
     except ValueError as e:
-        return error_response(error="ExtractError", message=str(e), code=400)
+        raise ValidationException(str(e))
 
 
 @router.post("/add-audio", summary="添加音频")
@@ -184,10 +188,12 @@ async def add_audio(
 ):
     """添加音频到视频"""
     try:
+        validate_path_in_allowed_dir(req.video_path)
+        validate_path_in_allowed_dir(req.audio_path)
         result = service.add_audio_to_video(req.video_path, req.audio_path)
         return success_response(data=result, message="添加成功")
     except ValueError as e:
-        return error_response(error="MergeError", message=str(e), code=400)
+        raise ValidationException(str(e))
 
 
 # ==================== 字幕相关 ====================
@@ -209,7 +215,7 @@ async def transcribe(
         )
         return success_response(data={"subtitle_content": subtitle_content}, message="转录成功")
     except ValueError as e:
-        return error_response(error="TranscribeError", message=str(e), code=400)
+        raise ValidationException(str(e))
 
 
 @router.post("/subtitle", summary="添加字幕")
@@ -238,7 +244,7 @@ async def add_subtitle(
         )
         return success_response(data=result, message="添加字幕成功")
     except ValueError as e:
-        return error_response(error="SubtitleError", message=str(e), code=400)
+        raise ValidationException(str(e))
 
 
 # ==================== 批量操作 ====================
@@ -248,6 +254,10 @@ def batch_compress(req: BatchCompressRequest):
     """启动批量视频压缩任务"""
     from src.shared.utils import file_util
     from src.application.services import ffmpeg_adapter as use_ffmpeg
+
+    validate_path_in_allowed_dir(req.input_dir)
+    if req.backup_dir:
+        validate_path_in_allowed_dir(req.backup_dir)
 
     logger.info("启动批量视频压缩任务")
     use_ffmpeg.batch_compress_videos(
@@ -316,7 +326,7 @@ def delete_video(
         service.delete_video(video_id)
         return success_response(data={"id": video_id}, message="删除成功")
     except FileNotFoundError as e:
-        return error_response(error="NotFound", message=str(e), code=404)
+        raise ResourceNotFoundException(resource_type="Video", resource_id=video_id)
 
 
 @router.get("/{video_id}/description", summary="获取视频描述")

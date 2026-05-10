@@ -7,5 +7,6 @@ from src.domain.entities.mixins import ToDictMixin
 from src.domain.entities.video_source import VideoSource
 from src.domain.entities.audio_source import AudioSource
 from src.domain.entities.video_shot import VideoShot
+from src.domain.entities.config_store import ConfigStore
 
-__all__ = ['Base', 'ToDictMixin', 'VideoSource', 'AudioSource', 'VideoShot']
+__all__ = ['Base', 'ToDictMixin', 'VideoSource', 'AudioSource', 'VideoShot', 'ConfigStore']

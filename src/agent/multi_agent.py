@@ -5,13 +5,17 @@
 主 Agent 通过 agent_tool_call 调度子 Agent。
 """
 import logging
+import asyncio
 from typing import Dict, Any, Optional, List
 from enum import Enum
 
 from src.agent.tool_registry import registry
+from src.agent.react_agent import TOOL_CALL_PATTERN
 from src.application.services.llm_adapter import generate_response_async
 
 logger = logging.getLogger(__name__)
+
+_SUB_AGENT_LLM_TIMEOUT = 120  # 子 Agent 单次 LLM 调用超时（秒）
 
 
 class AgentRole(str, Enum):
@@ -86,12 +90,16 @@ async def run_sub_agent(
 
         # TAOR 循环
         for iteration in range(3):
-            response = await generate_response_async(messages=messages, temperature=0.5, max_tokens=2048)
+            try:
+                response = await asyncio.wait_for(
+                    generate_response_async(messages=messages, temperature=0.5, max_tokens=2048),
+                    timeout=_SUB_AGENT_LLM_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[MultiAgent] 子 Agent LLM 调用超时 (iteration=%d)", iteration)
+                return "执行超时：LLM 响应时间过长"
             import re
-            tool_calls = re.findall(
-                r'<tool_call\s+name=["\']([^"\']+)["\']>\s*\n?(.*?)\n?\s*</tool_call\s*>?',
-                response, re.DOTALL
-            )
+            tool_calls = re.findall(TOOL_CALL_PATTERN, response, re.DOTALL)
             if not tool_calls:
                 return response.strip()
 
@@ -102,7 +110,8 @@ async def run_sub_agent(
                 try:
                     params = json.loads(params_str.strip())
                 except (json.JSONDecodeError, ValueError):
-                    params = {}
+                    logger.warning("[MultiAgent] JSON 解析失败 (tool=%s): %.200s", tool_name, params_str)
+                    params = {"_parse_error": f"JSON 格式错误，请修正后重试。原始内容: {params_str[:200]}"}
                 if project_id and "project_id" not in params:
                     params["project_id"] = project_id
 
@@ -129,7 +138,14 @@ async def run_sub_agent(
         return response.strip() if response else "执行超时"
 
     # 规划/审查 Agent 不调用工具，直接生成
-    response = await generate_response_async(messages=messages, temperature=0.7, max_tokens=2048)
+    try:
+        response = await asyncio.wait_for(
+            generate_response_async(messages=messages, temperature=0.7, max_tokens=2048),
+            timeout=_SUB_AGENT_LLM_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[MultiAgent] %s Agent LLM 调用超时", role.value)
+        return f"{role.value} Agent 响应超时"
     return response.strip()
 
 
@@ -173,3 +189,67 @@ async def run_pipeline(
         "review": review,
         "status": "completed",
     }
+
+
+async def run_pipeline_parallel(
+    user_request: str,
+    project_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """并行版多 Agent 流水线：Planner → Executor + Reviewer 并行"""
+    import asyncio
+
+    # Stage 1: 规划（必须先完成）
+    logger.info("[MultiAgent-Parallel] Stage 1: 规划")
+    plan = await run_sub_agent(
+        AgentRole.PLANNER,
+        task=user_request,
+        project_id=project_id,
+    )
+
+    # Stage 2: 执行
+    logger.info("[MultiAgent-Parallel] Stage 2: 执行")
+    execution_result = await run_sub_agent(
+        AgentRole.EXECUTOR,
+        task=f"请执行以下剪辑方案:\n{plan}",
+        project_id=project_id,
+    )
+
+    # Stage 3: 审查
+    logger.info("[MultiAgent-Parallel] Stage 3: 审查")
+    review = await run_sub_agent(
+        AgentRole.REVIEWER,
+        task=f"请审查以下剪辑结果:\n{execution_result}",
+        context=f"原始需求: {user_request}\n方案: {plan}",
+    )
+
+    return {
+        "plan": plan,
+        "execution": execution_result,
+        "review": review,
+        "status": "completed",
+    }
+
+
+async def run_multi_task_pipeline(
+    tasks: List[str],
+    project_id: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """并行执行多个独立剪辑任务"""
+    import asyncio
+
+    async def _single_task(task_desc: str) -> Dict:
+        plan = await run_sub_agent(AgentRole.PLANNER, task=task_desc, project_id=project_id)
+        execution = await run_sub_agent(
+            AgentRole.EXECUTOR,
+            task=f"请执行以下剪辑方案:\n{plan}",
+            project_id=project_id,
+        )
+        return {"task": task_desc, "plan": plan, "execution": execution, "status": "completed"}
+
+    results = await asyncio.gather(
+        *[_single_task(t) for t in tasks], return_exceptions=True
+    )
+    return [
+        r if not isinstance(r, Exception) else {"task": tasks[i], "error": str(r), "status": "failed"}
+        for i, r in enumerate(results)
+    ]

@@ -89,7 +89,7 @@ async def _main_handler(ws: WebSocket):
                         await ws.send_json(event)
                     await ws.send_json({"type": "ws_done"})
                 except Exception as e:
-                    await ws.send_json({"type": "error", "message": str(e)})
+                    await ws.send_json({"type": "error", "message": "处理消息时发生错误"})
             else:
                 await ws.send_json({"type": "unknown", "message": f"未知消息类型: {msg_type}"})
     except WebSocketDisconnect:

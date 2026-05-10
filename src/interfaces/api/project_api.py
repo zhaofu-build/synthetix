@@ -12,6 +12,7 @@ import os, uuid, logging, json, shutil
 from datetime import datetime
 
 from src.shared.models.response import success_response, error_response
+from src.shared.exceptions.exceptions import ValidationException, ResourceNotFoundException, ExternalServiceException
 from src.infrastructure.db.session import get_db
 from src.domain.entities.video_project import VideoProject, ClipPlanItem
 from src.domain.entities.bgm_item import BGMItem
@@ -90,31 +91,33 @@ async def upload_bgm(
     db: Session = Depends(get_db)
 ):
     """上传BGM文件"""
-    try:
-        upload_dir = os.path.join(config.ROOT_DIR_WIN, "static", "bgm")
-        os.makedirs(upload_dir, exist_ok=True)
+    upload_dir = os.path.join(config.ROOT_DIR_WIN, "static", "bgm")
+    os.makedirs(upload_dir, exist_ok=True)
 
-        ext = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "mp3"
-        save_name = f"{uuid.uuid4().hex}.{ext}"
-        file_path = os.path.join(upload_dir, save_name)
+    ext = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "mp3"
+    _ALLOWED_AUDIO_EXT = {"mp3", "wav", "flac", "aac", "m4a", "ogg", "wma"}
+    if ext.lower() not in _ALLOWED_AUDIO_EXT:
+        return error_response(error="UploadError", message=f"不支持的音频格式: {ext}", code=400)
+    save_name = f"{uuid.uuid4().hex}.{ext}"
+    file_path = os.path.join(upload_dir, save_name)
 
-        content = await file.read()
-        with open(file_path, "wb") as f:
-            f.write(content)
+    content = await file.read()
+    if len(content) > 50 * 1024 * 1024:  # 50MB
+        return error_response(error="UploadError", message="BGM文件不能超过 50MB", code=400)
+    with open(file_path, "wb") as f:
+        f.write(content)
 
-        bgm = BGMItem(
-            name=name,
-            web_path=f"static/bgm/{save_name}",
-            local_path=file_path,
-            style=style or ""
-        )
-        db.add(bgm)
-        db.commit()
-        db.refresh(bgm)
+    bgm = BGMItem(
+        name=name,
+        web_path=f"static/bgm/{save_name}",
+        local_path=file_path,
+        style=style or ""
+    )
+    db.add(bgm)
+    db.commit()
+    db.refresh(bgm)
 
-        return success_response(data=bgm.to_dict(), message="上传成功", code=201)
-    except Exception as e:
-        return error_response(error="UploadError", message=str(e), code=500)
+    return success_response(data=bgm.to_dict(), message="上传成功", code=201)
 
 
 @router.delete("/bgm/{bgm_id}", summary="删除BGM")
@@ -122,16 +125,19 @@ def delete_bgm(bgm_id: int, db: Session = Depends(get_db)):
     """删除BGM"""
     bgm = db.query(BGMItem).filter(BGMItem.id == bgm_id).first()
     if not bgm:
-        return error_response(error="NotFound", message="BGM不存在", code=404)
+        raise ResourceNotFoundException(resource_type="BGMItem", resource_id=bgm_id)
     try:
         if bgm.local_path and os.path.exists(bgm.local_path):
             os.remove(bgm.local_path)
         db.delete(bgm)
         db.commit()
         return success_response(message="删除成功")
+    except (OSError, PermissionError) as e:
+        db.rollback()
+        raise ExternalServiceException(service_name="Filesystem", message="删除BGM文件失败")
     except Exception as e:
         db.rollback()
-        return error_response(error="DeleteError", message=str(e), code=500)
+        raise
 
 
 class AiSelectBgmRequest(BaseModel):
@@ -146,16 +152,15 @@ def ai_select_bgm(req: AiSelectBgmRequest, db: Session = Depends(get_db)):
     if not bgm_list:
         return success_response(data=None, message="BGM库为空")
 
-    try:
-        from src.application.services.llm_adapter import generate_response
-        import json
+    from src.application.services.llm_adapter import generate_response
+    import json
 
-        bgm_info = "\n".join([
-            f"- ID: {b.id}, 名称: {b.name}, 风格: {b.style or '未知'}, 描述: {b.description or '无'}"
-            for b in bgm_list
-        ])
+    bgm_info = "\n".join([
+        f"- ID: {b.id}, 名称: {b.name}, 风格: {b.style or '未知'}, 描述: {b.description or '无'}"
+        for b in bgm_list
+    ])
 
-        prompt = f"""根据以下视频描述和风格，从BGM库中选择最合适的一个BGM，只返回该BGM的ID（数字）。
+    prompt = f"""根据以下视频描述和风格，从BGM库中选择最合适的一个BGM，只返回该BGM的ID（数字）。
 
 视频描述: {req.description}
 风格偏好: {req.style or '无'}
@@ -165,18 +170,15 @@ BGM库:
 
 只返回最合适的BGM的ID数字，不要返回其他内容。"""
 
-        response = generate_response([{"role": "user", "content": prompt}])
-        from src.shared.utils import string_util
-        response = string_util.remove_think_tags(response)
+    response = generate_response([{"role": "user", "content": prompt}])
+    from src.shared.utils import string_util
+    response = string_util.remove_think_tags(response)
 
-        selected_id = int(response.strip())
-        bgm = db.query(BGMItem).filter(BGMItem.id == selected_id).first()
-        if bgm:
-            return success_response(data=bgm.to_dict(), message="AI推荐成功")
-        return success_response(data=None, message="未找到合适的BGM")
-    except Exception as e:
-        logger.error(f"AI选曲失败: {e}")
-        return success_response(data=None, message="AI选曲失败")
+    selected_id = int(response.strip())
+    bgm = db.query(BGMItem).filter(BGMItem.id == selected_id).first()
+    if bgm:
+        return success_response(data=bgm.to_dict(), message="AI推荐成功")
+    return success_response(data=None, message="未找到合适的BGM")
 
 
 class AiGenerateBgmRequest(BaseModel):
@@ -190,12 +192,11 @@ def ai_generate_bgm(req: AiGenerateBgmRequest, db: Session = Depends(get_db)):
     """根据文案和风格AI生成BGM音乐"""
     import base64
 
-    try:
-        # 1. 用 LLM 根据文案生成音乐提示词
-        from src.application.services.llm_adapter import generate_response
-        from src.shared.utils.string_util import remove_think_tags
+    # 1. 用 LLM 根据文案生成音乐提示词
+    from src.application.services.llm_adapter import generate_response
+    from src.shared.utils.string_util import remove_think_tags
 
-        prompt = f"""你是一位音乐制作人。请根据以下视频文案和风格要求，生成一段用于AI音乐生成的提示词。
+    prompt = f"""你是一位音乐制作人。请根据以下视频文案和风格要求，生成一段用于AI音乐生成的提示词。
 
 视频文案: {req.description}
 风格要求: {req.style or '自动匹配'}
@@ -203,72 +204,69 @@ def ai_generate_bgm(req: AiGenerateBgmRequest, db: Session = Depends(get_db)):
 请直接返回一段英文的音乐生成提示词（prompt），描述音乐的节奏、乐器、情感、氛围等。
 不要返回任何其他内容，只返回提示词本身。"""
 
-        music_prompt = generate_response([{"role": "user", "content": prompt}])
-        music_prompt = remove_think_tags(music_prompt).strip()
+    music_prompt = generate_response([{"role": "user", "content": prompt}])
+    music_prompt = remove_think_tags(music_prompt).strip()
 
-        logger.info(f"AI生成的音乐提示词: {music_prompt}")
+    logger.info(f"AI生成的音乐提示词: {music_prompt}")
 
-        # 2. 调用音乐生成接口
-        from src.shared.utils.core_nexus_client import CoreNexusClient
-        client = CoreNexusClient()
+    # 2. 调用音乐生成接口
+    from src.shared.utils.core_nexus_client import CoreNexusClient
+    client = CoreNexusClient()
 
-        result = client.text_to_music(
-            prompt=music_prompt,
-            duration=min(req.duration, 30),
-            style=req.style
-        )
+    result = client.text_to_music(
+        prompt=music_prompt,
+        duration=min(req.duration, 30),
+        style=req.style
+    )
 
-        if not result:
-            return error_response(error="GenerateError", message="AI生成BGM失败", code=500)
+    if not result:
+        return error_response(error="GenerateError", message="AI生成BGM失败", code=500)
 
-        upload_dir = os.path.join(config.ROOT_DIR_WIN, "static", "bgm")
-        os.makedirs(upload_dir, exist_ok=True)
+    upload_dir = os.path.join(config.ROOT_DIR_WIN, "static", "bgm")
+    os.makedirs(upload_dir, exist_ok=True)
 
-        save_name = f"{uuid.uuid4().hex}.wav"
-        file_path = os.path.join(upload_dir, save_name)
+    save_name = f"{uuid.uuid4().hex}.wav"
+    file_path = os.path.join(upload_dir, save_name)
 
-        # 3. 处理不同返回格式
-        audio_bytes = None
-        if isinstance(result, bytes):
-            audio_bytes = result
-        elif isinstance(result, dict):
-            audio_data = result.get("audio") or result.get("audio_data") or result.get("data")
-            if audio_data:
-                if isinstance(audio_data, bytes):
-                    audio_bytes = audio_data
-                elif isinstance(audio_data, str):
-                    # 去掉 data URL 前缀
-                    if "," in audio_data:
-                        audio_data = audio_data.split(",", 1)[1]
-                    # 修复 base64 padding
-                    padding = 4 - len(audio_data) % 4
-                    if padding != 4:
-                        audio_data += "=" * padding
-                    audio_bytes = base64.b64decode(audio_data)
+    # 3. 处理不同返回格式
+    audio_bytes = None
+    if isinstance(result, bytes):
+        audio_bytes = result
+    elif isinstance(result, dict):
+        audio_data = result.get("audio") or result.get("audio_data") or result.get("data")
+        if audio_data:
+            if isinstance(audio_data, bytes):
+                audio_bytes = audio_data
+            elif isinstance(audio_data, str):
+                # 去掉 data URL 前缀
+                if "," in audio_data:
+                    audio_data = audio_data.split(",", 1)[1]
+                # 修复 base64 padding
+                padding = 4 - len(audio_data) % 4
+                if padding != 4:
+                    audio_data += "=" * padding
+                audio_bytes = base64.b64decode(audio_data)
 
-        if not audio_bytes:
-            logger.error(f"AI返回格式异常, result keys: {list(result.keys()) if isinstance(result, dict) else type(result)}")
-            return error_response(error="GenerateError", message="AI返回格式异常", code=500)
+    if not audio_bytes:
+        logger.error(f"AI返回格式异常, result keys: {list(result.keys()) if isinstance(result, dict) else type(result)}")
+        return error_response(error="GenerateError", message="AI返回格式异常", code=500)
 
-        with open(file_path, "wb") as f:
-            f.write(audio_bytes)
+    with open(file_path, "wb") as f:
+        f.write(audio_bytes)
 
-        bgm = BGMItem(
-            name=f"AI生成-{req.description[:20]}",
-            web_path=f"static/bgm/{save_name}",
-            local_path=file_path,
-            style=req.style or "",
-            duration=req.duration,
-            description=f"提示词: {music_prompt[:100]}"
-        )
-        db.add(bgm)
-        db.commit()
-        db.refresh(bgm)
+    bgm = BGMItem(
+        name=f"AI生成-{req.description[:20]}",
+        web_path=f"static/bgm/{save_name}",
+        local_path=file_path,
+        style=req.style or "",
+        duration=req.duration,
+        description=f"提示词: {music_prompt[:100]}"
+    )
+    db.add(bgm)
+    db.commit()
+    db.refresh(bgm)
 
-        return success_response(data=bgm.to_dict(), message="BGM生成成功")
-    except Exception as e:
-        logger.error(f"AI生成BGM失败: {e}", exc_info=True)
-        return error_response(error="GenerateError", message=str(e), code=500)
+    return success_response(data=bgm.to_dict(), message="BGM生成成功")
 
 
 class GenerateTtsRequest(BaseModel):
@@ -279,22 +277,18 @@ class GenerateTtsRequest(BaseModel):
 @router.post("/generate-tts", summary="生成文案语音")
 def generate_tts(req: GenerateTtsRequest):
     """生成TTS语音并返回音频路径"""
-    try:
-        from src.application.services.audio_service import AudioService
-        from src.infrastructure.db.session import get_db_context
-        with get_db_context() as db:
-            audio_service = AudioService(db)
-            result = audio_service.generate_fish_speech_tts(
-                text=req.text,
-                audio_source_id=req.speaker_id
-            )
-            tts_path = result.get("local_path")
-        if tts_path:
-            return success_response(data={"web_path": tts_path, "local_path": tts_path}, message="语音生成成功")
-        return error_response(error="TtsError", message="语音生成失败", code=500)
-    except Exception as e:
-        logger.error(f"TTS生成失败: {e}")
-        return error_response(error="TtsError", message=str(e), code=500)
+    from src.application.services.audio_service import AudioService
+    from src.infrastructure.db.session import get_db_context
+    with get_db_context() as db:
+        audio_service = AudioService(db)
+        result = audio_service.generate_fish_speech_tts(
+            text=req.text,
+            audio_source_id=req.speaker_id
+        )
+        tts_path = result.get("local_path")
+    if tts_path:
+        return success_response(data={"web_path": tts_path}, message="语音生成成功")
+    return error_response(error="TtsError", message="语音生成失败", code=500)
 
 
 # ==================== 项目导入导出（必须在 /{project_id} 之前） ====================
@@ -305,37 +299,37 @@ async def import_project(
     db: Session = Depends(get_db)
 ):
     """从 JSON 文件导入项目"""
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:  # 10MB
+        raise ValidationException("导入文件不能超过 10MB")
     try:
-        content = await file.read()
         data = json.loads(content)
-
-        project = VideoProject(
-            name=data.get("name", "导入项目"),
-            description=data.get("description"),
-            mode=data.get("mode", "workflow"),
-            material_ids=data.get("material_ids", []),
-            creative=data.get("creative"),
-            target_duration=data.get("target_duration"),
-            style=data.get("style"),
-            speaker_id=data.get("speaker_id"),
-            tts_path=data.get("tts_path"),
-            bgm_id=data.get("bgm_id"),
-            bgm_volume=data.get("bgm_volume", 0.3),
-            current_step=data.get("current_step", 0),
-            chat_history=data.get("chat_history", []),
-            timeline_data=data.get("timeline_data"),
-            plan_data=data.get("plan_data"),
-            status="draft"
-        )
-        db.add(project)
-        db.commit()
-        db.refresh(project)
-
-        return success_response(data=project.to_dict(), message="项目导入成功")
     except json.JSONDecodeError:
-        return error_response(error="ImportError", message="无效的JSON文件", code=400)
-    except Exception as e:
-        return error_response(error="ImportError", message=str(e), code=500)
+        raise ValidationException("无效的JSON文件")
+
+    project = VideoProject(
+        name=data.get("name", "导入项目"),
+        description=data.get("description"),
+        mode=data.get("mode", "workflow"),
+        material_ids=data.get("material_ids", []),
+        creative=data.get("creative"),
+        target_duration=data.get("target_duration"),
+        style=data.get("style"),
+        speaker_id=data.get("speaker_id"),
+        tts_path=data.get("tts_path"),
+        bgm_id=data.get("bgm_id"),
+        bgm_volume=data.get("bgm_volume", 0.3),
+        current_step=data.get("current_step", 0),
+        chat_history=data.get("chat_history", []),
+        timeline_data=data.get("timeline_data"),
+        plan_data=data.get("plan_data"),
+        status="draft"
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+
+    return success_response(data=project.to_dict(), message="项目导入成功")
 
 
 @router.post("", summary="创建项目")
@@ -344,26 +338,22 @@ def create_project(
     db: Session = Depends(get_db)
 ):
     """创建新的视频项目"""
-    try:
-        # 检查项目名称是否重复
-        existing = db.query(VideoProject).filter(VideoProject.name == req.name).first()
-        if existing:
-            return error_response(error="DuplicateName", message="项目名称已存在，请换一个名称", code=400)
+    # 检查项目名称是否重复
+    existing = db.query(VideoProject).filter(VideoProject.name == req.name).first()
+    if existing:
+        return error_response(error="DuplicateName", message="项目名称已存在，请换一个名称", code=400)
 
-        project = VideoProject(
-            name=req.name,
-            description=req.description,
-            mode=req.mode,
-            status="draft"
-        )
-        db.add(project)
-        db.commit()
-        db.refresh(project)
+    project = VideoProject(
+        name=req.name,
+        description=req.description,
+        mode=req.mode,
+        status="draft"
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
 
-        return success_response(data=project.to_dict(), message="项目创建成功")
-
-    except Exception as e:
-        return error_response(error="CreateError", message=str(e), code=500)
+    return success_response(data=project.to_dict(), message="项目创建成功")
 
 
 @router.get("", summary="获取项目列表")
@@ -374,24 +364,20 @@ def list_projects(
     db: Session = Depends(get_db)
 ):
     """获取项目列表（分页）"""
-    try:
-        query = db.query(VideoProject)
+    query = db.query(VideoProject)
 
-        if status:
-            query = query.filter(VideoProject.status == status)
+    if status:
+        query = query.filter(VideoProject.status == status)
 
-        total = query.count()
-        items = query.order_by(VideoProject.updated_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    total = query.count()
+    items = query.order_by(VideoProject.updated_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
 
-        return success_response(data={
-            "items": [p.to_dict() for p in items],
-            "total": total,
-            "page": page,
-            "page_size": page_size
-        })
-
-    except Exception as e:
-        return error_response(error="QueryError", message=str(e), code=500)
+    return success_response(data={
+        "items": [p.to_dict() for p in items],
+        "total": total,
+        "page": page,
+        "page_size": page_size
+    })
 
 
 class SaveToLibraryRequest(BaseModel):
@@ -402,43 +388,35 @@ class SaveToLibraryRequest(BaseModel):
 @router.post("/save-to-library", summary="保存临时资产到素材库")
 async def save_to_library(request: SaveToLibraryRequest, db: Session = Depends(get_db)):
     """将临时素材转为正式素材"""
-    try:
-        from src.infrastructure.repositories import VideoRepository
-        repo = VideoRepository(db)
-        updated = repo.update(request.video_id, is_temp=False)
-        if not updated:
-            return error_response(error="NotFound", message="素材不存在", code=404)
-        return success_response(data={"video_id": request.video_id})
-    except Exception as e:
-        logger.error(f"保存到素材库失败: {e}")
-        return error_response(error="SaveError", message=str(e), code=500)
+    from src.infrastructure.repositories import VideoRepository
+    repo = VideoRepository(db)
+    updated = repo.update(request.video_id, is_temp=False)
+    if not updated:
+        raise ResourceNotFoundException(resource_type="VideoSource", resource_id=request.video_id)
+    return success_response(data={"video_id": request.video_id})
 
 
 @router.delete("/temp-material/{video_id}", summary="删除临时素材")
 async def delete_temp_material(video_id: int, db: Session = Depends(get_db)):
     """删除临时素材（DB记录 + 物理文件），并从项目中移除关联"""
-    try:
-        from src.domain.entities.video_source import VideoSource
-        video = db.query(VideoSource).filter(VideoSource.id == video_id).first()
-        if not video:
-            return error_response(error="NotFound", message="素材不存在", code=404)
+    from src.domain.entities.video_source import VideoSource
+    video = db.query(VideoSource).filter(VideoSource.id == video_id).first()
+    if not video:
+        raise ResourceNotFoundException(resource_type="VideoSource", resource_id=video_id)
 
-        # 从所有项目的 material_ids 中移除
-        projects = db.query(VideoProject).all()
-        for p in projects:
-            if p.material_ids and video_id in p.material_ids:
-                p.material_ids = [x for x in p.material_ids if x != video_id]
+    # 从所有项目的 material_ids 中移除
+    projects = db.query(VideoProject).all()
+    for p in projects:
+        if p.material_ids and video_id in p.material_ids:
+            p.material_ids = [x for x in p.material_ids if x != video_id]
 
-        # 删除物理文件
-        if video.local_path and os.path.exists(video.local_path):
-            os.remove(video.local_path)
+    # 删除物理文件
+    if video.local_path and os.path.exists(video.local_path):
+        os.remove(video.local_path)
 
-        db.delete(video)
-        db.commit()
-        return success_response(message="已删除")
-    except Exception as e:
-        logger.error(f"删除临时素材失败: {e}")
-        return error_response(error="DeleteError", message=str(e), code=500)
+    db.delete(video)
+    db.commit()
+    return success_response(message="已删除")
 
 
 @router.delete("/temp-files/{temp_file_id}", summary="删除临时文件")
@@ -448,7 +426,7 @@ def delete_temp_file(temp_file_id: int, db: Session = Depends(get_db)):
     if repo.delete_by_id(temp_file_id):
         db.commit()
         return success_response(message="临时文件已删除")
-    return error_response(error="NotFound", message="临时文件不存在", code=404)
+    raise ResourceNotFoundException(resource_type="TempFile", resource_id=temp_file_id)
 
 
 @router.post("/temp-files/{temp_file_id}/save-to-library", summary="临时文件存入素材库")
@@ -459,7 +437,7 @@ def save_temp_to_library(temp_file_id: int, db: Session = Depends(get_db)):
     repo = TempFileRepository(db)
     record = repo.get_by_id(temp_file_id)
     if not record:
-        return error_response(error="NotFound", message="临时文件不存在", code=404)
+        raise ResourceNotFoundException(resource_type="TempFile", resource_id=temp_file_id)
 
     dest_dir = str(config.source_videos_dir) if hasattr(config, 'source_videos_dir') else "static/source_videos"
     os.makedirs(dest_dir, exist_ok=True)
@@ -487,7 +465,7 @@ def get_project(
     """获取项目详情"""
     project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
     if not project:
-        return error_response(error="NotFound", message="项目不存在", code=404)
+        raise ResourceNotFoundException(resource_type="VideoProject", resource_id=project_id)
 
     return success_response(data=project.to_dict())
 
@@ -503,7 +481,7 @@ def get_project_full(
 
     project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
     if not project:
-        return error_response(error="NotFound", message="项目不存在", code=404)
+        raise ResourceNotFoundException(resource_type="VideoProject", resource_id=project_id)
 
     data = project.to_dict()
 
@@ -551,7 +529,7 @@ def export_project(
     """导出项目为JSON文件"""
     project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
     if not project:
-        return error_response(error="NotFound", message="项目不存在", code=404)
+        raise ResourceNotFoundException(resource_type="VideoProject", resource_id=project_id)
 
     data = project.to_dict()
     data["exported_at"] = datetime.utcnow().isoformat()
@@ -575,7 +553,7 @@ def update_project(
     """更新项目信息"""
     project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
     if not project:
-        return error_response(error="NotFound", message="项目不存在", code=404)
+        raise ResourceNotFoundException(resource_type="VideoProject", resource_id=project_id)
 
     try:
         if req.name is not None:
@@ -625,9 +603,9 @@ def update_project(
 
         return success_response(data=project.to_dict(), message="更新成功")
 
-    except Exception as e:
+    except Exception:
         db.rollback()
-        return error_response(error="UpdateError", message=str(e), code=500)
+        raise
 
 
 @router.delete("/{project_id}", summary="删除项目")
@@ -638,7 +616,7 @@ def delete_project(
     """删除项目"""
     project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
     if not project:
-        return error_response(error="NotFound", message="项目不存在", code=404)
+        raise ResourceNotFoundException(resource_type="VideoProject", resource_id=project_id)
 
     try:
         # 同时删除相关的剪辑方案项
@@ -652,9 +630,9 @@ def delete_project(
 
         return success_response(message="项目已删除")
 
-    except Exception as e:
+    except Exception:
         db.rollback()
-        return error_response(error="DeleteError", message=str(e), code=500)
+        raise
 
 
 # ==================== 临时文件操作 ====================
@@ -677,7 +655,7 @@ def get_timeline(
     """获取项目的时间线数据"""
     project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
     if not project:
-        return error_response(error="NotFound", message="项目不存在", code=404)
+        raise ResourceNotFoundException(resource_type="VideoProject", resource_id=project_id)
 
     if project.timeline_data:
         return success_response(data=project.timeline_data)
@@ -699,7 +677,7 @@ def save_timeline(
     """保存时间线数据"""
     project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
     if not project:
-        return error_response(error="NotFound", message="项目不存在", code=404)
+        raise ResourceNotFoundException(resource_type="VideoProject", resource_id=project_id)
 
     try:
         project.timeline_data = req.timeline_data
@@ -712,9 +690,9 @@ def save_timeline(
 
         return success_response(message="时间线已保存")
 
-    except Exception as e:
+    except Exception:
         db.rollback()
-        return error_response(error="SaveError", message=str(e), code=500)
+        raise
 
 
 # ==================== 剪辑方案 ====================
@@ -730,31 +708,27 @@ def generate_plan(
 
     project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
     if not project:
-        return error_response(error="NotFound", message="项目不存在", code=404)
+        raise ResourceNotFoundException(resource_type="VideoProject", resource_id=project_id)
 
-    try:
-        # 获取可用素材
-        from src.infrastructure.repositories import VideoRepository
-        repo = VideoRepository(db)
-        materials = repo.get_all(limit=50, filters={"video_type": 1})
+    # 获取可用素材
+    from src.infrastructure.repositories import VideoRepository
+    repo = VideoRepository(db)
+    materials = repo.get_all(limit=50, filters={"video_type": 1})
 
-        # 生成方案
-        planner = ClipPlanner()
-        plan = planner.generate_plan(
-            description=req.description,
-            materials=[m.to_dict() for m in materials],
-            duration=req.duration,
-            style=req.style
-        )
+    # 生成方案
+    planner = ClipPlanner()
+    plan = planner.generate_plan(
+        description=req.description,
+        materials=[m.to_dict() for m in materials],
+        duration=req.duration,
+        style=req.style
+    )
 
-        # 保存方案
-        project.plan_data = plan.to_dict()
-        db.commit()
+    # 保存方案
+    project.plan_data = plan.to_dict()
+    db.commit()
 
-        return success_response(data=plan.to_dict(), message="方案生成成功")
-
-    except Exception as e:
-        return error_response(error="PlanError", message=str(e), code=500)
+    return success_response(data=plan.to_dict(), message="方案生成成功")
 
 
 @router.post("/{project_id}/plan/adjust", summary="调整方案")
@@ -766,7 +740,7 @@ def adjust_plan(
     """调整剪辑方案"""
     project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
     if not project or not project.plan_data:
-        return error_response(error="NotFound", message="项目或方案不存在", code=404)
+        raise ResourceNotFoundException(resource_type="VideoProject", resource_id=project_id)
 
     try:
         plan_data = project.plan_data
@@ -783,9 +757,9 @@ def adjust_plan(
 
         return success_response(data=plan_data, message="方案已调整")
 
-    except Exception as e:
+    except Exception:
         db.rollback()
-        return error_response(error="AdjustError", message=str(e), code=500)
+        raise
 
 
 @router.post("/{project_id}/plan/apply", summary="应用方案到时间线")
@@ -796,7 +770,7 @@ def apply_plan(
     """将剪辑方案应用到时间线"""
     project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
     if not project or not project.plan_data:
-        return error_response(error="NotFound", message="项目或方案不存在", code=404)
+        raise ResourceNotFoundException(resource_type="VideoProject", resource_id=project_id)
 
     try:
         plan_data = project.plan_data
@@ -854,9 +828,9 @@ def apply_plan(
 
         return success_response(data=timeline.to_dict(), message="方案已应用到时间线")
 
-    except Exception as e:
+    except Exception:
         db.rollback()
-        return error_response(error="ApplyError", message=str(e), code=500)
+        raise
 
 
 # ==================== 渲染导出 ====================
@@ -879,7 +853,7 @@ def render_project(
     """渲染项目为视频"""
     project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
     if not project or not project.timeline_data:
-        return error_response(error="NotFound", message="项目或时间线不存在", code=404)
+        raise ResourceNotFoundException(resource_type="VideoProject", resource_id=project_id)
 
     try:
         from src.application.services.render_service import RenderService
@@ -932,10 +906,10 @@ def render_project(
             "output_videos": output_videos,
         }, message="渲染完成")
 
-    except Exception as e:
+    except Exception:
         project.status = "error"
         db.commit()
-        return error_response(error="RenderError", message=str(e), code=500)
+        raise
 
 
 # ==================== 字幕数据接口 ====================
@@ -950,7 +924,7 @@ class SubtitleDataRequest(BaseModel):
 async def get_subtitles(project_id: int, db: Session = Depends(get_db)):
     project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
     if not project:
-        return error_response(error="NotFound", message="项目不存在", code=404)
+        raise ResourceNotFoundException(resource_type="VideoProject", resource_id=project_id)
     return success_response(data=project.subtitle_data if hasattr(project, 'subtitle_data') and project.subtitle_data else {})
 
 
@@ -958,7 +932,7 @@ async def get_subtitles(project_id: int, db: Session = Depends(get_db)):
 async def save_subtitles(project_id: int, request: SubtitleDataRequest, db: Session = Depends(get_db)):
     project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
     if not project:
-        return error_response(error="NotFound", message="项目不存在", code=404)
+        raise ResourceNotFoundException(resource_type="VideoProject", resource_id=project_id)
 
     subtitle_data = {
         "entries": request.entries,
@@ -1027,7 +1001,7 @@ class SnapshotRequest(BaseModel):
 async def create_plan_snapshot(project_id: int, req: SnapshotRequest, db: Session = Depends(get_db)):
     project = db.query(VideoProject).filter_by(id=project_id).first()
     if not project:
-        return error_response(message="项目不存在", code=404)
+        raise ResourceNotFoundException(resource_type="VideoProject", resource_id=project_id)
     snapshots = project.plan_versions or []
     snapshots.insert(0, {**req.data, "label": req.label, "timestamp": datetime.utcnow().isoformat()})
     snapshots = snapshots[:50]
@@ -1040,6 +1014,6 @@ async def create_plan_snapshot(project_id: int, req: SnapshotRequest, db: Sessio
 async def list_plan_snapshots(project_id: int, db: Session = Depends(get_db)):
     project = db.query(VideoProject).filter_by(id=project_id).first()
     if not project:
-        return error_response(message="项目不存在", code=404)
+        raise ResourceNotFoundException(resource_type="VideoProject", resource_id=project_id)
     snapshots = project.plan_versions or []
     return success_response(data={"snapshots": snapshots})

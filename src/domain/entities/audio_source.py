@@ -2,7 +2,7 @@
 
 领域层实体，代表音频素材的业务概念
 """
-from sqlalchemy import Column, Integer, Text, TIMESTAMP, SmallInteger, Float, func, Index
+from sqlalchemy import Column, Integer, Text, String, TIMESTAMP, SmallInteger, Float, func, Index
 
 from src.domain.entities.base import Base
 from src.domain.entities.mixins import ToDictMixin
@@ -16,7 +16,7 @@ class AudioSource(Base, ToDictMixin):
     id = Column(Integer, primary_key=True, autoincrement=True, comment='主键ID')
     
     # 音频名称
-    audio_name = Column(Text, nullable=True, comment='音频名称')
+    audio_name = Column(Text, nullable=True, comment='音频名称', index=True)
     
     # 参考文本
     prompt_text = Column(Text, nullable=True, comment='参考文本')
@@ -34,7 +34,7 @@ class AudioSource(Base, ToDictMixin):
     # DateTime + datetime.utcnow 不一致。统一为同一种方案需要数据迁移，暂不修改。
     
     # 随机种子参数[1-100000]
-    seed = Column(Integer, nullable=True, comment='随机种子参数[1-100000]')
+    seed = Column(Integer, nullable=True, index=True, comment='随机种子参数[1-100000]')
     
     # 速度因子
     speed = Column(Float, nullable=True, comment='速度因子')

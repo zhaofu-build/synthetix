@@ -49,7 +49,7 @@ class VideoSource(Base, ToDictMixin):
     is_temp = Column(Boolean, default=True, comment='是否临时素材')
 
     # 素材类型：video/audio/image/document
-    file_type = Column(String(20), default='video', comment='素材类型')
+    file_type = Column(String(20), default='video', index=True, comment='素材类型')
 
     # NOTE: 时间字段使用 TIMESTAMP + func.current_timestamp()，与 VideoProject/ClipPlanItem 的
     # DateTime + datetime.utcnow 不一致。统一为同一种方案需要数据迁移，暂不修改。

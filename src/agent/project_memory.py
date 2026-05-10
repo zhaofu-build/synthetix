@@ -8,7 +8,7 @@ import json
 import logging
 import time
 import math
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,19 @@ class ProjectMemory:
         self.quality_feedback: List[Dict] = []
         self.load()
 
+    def _migrate_preference(self, key: str, val) -> Any:
+        """将旧的字符串值转换为带时间戳的字典格式"""
+        if isinstance(val, str):
+            return {"value": val, "updated_at": time.time()}
+        return val
+
+    def _pref_value(self, key: str) -> str:
+        """获取偏好的字符串值（兼容新旧格式）"""
+        v = self.preferences.get(key, "")
+        if isinstance(v, dict):
+            return v.get("value", "")
+        return str(v)
+
     def load(self):
         """从文件加载偏好"""
         path = _memory_path(self.project_id)
@@ -44,6 +57,9 @@ class ProjectMemory:
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 self.preferences = data.get("preferences", {})
+                # 迁移旧格式（str → {value, updated_at}）
+                for k in list(self.preferences.keys()):
+                    self.preferences[k] = self._migrate_preference(k, self.preferences[k])
                 self.notes = data.get("notes", [])
                 self.edit_history = data.get("edit_history", [])
                 self.quality_feedback = data.get("quality_feedback", [])
@@ -67,8 +83,8 @@ class ProjectMemory:
             logger.error(f"保存项目记忆失败: {e}")
 
     def set_preference(self, key: str, value: str):
-        """设置偏好"""
-        self.preferences[key] = value
+        """设置偏好（带时间戳）"""
+        self.preferences[key] = {"value": value, "updated_at": time.time()}
         self.save()
 
     def add_note(self, note: str):
@@ -84,7 +100,7 @@ class ProjectMemory:
             return ""
         parts = []
         if self.preferences:
-            items = [f"- {k}: {v}" for k, v in self.preferences.items()]
+            items = [f"- {k}: {self._pref_value(k)}" for k in self.preferences]
             parts.append("用户偏好:\n" + "\n".join(items))
         if self.notes:
             parts.append("项目备注:\n" + "\n".join(f"- {n}" for n in self.notes[-10:]))
@@ -108,16 +124,22 @@ class ProjectMemory:
             # 关键词匹配评分
             score = 0
             query_lower = query.lower()
+            v_str = self._pref_value(k)
             for word in k.replace("_", " ").split():
                 if word in query_lower:
                     score += 2
-            for word in v.split():
+            for word in v_str.split():
                 if len(word) > 1 and word in query_lower:
                     score += 1
             # 基础分（通用偏好如 style, bgm 等总是有用的）
             if k in ("style", "bgm_volume", "subtitle_color", "general_note"):
                 score += 1
-            scored_prefs.append((score, k, v))
+            # 时间衰减: score *= 0.5 ^ (age / half_life)
+            pref_data = v if isinstance(v, dict) else {"updated_at": now}
+            age = now - pref_data.get("updated_at", now)
+            decay = 0.5 ** (age / half_life)
+            score *= decay
+            scored_prefs.append((score, k, v_str))
 
         scored_prefs.sort(key=lambda x: x[0], reverse=True)
 

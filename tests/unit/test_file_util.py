@@ -3,7 +3,7 @@ import pytest
 import os
 import tempfile
 from pathlib import Path
-from src.util.file_util import (
+from src.shared.utils.file_util import (
     get_file_name,
     get_file_name_no_suffix,
     get_file_suffix,
