@@ -1765,6 +1765,7 @@ async def tool_transcribe_video(
     **kwargs
 ) -> Dict[str, Any]:
     """字幕提取工具"""
+    logger.info(f"[TRANSCRIBE] video_id={video_id}, file_path={file_path}, language={language}")
     from src.infrastructure.db.session import get_db_context
     from src.infrastructure.repositories import VideoRepository
     from src.application.services import whisper_adapter, ffmpeg_adapter
@@ -3128,24 +3129,10 @@ async def tool_list_directory(
 ) -> Dict[str, Any]:
     """列出目录工具"""
     import os
-    from pathlib import Path as FilePath
     from src import config
 
     try:
         target = path or config.UPLOAD_DIR
-
-        # 防止目录穿越：只允许访问项目相关目录
-        allowed_dirs = [
-            FilePath(config.UPLOAD_DIR).resolve(),
-            FilePath(config.source_videos_dir).resolve() if hasattr(config, 'source_videos_dir') else None,
-            FilePath(config.source_audios_dir).resolve() if hasattr(config, 'source_audios_dir') else None,
-            FilePath("static").resolve(),
-        ]
-        allowed_dirs = [d for d in allowed_dirs if d is not None]
-
-        target_resolved = FilePath(target).resolve()
-        if not any(str(target_resolved).startswith(str(d)) for d in allowed_dirs):
-            return {"success": False, "error": f"不允许访问该目录: {target}"}
 
         if not os.path.isdir(target):
             return {"success": False, "error": f"目录不存在: {target}"}
@@ -3153,10 +3140,13 @@ async def tool_list_directory(
         items = []
         for item in os.listdir(target):
             full_path = os.path.join(target, item)
-            if pattern and pattern.lower() not in item.lower():
-                continue
+            if pattern:
+                import fnmatch
+                if not fnmatch.fnmatch(item.lower(), pattern.lower()):
+                    continue
             items.append({
                 "name": item,
+                "path": full_path,
                 "type": "directory" if os.path.isdir(full_path) else "file",
                 "size": os.path.getsize(full_path) if os.path.isfile(full_path) else None
             })
@@ -4007,6 +3997,46 @@ async def tool_open_folder(path: str = None, **kwargs) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"打开文件夹失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@registry.register(
+    name="write_file",
+    description="新建或覆盖文件并写入内容（文本、字幕、配置等）",
+    parameters={
+        "file_path": {"type": "string", "description": "文件路径"},
+        "content": {"type": "string", "description": "要写入的文件内容"},
+    },
+    examples=["把字幕保存为 srt 文件", "新建一个配置文件"],
+    permission="modify",
+    category="common",
+)
+async def tool_write_file(file_path: str, content: str, **kwargs) -> Dict[str, Any]:
+    """写入文件工具"""
+    try:
+        if not file_path:
+            return {"success": False, "error": "文件路径不能为空"}
+        if content is None:
+            return {"success": False, "error": "文件内容不能为空"}
+
+        abs_path = os.path.realpath(file_path)
+
+        parent = os.path.dirname(abs_path)
+        os.makedirs(parent, exist_ok=True)
+
+        with open(abs_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        file_size = os.path.getsize(abs_path)
+        return {
+            "success": True,
+            "file_path": abs_path,
+            "file_size": file_size,
+            "message": f"文件已写入: {abs_path} ({file_size} 字节)",
+        }
+
+    except Exception as e:
+        logger.error(f"写入文件失败: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -6617,12 +6647,12 @@ async def tool_batch_analyze(
                     try:
                         proxy = ffmpeg_adapter.generate_proxy(video.local_path)
                         srt = whisper_adapter.transcribe(video.local_path, output_format_type="srt", proxy_path=proxy)
-                        results.append({"video_id": vid, "name": video.name, "subtitle": srt, "success": True})
+                        results.append({"video_id": vid, "name": video.video_name, "subtitle": srt, "success": True})
                     except Exception as e:
                         results.append({"video_id": vid, "success": False, "error": str(e)})
                 else:
                     info = ffmpeg_adapter.get_video_info(video.local_path)
-                    results.append({"video_id": vid, "name": video.name, "info": info, "success": True})
+                    results.append({"video_id": vid, "name": video.video_name, "info": info, "success": True})
 
         success_count = sum(1 for r in results if r.get("success"))
         return {
@@ -6671,8 +6701,8 @@ async def tool_generate_metadata(
             context_parts = []
             if video.description:
                 context_parts.append(f"视频描述: {video.description}")
-            if video.name:
-                context_parts.append(f"文件名: {video.name}")
+            if video.video_name:
+                context_parts.append(f"文件名: {video.video_name}")
 
             try:
                 srt = whisper_adapter.transcribe(video.local_path, output_format_type="srt")
@@ -6710,7 +6740,7 @@ async def tool_generate_metadata(
                 metadata = _json.loads(cleaned)
             except (_json.JSONDecodeError, IndexError):
                 metadata = {
-                    "title": video.name or "未命名视频",
+                    "title": video.video_name or "未命名视频",
                     "description": response[:200],
                     "tags": [], "category": "其他", "cover_frame_second": 0,
                 }

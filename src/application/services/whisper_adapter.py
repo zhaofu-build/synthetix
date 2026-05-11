@@ -51,6 +51,7 @@ def transcribe(
     cache_key_kwargs = {"fmt": output_format_type, "lang": subtitle_language}
     cached = get_cached(actual_path, "asr", ttl=3600 * 2, **cache_key_kwargs)
     if cached is not None:
+        logger.info(f"[ASR] 缓存命中, 路径={actual_path}, 内容(前500字符): {str(cached)[:500]}")
         return cached
 
     try:
@@ -62,8 +63,16 @@ def transcribe(
             model=asr_model
         )
 
+        logger.info(f"[ASR] 原始返回 keys={list(result.keys())}, type={type(result).__name__}")
+        logger.info(f"[ASR] 原始返回内容(前2000字符): {str(result)[:2000]}")
+
         text = result.get('text', '')
         segments = result.get('segments', [])
+        logger.info(f"[ASR] text长度={len(text)}, segments数量={len(segments)}")
+        if segments:
+            logger.info(f"[ASR] 第一个segment: {segments[0]}")
+            if len(segments) > 1:
+                logger.info(f"[ASR] 最后一个segment: {segments[-1]}")
 
         # 如果没有 segments 信息，按句子拆分生成伪 segments
         if not segments and text:

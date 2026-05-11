@@ -108,8 +108,8 @@ def setup_advanced_logging():
     )
     file_handler.setLevel(logging.INFO)  # 文件记录INFO及以上级别（包括INFO、WARNING、ERROR）
 
-    # 配置控制台Handler，确保所有级别的日志都能打印
-    console_handler = logging.StreamHandler()
+    # 配置控制台Handler，输出到 stdout（确保与 print 一致，Tauri 进程能捕获）
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.DEBUG)  # 控制台显示所有级别的日志
 
     # 根据 LOG_FORMAT 环境变量选择格式
