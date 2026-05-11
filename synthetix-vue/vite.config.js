@@ -34,7 +34,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     assetsDir: 'assets',
-    sourcemap: true,
+    sourcemap: process.env.NODE_ENV !== 'production',
     rollupOptions: {
       external: [
         '@tauri-apps/api/event',

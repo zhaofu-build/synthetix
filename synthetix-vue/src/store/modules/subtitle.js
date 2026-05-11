@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { API_HOST } from '@/api/modules'
+import { subtitleApi } from '@/api/modules'
 
 export const useSubtitleStore = defineStore('subtitle', {
   state: () => ({
@@ -133,14 +133,10 @@ export const useSubtitleStore = defineStore('subtitle', {
     async saveToProject(projectId) {
       if (!projectId) return
       try {
-        await fetch(`${API_HOST}/api/projects/${projectId}/subtitles`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            entries: this.entries,
-            speakers: this.speakers,
-            style: this.subtitleStyle,
-          }),
+        await subtitleApi.save(projectId, {
+          entries: this.entries,
+          speakers: this.speakers,
+          style: this.subtitleStyle,
         })
       } catch (error) {
         console.error('保存字幕失败:', error)
@@ -150,12 +146,11 @@ export const useSubtitleStore = defineStore('subtitle', {
     async loadFromProject(projectId) {
       if (!projectId) return
       try {
-        const resp = await fetch(`${API_HOST}/api/projects/${projectId}/subtitles`)
-        const result = await resp.json()
-        if (result.code === 200 && result.data) {
-          if (result.data.entries) this.entries = result.data.entries
-          if (result.data.speakers) this.speakers = result.data.speakers
-          if (result.data.style) Object.assign(this.subtitleStyle, result.data.style)
+        const data = await subtitleApi.load(projectId)
+        if (data) {
+          if (data.entries) this.entries = data.entries
+          if (data.speakers) this.speakers = data.speakers
+          if (data.style) Object.assign(this.subtitleStyle, data.style)
         }
       } catch (error) {
         // 404 is OK - no saved subtitles yet

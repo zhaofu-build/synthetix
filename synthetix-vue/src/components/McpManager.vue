@@ -56,7 +56,7 @@
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { API_HOST } from '@/api/modules'
+import { mcpApi } from '@/api/modules'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -68,12 +68,11 @@ const newServer = ref({ name: '', url: '' })
 const fetchData = async () => {
   loading.value = true
   try {
-    const [srvRes, toolRes] = await Promise.all([
-      fetch(`${API_HOST}/api/mcp/servers`).then(r => r.json()),
-      fetch(`${API_HOST}/api/mcp/tools`).then(r => r.json()),
+    const [srvData, toolData] = await Promise.all([
+      mcpApi.listServers(),
+      mcpApi.listTools(),
     ])
-    const serverList = srvRes.data || []
-    // Health check each server
+    const serverList = srvData || []
     for (const srv of serverList) {
       try {
         const resp = await fetch(srv.url + '/health', { signal: AbortSignal.timeout(3000) })
@@ -84,8 +83,7 @@ const fetchData = async () => {
       if (srv.enabled === undefined) srv.enabled = true
     }
     servers.value = serverList
-    const toolData = toolRes.data || {}
-    tools.value = toolData.tools || []
+    tools.value = toolData?.tools || []
   } catch (e) {
     ElMessage.error('加载 MCP 数据失败')
   } finally {
@@ -103,18 +101,10 @@ const registerServer = async () => {
   if (!name || !url) return ElMessage.warning('请填写名称和 URL')
   registering.value = true
   try {
-    const res = await fetch(`${API_HOST}/api/mcp/servers`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, url }),
-    }).then(r => r.json())
-    if (res.success) {
-      ElMessage.success(`注册成功，发现 ${res.data?.tools_count || 0} 个工具`)
-      newServer.value = { name: '', url: '' }
-      await fetchData()
-    } else {
-      ElMessage.error(res.message || '注册失败')
-    }
+    const res = await mcpApi.register({ name, url })
+    ElMessage.success(`注册成功，发现 ${res?.tools_count || 0} 个工具`)
+    newServer.value = { name: '', url: '' }
+    await fetchData()
   } catch (e) {
     ElMessage.error('注册失败: ' + e.message)
   } finally {
@@ -125,7 +115,7 @@ const registerServer = async () => {
 const removeServer = async (name) => {
   try {
     await ElMessageBox.confirm(`确定移除 MCP Server "${name}"？`, '确认')
-    await fetch(`${API_HOST}/api/mcp/servers/${name}`, { method: 'DELETE' })
+    await mcpApi.remove(name)
     ElMessage.success('已移除')
     await fetchData()
   } catch { /* cancel */ }

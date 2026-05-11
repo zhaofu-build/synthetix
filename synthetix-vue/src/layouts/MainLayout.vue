@@ -39,7 +39,7 @@
           <span class="nav-item">{{ t('nav.tools') }}<el-icon class="nav-arrow"><ArrowDown /></el-icon></span>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item disabled class="menu-group-title">AI 能力</el-dropdown-item>
+              <el-dropdown-item disabled class="menu-group-title">{{ t('mainLayout.menuGroupAi') }}</el-dropdown-item>
               <el-dropdown-item command="tts">
                 <el-icon><Headset /></el-icon>{{ t('nav.tts') }}
               </el-dropdown-item>
@@ -55,7 +55,7 @@
               <el-dropdown-item command="llmChat">
                 <el-icon><ChatDotRound /></el-icon>{{ t('nav.llmChat') }}
               </el-dropdown-item>
-              <el-dropdown-item divided disabled class="menu-group-title">视频处理</el-dropdown-item>
+              <el-dropdown-item divided disabled class="menu-group-title">{{ t('mainLayout.menuGroupVideo') }}</el-dropdown-item>
               <el-dropdown-item command="videoProc">
                 <el-icon><VideoPlay /></el-icon>{{ t('nav.videoProcessing') }}
               </el-dropdown-item>
@@ -65,18 +65,18 @@
               <el-dropdown-item command="videoAnalysis">
                 <el-icon><DataAnalysis /></el-icon>{{ t('nav.videoAnalysis') }}
               </el-dropdown-item>
-              <el-dropdown-item divided disabled class="menu-group-title">音频处理</el-dropdown-item>
+              <el-dropdown-item divided disabled class="menu-group-title">{{ t('mainLayout.menuGroupAudio') }}</el-dropdown-item>
               <el-dropdown-item command="audioProc">
                 <el-icon><Headset /></el-icon>{{ t('nav.audioProcessing') }}
               </el-dropdown-item>
               <el-dropdown-item command="advancedAudio">
                 <el-icon><Headset /></el-icon>{{ t('nav.advancedAudio') }}
               </el-dropdown-item>
-              <el-dropdown-item divided disabled class="menu-group-title">图片处理</el-dropdown-item>
+              <el-dropdown-item divided disabled class="menu-group-title">{{ t('mainLayout.menuGroupImage') }}</el-dropdown-item>
               <el-dropdown-item command="imageProcessing">
                 <el-icon><PictureFilled /></el-icon>{{ t('nav.imageProcessing') }}
               </el-dropdown-item>
-              <el-dropdown-item divided disabled class="menu-group-title">翻译工具</el-dropdown-item>
+              <el-dropdown-item divided disabled class="menu-group-title">{{ t('mainLayout.menuGroupTranslation') }}</el-dropdown-item>
               <el-dropdown-item command="translation">
                 <el-icon><Sort /></el-icon>{{ t('nav.translation') }}
               </el-dropdown-item>
@@ -99,7 +99,7 @@
                 <el-icon><Notebook /></el-icon>{{ t('nav.knowledgeBase') }}
               </el-dropdown-item>
               <el-dropdown-item command="cookieManager">
-                <el-icon><Present /></el-icon>Cookie管理
+                <el-icon><Present /></el-icon>{{ t('mainLayout.cookieManager') }}
               </el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -132,30 +132,30 @@
       <template v-if="store.isLoaded">
         <span class="nav-sep">|</span>
         <span class="breadcrumb">
-          <span class="bc-link" @click="goHome">项目</span>
+          <span class="bc-link" @click="goHome">{{ t('mainLayout.breadcrumbProject') }}</span>
           <span class="bc-sep">/</span>
-          <span class="bc-current">{{ store.project.name || '未命名' }}</span>
+          <span class="bc-current">{{ store.project.name || t('mainLayout.breadcrumbUnnamed') }}</span>
         </span>
       </template>
       <template v-else-if="isComicPage && comicProjectName">
         <span class="nav-sep">|</span>
         <span class="breadcrumb">
-          <span class="bc-link" @click="goHome">首页</span>
+          <span class="bc-link" @click="goHome">{{ t('mainLayout.breadcrumbHome') }}</span>
           <span class="bc-sep">/</span>
           <span class="bc-current">{{ comicProjectName }}</span>
         </span>
       </template>
       <template v-else>
-        <el-input v-model="globalSearch" placeholder="搜索项目..." size="small" class="global-search"
+        <el-input v-model="globalSearch" :placeholder="t('mainLayout.searchProjects')" size="small" class="global-search"
                   prefix-icon="Search" clearable />
       </template>
       <!-- 右侧区域 -->
-      <el-button text size="small" @click="toggleTheme" class="theme-toggle" :title="theme === 'dark' ? '切换亮色' : '切换暗色'">
+      <el-button text size="small" @click="toggleTheme" class="theme-toggle" :title="theme === 'dark' ? t('mainLayout.switchToLight') : t('mainLayout.switchToDark')">
         <el-icon><Sunny v-if="theme === 'dark'" /><Moon v-else /></el-icon>
       </el-button>
       <span class="top-version">v3.0</span>
       <el-button v-if="updateAvailable" text size="small" type="warning" class="update-btn" @click="doUpdate">
-        <el-icon><Upload /></el-icon> {{ updateInfo || '新版本可用' }}
+        <el-icon><Upload /></el-icon> {{ updateInfo || t('mainLayout.newVersionAvailable') }}
       </el-button>
     </header>
 
@@ -163,7 +163,7 @@
     <Transition name="slide-down">
       <div v-if="apiStatus.showReconnectBar.value" class="reconnect-bar">
         <el-icon class="is-loading"><Connection /></el-icon>
-        <span>API 连接断开，正在尝试重连...</span>
+        <span>{{ t('mainLayout.reconnectBar') }}</span>
       </div>
     </Transition>
 
@@ -235,16 +235,16 @@
     <el-dialog v-model="dialogs.systemStatus" :title="t('nav.systemStatus')" width="560px" top="8vh" append-to-body>
       <SystemStatus />
     </el-dialog>
-    <el-dialog v-model="dialogs.cookieManager" title="Cookie管理" width="600px" top="8vh" append-to-body>
+    <el-dialog v-model="dialogs.cookieManager" :title="t('mainLayout.cookieManager')" width="600px" top="8vh" append-to-body>
       <CookieManager />
     </el-dialog>
 
     <!-- 重命名弹窗 -->
-    <el-dialog v-model="renameVisible" title="重命名" width="360" append-to-body>
+    <el-dialog v-model="renameVisible" :title="t('mainLayout.renameDialog')" width="360" append-to-body>
       <el-input v-model="renameInput" @keydown.enter="confirmRename" />
       <template #footer>
-        <el-button @click="renameVisible = false">取消</el-button>
-        <el-button type="primary" @click="confirmRename">确定</el-button>
+        <el-button @click="renameVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="confirmRename">{{ t('common.confirm') }}</el-button>
       </template>
     </el-dialog>
 
@@ -298,7 +298,7 @@ const loadComicProjectName = async () => {
   if (!pid) { comicProjectName.value = ''; return }
   try {
     const data = await comicDramaApi.get(pid)
-    comicProjectName.value = data.name || '未命名'
+    comicProjectName.value = data.name || t('mainLayout.breadcrumbUnnamed')
   } catch { comicProjectName.value = '' }
 }
 watch(() => isComicPage.value ? route.query.projectId : null, loadComicProjectName, { immediate: true })
@@ -306,9 +306,9 @@ watch(isComicPage, (v) => { if (v) loadComicProjectName() })
 
 // 新手引导
 const tourSteps = [
-  { icon: '🎬', title: '欢迎使用 Synthetix', desc: 'AI 驱动的视频剪辑工作台。接下来了解核心功能区域。' },
-  { icon: '🤖', title: 'AI 对话助手', desc: '中间区域是与 AI 对话的主要界面，你可以用自然语言描述需求，AI 会自动剪辑。' },
-  { icon: '📂', title: '素材与预览', desc: '右侧面板管理素材库和预览渲染结果。拖拽文件即可上传。' },
+  { icon: '🎬', title: t('mainLayout.tourStep1Title'), desc: t('mainLayout.tourStep1Desc') },
+  { icon: '🤖', title: t('mainLayout.tourStep2Title'), desc: t('mainLayout.tourStep2Desc') },
+  { icon: '📂', title: t('mainLayout.tourStep3Title'), desc: t('mainLayout.tourStep3Desc') },
 ]
 const onboarding = useOnboarding(tourSteps)
 onMounted(() => {
@@ -334,14 +334,14 @@ async function initTauriUpdater() {
 
     // 监听后端崩溃事件
     listen('backend-crashed', (event) => {
-      ElMessage({ type: 'error', duration: 0, showClose: true, message: event.payload || '后端服务已停止，请重启应用' })
+      ElMessage({ type: 'error', duration: 0, showClose: true, message: event.payload || t('mainLayout.backendCrashed') })
     })
 
     // Also proactively check
     const update = await check()
     if (update?.isUpdateAvailable) {
       updateAvailable.value = true
-      updateInfo.value = `新版本 ${update.version} 可用`
+      updateInfo.value = t('mainLayout.newVersionAvailable')
     }
   } catch {
     // Not running in Tauri — ignore
@@ -358,7 +358,7 @@ async function doUpdate() {
       await relaunch()
     }
   } catch (e) {
-    ElMessage.error('更新失败: ' + e.message)
+    ElMessage.error(t('mainLayout.updateFailed') + ': ' + e.message)
   }
 }
 
@@ -368,15 +368,15 @@ const showCommandPalette = ref(false)
 useHotkeys({
   'ctrl+s': async (e) => {
     if (!store.projectId) {
-      ElMessage.warning('没有打开的项目')
+      ElMessage.warning(t('mainLayout.noOpenProject'))
       return
     }
     try {
       await projectApi.update(store.projectId, store.project)
-      ElMessage.success('保存成功')
-      notification.push('success', '项目已保存', store.project.name || '项目')
+      ElMessage.success(t('mainLayout.saveSuccess'))
+      notification.push('success', t('mainLayout.projectSaved'), store.project.name || t('mainLayout.breadcrumbProject'))
     } catch {
-      ElMessage.error('保存失败')
+      ElMessage.error(t('mainLayout.saveFailed'))
     }
   },
   'ctrl+n': () => {
@@ -388,29 +388,29 @@ useHotkeys({
 
 // ==================== 命令面板 ====================
 const commandList = computed(() => [
-  { label: '新建项目', icon: '📄', shortcut: 'Ctrl+N', action: 'newProject', keywords: 'new create' },
-  { label: '保存项目', icon: '💾', shortcut: 'Ctrl+S', action: 'saveProject', keywords: 'save' },
-  { label: '导出项目', icon: '📦', action: 'exportProject', keywords: 'export' },
-  { label: '切换工作面板', icon: '📊', shortcut: 'Ctrl+B', action: 'toggleWorkspace', keywords: 'panel workspace' },
-  { label: 'TTS 语音合成', icon: '🎙️', action: 'tts', keywords: 'tts voice speech' },
-  { label: 'ASR 语音识别', icon: '🎤', action: 'asr', keywords: 'asr transcribe' },
-  { label: 'VL 视觉理解', icon: '🖼️', action: 'vl', keywords: 'vl vision image' },
-  { label: 'AI 音乐生成', icon: '🎵', action: 'comfyAudio', keywords: 'music audio song' },
-  { label: 'AI 智能剪辑', icon: '✂️', action: 'aiClip', keywords: 'ai clip smart edit' },
-  { label: 'LLM 对话', icon: '💬', action: 'llmChat', keywords: 'llm chat gpt' },
-  { label: '音频处理', icon: '🎧', action: 'audioProc', keywords: 'audio process' },
-  { label: '高级音频处理', icon: '🎛️', action: 'advancedAudio', keywords: 'audio advanced normalize equalize denoise' },
-  { label: '视频处理', icon: '🎬', action: 'videoProc', keywords: 'video process' },
-  { label: '视频拼接', icon: '🎞️', action: 'videoStitching', keywords: 'video stitch merge' },
-  { label: '视觉效果', icon: '🎨', action: 'videoEffects', keywords: 'video effect blur sharpen rotate filter' },
-  { label: '视频分析', icon: '🔍', action: 'videoAnalysis', keywords: 'video analyze quality silence scene' },
-  { label: '漫剧制作', icon: '🎭', action: 'comicDrama', keywords: 'comic drama motion' },
-  { label: '图片处理', icon: '🖼️', action: 'imageProcessing', keywords: 'image resize crop convert' },
-  { label: '翻译工具', icon: '🌐', action: 'translation', keywords: 'translate language' },
+  { label: t('mainLayout.cmdNewProject'), icon: '📄', shortcut: 'Ctrl+N', action: 'newProject', keywords: 'new create' },
+  { label: t('mainLayout.cmdSaveProject'), icon: '💾', shortcut: 'Ctrl+S', action: 'saveProject', keywords: 'save' },
+  { label: t('mainLayout.cmdExportProject'), icon: '📦', action: 'exportProject', keywords: 'export' },
+  { label: t('mainLayout.cmdToggleWorkspace'), icon: '📊', shortcut: 'Ctrl+B', action: 'toggleWorkspace', keywords: 'panel workspace' },
+  { label: t('mainLayout.cmdTts'), icon: '🎙️', action: 'tts', keywords: 'tts voice speech' },
+  { label: t('mainLayout.cmdAsr'), icon: '🎤', action: 'asr', keywords: 'asr transcribe' },
+  { label: t('mainLayout.cmdVl'), icon: '🖼️', action: 'vl', keywords: 'vl vision image' },
+  { label: t('mainLayout.cmdMusicGen'), icon: '🎵', action: 'comfyAudio', keywords: 'music audio song' },
+  { label: t('mainLayout.cmdAiClip'), icon: '✂️', action: 'aiClip', keywords: 'ai clip smart edit' },
+  { label: t('mainLayout.cmdLlmChat'), icon: '💬', action: 'llmChat', keywords: 'llm chat gpt' },
+  { label: t('mainLayout.cmdAudioProc'), icon: '🎧', action: 'audioProc', keywords: 'audio process' },
+  { label: t('mainLayout.cmdAdvAudio'), icon: '🎛️', action: 'advancedAudio', keywords: 'audio advanced normalize equalize denoise' },
+  { label: t('mainLayout.cmdVideoProc'), icon: '🎬', action: 'videoProc', keywords: 'video process' },
+  { label: t('mainLayout.cmdVideoStitch'), icon: '🎞️', action: 'videoStitching', keywords: 'video stitch merge' },
+  { label: t('mainLayout.cmdVideoEffects'), icon: '🎨', action: 'videoEffects', keywords: 'video effect blur sharpen rotate filter' },
+  { label: t('mainLayout.cmdVideoAnalysis'), icon: '🔍', action: 'videoAnalysis', keywords: 'video analyze quality silence scene' },
+  { label: t('mainLayout.cmdComicDrama'), icon: '🎭', action: 'comicDrama', keywords: 'comic drama motion' },
+  { label: t('mainLayout.cmdImageProc'), icon: '🖼️', action: 'imageProcessing', keywords: 'image resize crop convert' },
+  { label: t('mainLayout.cmdTranslation'), icon: '🌐', action: 'translation', keywords: 'translate language' },
 
 
-  { label: '设置', icon: '⚙️', action: 'settings', keywords: 'settings config' },
-  { label: '切换主题', icon: '🌓', action: 'toggleTheme', keywords: 'theme dark light' },
+  { label: t('mainLayout.cmdSettings'), icon: '⚙️', action: 'settings', keywords: 'settings config' },
+  { label: t('mainLayout.cmdToggleTheme'), icon: '🌓', action: 'toggleTheme', keywords: 'theme dark light' },
 ])
 
 const handleCommand = (cmd) => {
@@ -427,7 +427,7 @@ const AsyncError = {
   render() {
     return h('div', {
       style: 'padding:20px;text-align:center;color:#f56c6c;',
-    }, '组件加载失败，请刷新页面重试')
+    }, t('mainLayout.asyncLoadFailed'))
   },
 }
 
@@ -492,25 +492,25 @@ const openDialog = (key) => {
 
 // 最近使用的工具
 const toolMeta = {
-  tts: { label: 'TTS 语音合成', icon: Headset },
-  asr: { label: 'ASR 语音识别', icon: Microphone },
-  vl: { label: 'VL 视觉理解', icon: Picture },
-  comfyAudio: { label: 'AI 音乐', icon: Headset },
-  aiClip: { label: 'AI 智能剪辑', icon: MagicStick },
-  llmChat: { label: 'LLM 对话', icon: ChatDotRound },
-  audioProc: { label: '音频处理', icon: Headset },
-  advancedAudio: { label: '高级音频处理', icon: Headset },
-  videoProc: { label: '视频处理', icon: VideoPlay },
-  videoStitching: { label: '视频拼接', icon: Film },
-  videoEffects: { label: '视频视觉效果', icon: Sunny },
-  videoAnalysis: { label: '视频分析', icon: DataAnalysis },
-  comicDrama: { label: '漫剧制作', icon: Film },
-  imageProcessing: { label: '图片处理', icon: PictureFilled },
-  translation: { label: '翻译工具', icon: Sort },
-  mcpManager: { label: 'MCP 管理', icon: Connection },
-  extManager: { label: '扩展管理', icon: Grid },
-  knowledgeBase: { label: '知识库', icon: Notebook },
-  systemStatus: { label: '系统状态', icon: Cpu },
+  tts: { label: t('mainLayout.toolLabelTts'), icon: Headset },
+  asr: { label: t('mainLayout.toolLabelAsr'), icon: Microphone },
+  vl: { label: t('mainLayout.toolLabelVl'), icon: Picture },
+  comfyAudio: { label: t('mainLayout.toolLabelMusic'), icon: Headset },
+  aiClip: { label: t('mainLayout.toolLabelAiClip'), icon: MagicStick },
+  llmChat: { label: t('mainLayout.toolLabelLlmChat'), icon: ChatDotRound },
+  audioProc: { label: t('mainLayout.toolLabelAudioProc'), icon: Headset },
+  advancedAudio: { label: t('mainLayout.toolLabelAdvAudio'), icon: Headset },
+  videoProc: { label: t('mainLayout.toolLabelVideoProc'), icon: VideoPlay },
+  videoStitching: { label: t('mainLayout.toolLabelVideoStitch'), icon: Film },
+  videoEffects: { label: t('mainLayout.toolLabelVideoEffects'), icon: Sunny },
+  videoAnalysis: { label: t('mainLayout.toolLabelVideoAnalysis'), icon: DataAnalysis },
+  comicDrama: { label: t('mainLayout.toolLabelComicDrama'), icon: Film },
+  imageProcessing: { label: t('mainLayout.toolLabelImageProc'), icon: PictureFilled },
+  translation: { label: t('mainLayout.toolLabelTranslation'), icon: Sort },
+  mcpManager: { label: t('mainLayout.toolLabelMcpManager'), icon: Connection },
+  extManager: { label: t('mainLayout.toolLabelExtManager'), icon: Grid },
+  knowledgeBase: { label: t('mainLayout.toolLabelKnowledgeBase'), icon: Notebook },
+  systemStatus: { label: t('mainLayout.toolLabelSystemStatus'), icon: Cpu },
 }
 const recentTools = ref([])
 const RECENT_KEY = 'synthetix_recent_tools'
@@ -540,18 +540,18 @@ const handleFile = async (cmd) => {
     router.push('/editor')
   } else if (cmd === 'save') {
     if (!store.projectId) {
-      ElMessage.warning('没有打开的项目')
+      ElMessage.warning(t('mainLayout.noOpenProject'))
       return
     }
     try {
       await projectApi.update(store.projectId, store.project)
-      ElMessage.success('保存成功')
+      ElMessage.success(t('mainLayout.saveSuccess'))
     } catch {
-      ElMessage.error('保存失败')
+      ElMessage.error(t('mainLayout.saveFailed'))
     }
   } else if (cmd === 'export') {
     if (!store.projectId) {
-      ElMessage.warning('没有打开的项目')
+      ElMessage.warning(t('mainLayout.noOpenProject'))
       return
     }
     await store.exportProject()

@@ -92,7 +92,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { API_HOST } from '@/api/modules'
+import { extensionApi } from '@/api/modules'
 
 const loading = ref(false)
 const reloading = ref(false)
@@ -110,8 +110,8 @@ const modeTagType = (mode) => ({ video: '', comic: 'warning', all: 'info' }[mode
 const fetchData = async () => {
   loading.value = true
   try {
-    const res = await fetch(`${API_HOST}/api/extensions`).then(r => r.json())
-    extensions.value = res.data || []
+    const data = await extensionApi.list()
+    extensions.value = data || []
   } catch {
     ElMessage.error('加载扩展列表失败')
   } finally {
@@ -121,11 +121,7 @@ const fetchData = async () => {
 
 const toggle = async (name, enabled) => {
   try {
-    await fetch(`${API_HOST}/api/extensions/${name}/toggle`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
-    }).then(r => r.json())
+    await extensionApi.toggle(name, { enabled })
     ElMessage.success(enabled ? '已启用' : '已禁用')
     await fetchData()
   } catch {
@@ -136,7 +132,7 @@ const toggle = async (name, enabled) => {
 const remove = async (name) => {
   try {
     await ElMessageBox.confirm(`确定删除扩展「${name}」？`, '提示', { type: 'warning' })
-    await fetch(`${API_HOST}/api/extensions/${name}`, { method: 'DELETE' }).then(r => r.json())
+    await extensionApi.remove(name)
     ElMessage.success('已删除')
     await fetchData()
   } catch {}
@@ -146,19 +142,11 @@ const create = async () => {
   if (!form.value.name.trim()) return ElMessage.warning('请输入名称')
   creating.value = true
   try {
-    const res = await fetch(`${API_HOST}/api/extensions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(form.value),
-    }).then(r => r.json())
-    if (res.success === false) {
-      ElMessage.error(res.message || '创建失败')
-    } else {
-      ElMessage.success('创建成功')
-      showCreate.value = false
-      form.value = { name: '', description: '', system_prompt: '', mode: 'all' }
-      await fetchData()
-    }
+    await extensionApi.create(form.value)
+    ElMessage.success('创建成功')
+    showCreate.value = false
+    form.value = { name: '', description: '', system_prompt: '', mode: 'all' }
+    await fetchData()
   } catch {
     ElMessage.error('创建失败')
   } finally {
@@ -179,22 +167,14 @@ const openEdit = (row) => {
 const saveEdit = async () => {
   saving.value = true
   try {
-    const res = await fetch(`${API_HOST}/api/extensions/${editForm.value.name}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        description: editForm.value.description,
-        system_prompt: editForm.value.system_prompt,
-        mode: editForm.value.mode,
-      }),
-    }).then(r => r.json())
-    if (res.code === 404) {
-      ElMessage.error('扩展不存在')
-    } else {
-      ElMessage.success('已保存')
-      showEdit.value = false
-      await fetchData()
-    }
+    await extensionApi.update(editForm.value.name, {
+      description: editForm.value.description,
+      system_prompt: editForm.value.system_prompt,
+      mode: editForm.value.mode,
+    })
+    ElMessage.success('已保存')
+    showEdit.value = false
+    await fetchData()
   } catch {
     ElMessage.error('保存失败')
   } finally {
@@ -205,7 +185,7 @@ const saveEdit = async () => {
 const reload = async () => {
   reloading.value = true
   try {
-    await fetch(`${API_HOST}/api/extensions/reload`, { method: 'POST' }).then(r => r.json())
+    await extensionApi.reload()
     ElMessage.success('扩展已重新加载')
     await fetchData()
   } catch {

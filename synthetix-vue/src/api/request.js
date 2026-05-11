@@ -31,6 +31,10 @@ function stopLoading() {
 // 请求拦截器
 request.interceptors.request.use(
   config => {
+    // FormData 上传时让浏览器自动设置 Content-Type（含 boundary）
+    if (config.data instanceof FormData) {
+      delete config.headers['Content-Type']
+    }
     // 跳过静默请求（如 debounce save）
     if (!config._silent) startLoading()
     return config

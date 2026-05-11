@@ -224,7 +224,7 @@ import { ref, nextTick, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { VideoPlay, ArrowLeft, Edit } from '@element-plus/icons-vue'
-import { videoApi, assetUrl, API_HOST } from '@/api/modules'
+import { videoApi, agentApi, assetUrl } from '@/api/modules'
 import { projectApi } from '@/api/modules'
 import { renderMarkdown } from '@/utils/sanitize'
 
@@ -394,18 +394,7 @@ const sendMessage = async () => {
       body.project_id = projectId.value
     }
 
-    const response = await fetch(`${API_HOST}/api/agent/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    })
-
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-
-    const result = await response.json()
-    if (!result.success) throw new Error(result.message || '请求失败')
-
-    const data = result.data
+    const data = await agentApi.chat(body)
     sessionId.value = data.sessionId || data.session_id
 
     // 添加 AI 响应
@@ -450,16 +439,7 @@ const confirmAction = async (action) => {
       body.project_id = projectId.value
     }
 
-    const response = await fetch(`${API_HOST}/api/agent/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    })
-
-    const result = await response.json()
-    if (!result.success) throw new Error(result.message || '执行失败')
-
-    const data = result.data
+    const data = await agentApi.chat(body)
 
     messages.value.push({
       role: 'assistant',
@@ -488,19 +468,13 @@ const confirmAction = async (action) => {
 // 取消操作
 const cancelAction = async () => {
   try {
-    const response = await fetch(`${API_HOST}/api/agent/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: sessionId.value,
-        message: '取消'
-      })
+    const data = await agentApi.chat({
+      session_id: sessionId.value,
+      message: '取消'
     })
-
-    const result = await response.json()
     messages.value.push({
       role: 'assistant',
-      content: result.data?.reply || '操作已取消'
+      content: data?.reply || '操作已取消'
     })
     saveChatHistory()
   } catch (error) {
@@ -581,10 +555,9 @@ const playResult = (path) => {
 // 加载最近视频
 const loadRecentVideos = async () => {
   try {
-    const response = await fetch(`${API_HOST}/api/videos?page=1&page_size=10`)
-    const result = await response.json()
-    if (result.success && result.data?.items) {
-      recentVideos.value = result.data.items.map(v => ({
+    const data = await videoApi.getSourceVideos({ page: 1, page_size: 10 })
+    if (data?.items) {
+      recentVideos.value = data.items.map(v => ({
         id: v.id,
         name: v.videoName || v.name
       }))

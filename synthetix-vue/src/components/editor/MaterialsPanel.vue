@@ -378,7 +378,7 @@ import { Upload, Download, Refresh, VideoPlay, List, Grid, Close, CircleCheck, W
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useProjectStore } from '@/store/modules/project'
 import { videoApi, aiApi } from '@/api/modules'
-import { assetUrl, API_HOST } from '@/api/modules'
+import { assetUrl } from '@/api/modules'
 
 const store = useProjectStore()
 const openMaterialPreview = inject('openMaterialPreview', () => {})
@@ -401,10 +401,9 @@ const searchOnline = async () => {
   if (!onlineQuery.value) return
   onlineLoading.value = true
   try {
-    const resp = await fetch(`${API_HOST}/api/videos/search-online?query=${encodeURIComponent(onlineQuery.value)}&source=${onlineSource.value}`)
-    const result = await resp.json()
-    if (result.success && result.data?.videos) {
-      onlineResults.value = result.data.videos.map(v => ({
+    const data = await videoApi.searchOnline({ query: onlineQuery.value, source: onlineSource.value })
+    if (data?.videos) {
+      onlineResults.value = data.videos.map(v => ({
         id: v.url,
         videoUrl: v.url,
         previewUrl: v.preview_url || v.url,
@@ -414,11 +413,10 @@ const searchOnline = async () => {
       }))
     } else {
       onlineResults.value = []
-      if (result.message) ElMessage.warning(result.message)
     }
   } catch (e) {
-    console.error('在线搜索失败:', e)
-    ElMessage.error('搜索失败，请检查网络')
+    onlineResults.value = []
+    ElMessage.error(e.message || '搜索失败，请检查网络')
   } finally {
     onlineLoading.value = false
   }
@@ -428,20 +426,11 @@ const downloadOnline = async (item) => {
   item.downloading = true
   try {
     const tags = item.search_term || onlineQuery.value || ''
-    const resp = await fetch(`${API_HOST}/api/videos/download`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ video_url: item.videoUrl, tags }),
-    })
-    const result = await resp.json()
-    if (result.success) {
-      ElMessage.success('素材已下载')
-      store.refreshMaterials()
-    } else {
-      ElMessage.error(result.message || '下载失败')
-    }
+    await videoApi.downloadVideo({ video_url: item.videoUrl, tags })
+    ElMessage.success('素材已下载')
+    store.refreshMaterials()
   } catch (e) {
-    ElMessage.error('下载失败')
+    ElMessage.error(e.response?.data?.message || e.message || '下载失败')
   } finally {
     item.downloading = false
   }

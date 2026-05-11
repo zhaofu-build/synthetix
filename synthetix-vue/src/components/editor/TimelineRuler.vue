@@ -17,7 +17,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onUnmounted } from 'vue'
 import { useTimelineStore } from '@/store/modules/timeline'
 
 const props = defineProps({
@@ -81,6 +81,8 @@ function onRulerHover(e) {
   hoverTime.value = pct * Math.max(props.duration, 1)
 }
 
+let _dragCleanup = null
+
 function onPlayheadDrag(e) {
   const ruler = rulerRef.value
   if (!ruler) return
@@ -92,10 +94,16 @@ function onPlayheadDrag(e) {
   const onUp = () => {
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
+    _dragCleanup = null
   }
   document.addEventListener('mousemove', onMove)
   document.addEventListener('mouseup', onUp)
+  _dragCleanup = onUp
 }
+
+onUnmounted(() => {
+  if (_dragCleanup) _dragCleanup()
+})
 </script>
 
 <style scoped>

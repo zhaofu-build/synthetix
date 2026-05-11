@@ -101,6 +101,8 @@ const planRatio = ref(66) // 默认 plan 占 66%
 
 const contentGridStyle = computed(() => `${planRatio.value}fr 4px ${100 - planRatio.value}fr`)
 
+let _dragCleanup = null
+
 const onInnerDragStart = (e) => {
   const container = panelContentRef.value
   if (!container) return
@@ -117,10 +119,16 @@ const onInnerDragStart = (e) => {
   const onUp = () => {
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
+    _dragCleanup = null
   }
   document.addEventListener('mousemove', onMove)
   document.addEventListener('mouseup', onUp)
+  _dragCleanup = onUp
 }
+
+onUnmounted(() => {
+  if (_dragCleanup) _dragCleanup()
+})
 </script>
 
 <style scoped>

@@ -54,6 +54,9 @@ export const videoApi = {
   // 启动批量视频压缩任务
   startCompression: (params) => request.post('/api/videos/compress', params),
 
+  // 在线搜索视频（Pexels/Pixabay）
+  searchOnline: (params) => request.get('/api/videos/search-online', params),
+
   // 获取随机视频
   getRandomVideo: (params) => request.get('/api/videos/random', params),
 

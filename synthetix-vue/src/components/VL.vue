@@ -116,7 +116,7 @@ import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { UploadFilled, Refresh, DocumentCopy, Loading } from '@element-plus/icons-vue'
 import { renderMarkdown } from '@/utils/sanitize'
-import { API_HOST } from '@/api/modules'
+import { aiApi } from '@/api/modules'
 
 const prompt = ref('')
 const loading = ref(false)
@@ -187,19 +187,8 @@ const analyze = async () => {
       payload.image = fileBase64.value
     }
 
-    const response = await fetch(`${API_HOST}/api/nexus/vl`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}))
-      throw new Error(err.message || `HTTP ${response.status}`)
-    }
-
-    const data = await response.json()
-    result.value = data?.data?.text || ''
+    const data = await aiApi.vl(payload)
+    result.value = data?.text || ''
     ElMessage.success('分析完成')
     // Save to history
     const mode = analysisModes.find(m => m.value === selectedMode.value)

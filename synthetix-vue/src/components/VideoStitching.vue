@@ -290,11 +290,15 @@
         </el-card>
 
         <!-- 渲染按钮 -->
-        <div v-show="currentStep === 2" style="margin-top: 16px;">
-          <el-button type="primary" @click="applyAndRender" :loading="rendering" style="width: 100%;">
-            应用并渲染
-          </el-button>
-        </div>
+        <RenderPanel
+          v-show="currentStep === 2"
+          :project-id="projectId"
+          :tts-local-path="ttsLocalPath"
+          :selected-bgm="selectedBgm"
+          :bgm-volume="bgmVolume"
+          :total-duration="currentPlan.totalDuration"
+          @rendered="onRendered"
+        />
 
         <!-- 面板 4：导出 -->
         <el-card v-show="currentStep === 3" class="export-card">
@@ -396,90 +400,20 @@
       </template>
     </el-dialog>
 
-    <!-- 音色管理对话框 -->
-    <el-dialog v-model="voiceManagerVisible" title="音色管理" width="700px">
-      <div style="display: flex; justify-content: flex-end; margin-bottom: 12px;">
-        <el-button type="primary" size="small" @click="openAddVoiceDialog">添加音色</el-button>
-      </div>
-      <el-table :data="voiceList" size="small" v-loading="voiceLoading">
-        <el-table-column prop="audioName" label="名称" width="140" />
-        <el-table-column prop="promptText" label="参考文本" show-overflow-tooltip />
-        <el-table-column label="参考音频" width="120">
-          <template #default="{ row }">
-            <audio v-if="row.webPath" :src="assetUrl(row.webPath)" controls style="height: 28px; width: 100px;" />
-            <span v-else style="color: #909399; font-size: 12px;">无</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="130">
-          <template #default="{ row }">
-            <el-button size="small" text @click="openEditVoiceDialog(row)">编辑</el-button>
-            <el-button size="small" text type="danger" @click="deleteVoice(row.id)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-dialog>
+    <VoiceManager
+      :visible="voiceManagerVisible"
+      @close="voiceManagerVisible = false"
+      @updated="onVoiceUpdated"
+    />
 
-    <!-- 添加/编辑音色对话框 -->
-    <el-dialog v-model="voiceFormVisible" :title="voiceFormIsEdit ? '编辑音色' : '添加音色'" width="480px">
-      <el-form :model="voiceForm" label-width="90px">
-        <el-form-item label="音色名称" required>
-          <el-input v-model="voiceForm.audio_name" placeholder="输入音色名称" />
-        </el-form-item>
-        <el-form-item label="参考音频">
-          <!-- 编辑时回显已有音频 -->
-          <div v-if="voiceFormIsEdit && voiceFormExistAudio && !voiceFormAudioName" style="margin-bottom: 6px;">
-            <audio :src="voiceFormExistAudio" controls style="height: 32px; width: 100%;" />
-          </div>
-          <el-upload
-            action="#"
-            :auto-upload="false"
-            :show-file-list="false"
-            :on-change="handleVoiceAudioUpload"
-          >
-            <el-button size="small">{{ voiceFormIsEdit ? '替换音频' : '选择音频' }}</el-button>
-          </el-upload>
-          <div v-if="voiceFormAudioName" style="margin-top: 4px; font-size: 12px; color: #67c23a;">
-            已选择: {{ voiceFormAudioName }}
-          </div>
-        </el-form-item>
-        <el-form-item label="参考文本" required>
-          <el-input v-model="voiceForm.prompt_text" type="textarea" :rows="3" placeholder="参考音频对应的文本" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="voiceFormVisible = false">取消</el-button>
-        <el-button type="primary" :loading="voiceSaving" @click="saveVoiceForm">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- BGM 管理对话框 -->
-    <el-dialog v-model="bgmManagerVisible" title="BGM 管理" width="600px">
-      <div style="display: flex; justify-content: flex-end; margin-bottom: 12px; gap: 8px;">
-        <el-upload
-          action="#"
-          :auto-upload="false"
-          :show-file-list="false"
-          :on-change="handleBgmUpload"
-        >
-          <el-button type="primary" size="small">上传BGM</el-button>
-        </el-upload>
-        <el-button size="small" @click="aiGenerateBgm" :loading="bgmGenerating">AI 生成BGM</el-button>
-      </div>
-      <el-table :data="bgmList" size="small" v-loading="bgmLoading">
-        <el-table-column prop="name" label="名称" width="180" />
-        <el-table-column label="试听">
-          <template #default="{ row }">
-            <audio v-if="row.webPath" :src="assetUrl(row.webPath)" controls style="height: 28px; width: 100%;" />
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="100">
-          <template #default="{ row }">
-            <el-button size="small" text type="primary" @click="selectBgmFromList(row)">选用</el-button>
-            <el-button size="small" text type="danger" @click="deleteBgm(row.id)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-dialog>
+    <BgmManager
+      :visible="bgmManagerVisible"
+      :creative="creative"
+      :style="style"
+      :target-duration="targetDuration"
+      @close="bgmManagerVisible = false"
+      @selected="onBgmSelected"
+    />
 
     <!-- 修改项目名对话框 -->
     <el-dialog v-model="renameDialogVisible" title="修改项目名称" width="400px">
@@ -502,19 +436,19 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed, watch, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { VideoPlay, Check, ArrowLeft, Edit } from '@element-plus/icons-vue'
-import API from './config/api'
-import { assetUrl, API_HOST } from '@/api/modules'
-import { projectApi } from '@/api/modules'
-import { useProjectStore } from '@/store/modules/project'
+import { assetUrl } from '@/api/modules'
+import { projectApi, videoApi, aiApi, audioApi } from '@/api/modules'
 import { formatDuration, getStatusType, getStatusText } from '@/utils/formatUtils'
+import VoiceManager from './VoiceManager.vue'
+import BgmManager from './BgmManager.vue'
+import RenderPanel from './RenderPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
-const projectStore = useProjectStore()
 
 // 步骤定义
 const steps = [
@@ -548,7 +482,6 @@ const audioOptions = ref([])
 // 方案
 const currentPlan = ref({ clips: [], transitions: [], audio: {}, totalDuration: 0 })
 const generating = ref(false)
-const rendering = ref(false)
 
 // TTS 文案语音
 const ttsAudioUrl = ref('')
@@ -597,15 +530,14 @@ const removeMaterial = (index) => {
 
 const refreshMaterials = async (videoType) => {
   try {
-    const response = await fetch(`${API.get_source_videos}?video_type=${videoType}`)
-    const result = await response.json()
-    const items = result.data?.items || []
-    items.forEach(item => {
+    const items = await videoApi.getSourceVideos({ video_type: videoType })
+    const list = items?.items || items || []
+    list.forEach(item => {
       if (!materialLibrary.value.find(m => m.id === item.id)) {
         item.analyzing = false
       }
     })
-    materialLibrary.value = items
+    materialLibrary.value = list
   } catch (error) {
     ElMessage.error('获取素材失败')
   }
@@ -615,11 +547,7 @@ const handleVideoUpload = async (file) => {
   try {
     const formData = new FormData()
     formData.append('file_stream', file.raw)
-    const response = await fetch(API.upload_source_videos_stream, {
-      method: 'POST',
-      body: formData
-    })
-    if (!response.ok) throw new Error('上传失败')
+    await videoApi.uploadSourceVideos(formData)
     await refreshMaterials(0)
     ElMessage.success('上传成功')
   } catch (error) {
@@ -630,11 +558,7 @@ const handleVideoUpload = async (file) => {
 const llmGetSource = async (keyword) => {
   try {
     getSourceing.value = true
-    await fetch(API.llm_get_source, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ creative: keyword })
-    })
+    await aiApi.llmGetSource({ creative: keyword })
     await refreshMaterials(0)
     ElMessage.success('素材获取成功')
   } catch (error) {
@@ -649,10 +573,9 @@ const analyzeMaterial = async (id) => {
   if (!item) return
   item.analyzing = true
   try {
-    const response = await fetch(`${API.get_description}/${id}/description`)
-    const result = await response.json()
-    if (result.data?.description) {
-      item.description = result.data.description
+    const data = await videoApi.getVideoDescription(id)
+    if (data?.description) {
+      item.description = data.description
     }
     ElMessage.success('分析完成')
   } catch (error) {
@@ -685,38 +608,22 @@ const generatePlan = async () => {
   generating.value = true
   try {
     if (!projectId.value) {
-      const createRes = await fetch(`${API_HOST}/api/projects`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: creative.value.slice(0, 20),
-          description: creative.value
-        })
+      const createData = await projectApi.create({
+        name: creative.value.slice(0, 20),
+        description: creative.value
       })
-      const createData = await createRes.json()
-      if (createData.success) {
-        projectId.value = createData.data.id
-        project.value = createData.data
-      }
+      projectId.value = createData.id
+      project.value = createData
     }
 
-    const response = await fetch(`${API_HOST}/api/projects/${projectId.value}/plan/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        description: creative.value,
-        duration: targetDuration.value,
-        style: style.value
-      })
+    const planData = await projectApi.generatePlan(projectId.value, {
+      description: creative.value,
+      duration: targetDuration.value,
+      style: style.value
     })
-    const result = await response.json()
-    if (result.success) {
-      currentPlan.value = result.data
-      currentStep.value = 2
-      ElMessage.success('方案生成成功')
-    } else {
-      throw new Error(result.message || '生成失败')
-    }
+    currentPlan.value = planData
+    currentStep.value = 2
+    ElMessage.success('方案生成成功')
   } catch (error) {
     ElMessage.error(`生成失败: ${error.message}`)
   } finally {
@@ -737,22 +644,13 @@ const generateTtsAudio = async () => {
   }
   ttsGenerating.value = true
   try {
-    const response = await fetch(`${API_HOST}/api/projects/generate-tts`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: creative.value,
-        speaker_id: selectedSpeaker.value
-      })
+    const result = await projectApi.generateTts({
+      text: creative.value,
+      speaker_id: selectedSpeaker.value
     })
-    const result = await response.json()
-    if (result.success) {
-      ttsAudioUrl.value = assetUrl(result.data.webPath)
-      ttsLocalPath.value = result.data.localPath
-      ElMessage.success('文案音频生成成功')
-    } else {
-      throw new Error(result.message || '生成失败')
-    }
+    ttsAudioUrl.value = assetUrl(result.webPath)
+    ttsLocalPath.value = result.localPath
+    ElMessage.success('文案音频生成成功')
   } catch (error) {
     ElMessage.error(`文案音频生成失败: ${error.message}`)
   } finally {
@@ -787,47 +685,11 @@ const previewClip = (clip) => {
 
 // ==================== 渲染导出 ====================
 
-const applyAndRender = async () => {
-  rendering.value = true
-  try {
-    const applyRes = await fetch(`${API_HOST}/api/projects/${projectId.value}/plan/apply`, {
-      method: 'POST'
-    })
-    const applyData = await applyRes.json()
-    if (!applyData.success) {
-      throw new Error(applyData.message || '应用失败')
-    }
-
-    // 携带音频配置（有则合成，无则跳过）
-    const audioConfig = {}
-    if (ttsLocalPath.value) {
-      audioConfig.tts_path = ttsLocalPath.value
-    }
-    if (selectedBgm.value) {
-      audioConfig.bgm_id = selectedBgm.value
-      audioConfig.bgm_volume = bgmVolume.value
-    }
-
-    const renderRes = await fetch(`${API_HOST}/api/projects/${projectId.value}/render`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(audioConfig)
-    })
-    const renderData = await renderRes.json()
-    if (renderData.success) {
-      project.value.status = 'completed'
-      project.value.duration = renderData.data.duration || currentPlan.value.totalDuration
-      previewVideo.value = assetUrl(renderData.data.webPath)
-      currentStep.value = 3
-      ElMessage.success('渲染完成')
-    } else {
-      throw new Error(renderData.message || '渲染失败')
-    }
-  } catch (error) {
-    ElMessage.error(`渲染失败: ${error.message}`)
-  } finally {
-    rendering.value = false
-  }
+const onRendered = ({ duration, webPath }) => {
+  project.value.status = 'completed'
+  project.value.duration = duration
+  previewVideo.value = assetUrl(webPath)
+  currentStep.value = 3
 }
 
 const downloadVideo = () => {
@@ -856,216 +718,41 @@ const getClipStyle = (clip, index) => {
 // ==================== 音色管理 ====================
 
 const voiceManagerVisible = ref(false)
-const voiceFormVisible = ref(false)
-const voiceFormIsEdit = ref(false)
-const voiceFormAudioFile = ref(null)
-const voiceFormAudioName = ref('')
-const voiceFormExistAudio = ref('')
-const voiceSaving = ref(false)
-const voiceLoading = ref(false)
-const voiceList = ref([])
-const voiceForm = ref({
-  id: null,
-  audio_name: '',
-  prompt_text: ''
-})
 
-const openVoiceManager = async () => {
+const openVoiceManager = () => {
   voiceManagerVisible.value = true
-  await loadVoiceList()
 }
 
-const loadVoiceList = async () => {
-  voiceLoading.value = true
-  try {
-    const response = await fetch(`${API.get_source_audio}?page_size=100`)
-    const result = await response.json()
-    voiceList.value = result.data?.items || []
-  } catch (error) {
-    ElMessage.error('获取音色列表失败')
-  } finally {
-    voiceLoading.value = false
-  }
-}
-
-const openAddVoiceDialog = () => {
-  voiceFormIsEdit.value = false
-  voiceFormAudioFile.value = null
-  voiceFormAudioName.value = ''
-  voiceFormExistAudio.value = ''
-  voiceForm.value = {
-    id: null,
-    audio_name: '',
-    prompt_text: ''
-  }
-  voiceFormVisible.value = true
-}
-
-const openEditVoiceDialog = (row) => {
-  voiceFormIsEdit.value = true
-  voiceFormAudioFile.value = null
-  voiceFormAudioName.value = ''
-  voiceFormExistAudio.value = row.webPath ? assetUrl(row.webPath) : ''
-  voiceForm.value = {
-    id: row.id,
-    audio_name: row.audioName || '',
-    prompt_text: row.promptText || ''
-  }
-  voiceFormVisible.value = true
-}
-
-const handleVoiceAudioUpload = (file) => {
-  const validTypes = ['audio/mpeg', 'audio/wav', 'audio/flac']
-  if (!validTypes.includes(file.raw.type)) {
-    ElMessage.error('不支持的音频格式，请上传 MP3/WAV/FLAC')
-    return
-  }
-  voiceFormAudioFile.value = file.raw
-  voiceFormAudioName.value = file.name
-}
-
-const saveVoiceForm = async () => {
-  const form = voiceForm.value
-  if (!form.audio_name.trim()) {
-    ElMessage.warning('请输入音色名称')
-    return
-  }
-  if (!form.prompt_text.trim()) {
-    ElMessage.warning('请输入参考文本')
-    return
-  }
-
-  voiceSaving.value = true
-  try {
-    if (voiceFormIsEdit.value) {
-      const params = new URLSearchParams()
-      params.append('audio_name', form.audio_name)
-      params.append('prompt_text', form.prompt_text)
-      const response = await fetch(`${API.del_source_audio}/${form.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: params.toString()
-      })
-      const result = await response.json()
-      if (!result.success) throw new Error(result.message || '更新失败')
-      ElMessage.success('音色更新成功')
-    } else {
-      if (!voiceFormAudioFile.value) {
-        ElMessage.warning('请选择参考音频文件')
-        voiceSaving.value = false
-        return
-      }
-      const ext = voiceFormAudioName.value.split('.').pop()
-      const formData = new FormData()
-      formData.append('file', voiceFormAudioFile.value)
-      formData.append('audio_name', form.audio_name)
-      formData.append('prompt_text', form.prompt_text)
-      formData.append('output_format', ext)
-      const response = await fetch(API.save_timbre, {
-        method: 'POST',
-        body: formData
-      })
-      if (!response.ok) throw new Error('添加失败')
-      ElMessage.success('音色添加成功')
-    }
-    voiceFormVisible.value = false
-    await loadVoiceList()
-    await refreshAudioList()
-  } catch (error) {
-    ElMessage.error(error.message || '操作失败')
-  } finally {
-    voiceSaving.value = false
-  }
-}
-
-const deleteVoice = async (id) => {
-  try {
-    await ElMessageBox.confirm('确定删除该音色？', '提示', {
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-      type: 'warning'
-    })
-    const response = await fetch(`${API.del_source_audio}/${id}`, { method: 'DELETE' })
-    const result = await response.json()
-    if (!result.success) throw new Error(result.message || '删除失败')
-    ElMessage.success('已删除')
-    await loadVoiceList()
-    await refreshAudioList()
-  } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(error.message || '删除失败')
-    }
-  }
+const onVoiceUpdated = () => {
+  refreshAudioList()
 }
 
 // ==================== BGM 管理 ====================
 
 const bgmList = ref([])
-const bgmLoading = ref(false)
 const bgmManagerVisible = ref(false)
 const selectedBgm = ref(null)
 const selectedBgmUrl = ref('')
 const bgmVolume = ref(0.3)
 const bgmSelecting = ref(false)
-const bgmGenerating = ref(false)
 
 const loadBgmList = async () => {
-  bgmLoading.value = true
   try {
-    const response = await fetch(`${API_HOST}/api/projects/bgm`)
-    const result = await response.json()
-    bgmList.value = result.data?.items || result.data || []
+    const data = await projectApi.listBgm()
+    bgmList.value = data?.items || data || []
   } catch (error) {
     console.error('获取BGM列表失败:', error)
     bgmList.value = []
-  } finally {
-    bgmLoading.value = false
   }
 }
 
-const openBgmManager = async () => {
+const openBgmManager = () => {
   bgmManagerVisible.value = true
-  await loadBgmList()
 }
 
-const selectBgmFromList = (row) => {
-  selectedBgm.value = row.id
-  selectedBgmUrl.value = assetUrl(row.webPath)
-  bgmManagerVisible.value = false
-  ElMessage.success(`已选用: ${row.name}`)
-}
-
-const handleBgmUpload = async (file) => {
-  const validTypes = ['audio/mpeg', 'audio/wav', 'audio/mp3', 'audio/ogg']
-  if (!validTypes.includes(file.raw.type)) {
-    ElMessage.error('不支持的音频格式')
-    return
-  }
-  try {
-    const formData = new FormData()
-    formData.append('file', file.raw)
-    formData.append('name', file.name.replace(/\.[^.]+$/, ''))
-    const response = await fetch(`${API_HOST}/api/projects/bgm`, {
-      method: 'POST',
-      body: formData
-    })
-    if (!response.ok) throw new Error('上传失败')
-    ElMessage.success('BGM上传成功')
-    await loadBgmList()
-  } catch (error) {
-    ElMessage.error(error.message)
-  }
-}
-
-const deleteBgm = async (id) => {
-  try {
-    await ElMessageBox.confirm('确定删除该BGM？', '提示', { type: 'warning' })
-    await fetch(`${API_HOST}/api/projects/bgm/${id}`, { method: 'DELETE' })
-    ElMessage.success('已删除')
-    await loadBgmList()
-  } catch (error) {
-    if (error !== 'cancel') ElMessage.error('删除失败')
-  }
+const onBgmSelected = ({ id, webPath }) => {
+  selectedBgm.value = id
+  selectedBgmUrl.value = assetUrl(webPath)
 }
 
 const aiSelectBgm = async () => {
@@ -1075,16 +762,11 @@ const aiSelectBgm = async () => {
   }
   bgmSelecting.value = true
   try {
-    const response = await fetch(`${API_HOST}/api/projects/bgm/ai-select`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ description: creative.value, style: style.value })
-    })
-    const result = await response.json()
-    if (result.success && result.data) {
-      selectedBgm.value = result.data.id
-      selectedBgmUrl.value = assetUrl(result.data.webPath)
-      ElMessage.success(`AI推荐: ${result.data.name}`)
+    const data = await projectApi.aiSelectBgm({ description: creative.value, style: style.value })
+    if (data) {
+      selectedBgm.value = data.id
+      selectedBgmUrl.value = assetUrl(data.webPath)
+      ElMessage.success(`AI推荐: ${data.name}`)
     } else {
       ElMessage.info('暂无合适的BGM，请手动上传或AI生成')
     }
@@ -1095,40 +777,11 @@ const aiSelectBgm = async () => {
   }
 }
 
-const aiGenerateBgm = async () => {
-  if (!creative.value) {
-    ElMessage.warning('请先输入文案描述')
-    return
-  }
-  bgmGenerating.value = true
-  try {
-    const response = await fetch(`${API_HOST}/api/projects/bgm/ai-generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ description: creative.value, style: style.value, duration: targetDuration.value })
-    })
-    const result = await response.json()
-    if (result.success && result.data) {
-      selectedBgm.value = result.data.id
-      selectedBgmUrl.value = assetUrl(result.data.webPath)
-      ElMessage.success('BGM生成成功')
-      await loadBgmList()
-    } else {
-      throw new Error(result.message || '生成失败')
-    }
-  } catch (error) {
-    ElMessage.error(error.message || 'AI生成BGM失败')
-  } finally {
-    bgmGenerating.value = false
-  }
-}
-
 // 加载音色列表
 const refreshAudioList = async () => {
   try {
-    const response = await fetch(API.get_source_audio)
-    const result = await response.json()
-    const items = result.data?.items || []
+    const data = await audioApi.getSourceAudio()
+    const items = data?.items || []
     audioOptions.value = items.map(item => ({
       id: item.id,
       label: item.audioName
@@ -1150,7 +803,6 @@ const namingInput = ref('')
 const namingError = ref('')
 const namingLoading = ref(false)
 const namingInputRef = ref(null)
-const projectReady = ref(false) // 项目是否已就绪
 
 // ---- 修改项目名 ----
 const renameDialogVisible = ref(false)
@@ -1210,7 +862,7 @@ const confirmCreateProject = async () => {
     })
     projectId.value = data.id
     projectName.value = data.name
-    projectReady.value = true
+
     showNamingDialog.value = false
     router.replace({ path: '/video-stitching', query: { projectId: data.id } })
   } catch (error) {
@@ -1229,7 +881,7 @@ const loadProjectData = async (id) => {
     const data = await projectApi.getFull(id)
     projectId.value = data.id
     projectName.value = data.name || '未命名项目'
-    projectReady.value = true
+
     project.value = { status: data.status || 'draft', duration: data.duration || 0 }
     currentStep.value = data.currentStep ?? 0
     creative.value = data.creative || ''
@@ -1287,6 +939,10 @@ const debounceSave = (field, value) => {
   }, 300)
 }
 
+onUnmounted(() => {
+  Object.values(_saveTimers).forEach(t => clearTimeout(t))
+})
+
 // 监听变化自动保存
 watch(selectedMaterials, (val) => {
   debounceSave('material_ids', val.map(m => m.id))
@@ -1304,12 +960,13 @@ watch(currentStep, (val) => debounceSave('current_step', val))
 onMounted(async () => {
   refreshMaterials(1)
   refreshAudioList()
+  loadBgmList()
 
   // 从URL加载已有项目
   const pid = route.query.projectId
   if (pid) {
     await loadProjectData(parseInt(pid))
-    // loadProjectData 会设置 projectReady = true
+
   } else {
     // 新项目：弹出命名对话框，用户必须先命名
     showNamingDialog.value = true

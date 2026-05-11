@@ -178,6 +178,9 @@ const modelFields = [
   { key: 'asr_model', type: 'ASR', label: computed(() => t('settings.asrModel')) },
   { key: 'vl_model', type: 'VL', label: computed(() => t('settings.vlModel')) },
   { key: 'music_model', type: 'TEXT_TO_MUSIC', label: computed(() => t('settings.musicModel')) },
+  { key: 'image_model', type: 'TEXT_TO_IMAGE', label: computed(() => t('settings.imageModel')) },
+  { key: 'video_model', type: 'TEXT_TO_VIDEO', label: computed(() => t('settings.videoModel')) },
+  { key: 'image_to_video_model', type: 'IMAGE_TO_VIDEO', label: computed(() => t('settings.imageToVideoModel')) },
 ]
 
 const videoSources = [
@@ -223,7 +226,7 @@ const onBaseUrlChange = () => {
 }
 
 const loadAllModels = async () => {
-  const types = ['LLM', 'TTS', 'ASR', 'VL', 'TEXT_TO_MUSIC']
+  const types = ['LLM', 'TTS', 'ASR', 'VL', 'TEXT_TO_MUSIC', 'TEXT_TO_IMAGE', 'TEXT_TO_VIDEO', 'IMAGE_TO_VIDEO']
   await Promise.all(types.map(type => systemStore.fetchModels(type)))
 }
 

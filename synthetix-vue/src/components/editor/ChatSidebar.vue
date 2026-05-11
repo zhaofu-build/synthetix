@@ -2,10 +2,10 @@
   <div class="chat-sidebar">
     <div class="chat-header">
       <span class="chat-title">{{ t('editor.aiTitle') }}</span>
-      <el-input v-if="showSearch" v-model="searchKeyword" placeholder="搜索消息..." size="small"
+      <el-input v-if="showSearch" v-model="searchKeyword" :placeholder="t('chat.searchMessages')" size="small"
                 class="search-input" clearable @blur="!searchKeyword && (showSearch = false)" />
-      <el-button v-else text size="small" @click="showSearch = true" title="搜索"><el-icon><Search /></el-icon></el-button>
-      <el-button text size="small" @click="exportChat" title="导出"><el-icon><Download /></el-icon></el-button>
+      <el-button v-else text size="small" @click="showSearch = true" :title="t('chat.search')"><el-icon><Search /></el-icon></el-button>
+      <el-button text size="small" @click="exportChat" :title="t('chat.export')"><el-icon><Download /></el-icon></el-button>
       <el-button text size="small" @click="clearChat">{{ t('editor.clearChat') }}</el-button>
     </div>
 
@@ -22,13 +22,13 @@
     <div v-if="store.chatMode === 'plan' && store.planOperations.length" class="plan-panel">
       <div v-if="store.planSummary" class="plan-summary">{{ store.planSummary }}</div>
       <div class="plan-actions-bar">
-        <el-button size="small" @click="store.selectAllOperations()">全选</el-button>
-        <el-button size="small" @click="store.deselectAllOperations()">取消全选</el-button>
+        <el-button size="small" @click="store.selectAllOperations()">{{ t('chat.planSelectAll') }}</el-button>
+        <el-button size="small" @click="store.deselectAllOperations()">{{ t('chat.planDeselectAll') }}</el-button>
         <el-button size="small" type="primary"
                    :loading="store.planExecutionState === 'executing'"
                    :disabled="!selectedOps.length || store.planExecutionState === 'executing'"
                    @click="store.executeSelectedOperations()">
-          执行选中 ({{ selectedOps.length }}/{{ store.planOperations.length }})
+          {{ t('chat.planExecuteSelected') }} ({{ selectedOps.length }}/{{ store.planOperations.length }})
         </el-button>
       </div>
       <div class="plan-operations">
@@ -69,7 +69,7 @@
               </div>
               <div v-if="tc.result" class="tool-result-summary">
                 <el-button text size="small" @click="tc._expanded = !tc._expanded">
-                  {{ tc._expanded ? '收起结果' : '查看结果' }}
+                  {{ tc._expanded ? t('chat.collapseResult') : t('chat.viewResult') }}
                 </el-button>
                 <pre v-if="tc._expanded" class="tool-result-json">{{ formatToolResult(tc.result) }}</pre>
               </div>
@@ -77,7 +77,7 @@
               <TempAssetCard v-if="tc.mediaInfo && tc.status === 'success'" :media-info="tc.mediaInfo" @preview="openPreview" @refresh="refreshMaterials" />
               <div v-if="tc.status === 'error'" class="tool-retry">
                 <el-button v-if="isCookieError(tc)" text size="small" type="warning" @click="openCookieManager">
-                  <el-icon><Present /></el-icon> 配置Cookie
+                  <el-icon><Present /></el-icon> {{ t('chat.configureCookie') }}
                 </el-button>
               </div>
               <!-- 下载进度条 -->
@@ -85,13 +85,13 @@
                 <el-progress :percentage="parseFloat(tc.progress.percent) || 0" :stroke-width="6"
                              :show-text="false" class="tool-progress-bar" />
                 <span class="tool-progress-text">
-                  {{ tc.progress.percent }}{{ tc.progress.speed ? ` · ${tc.progress.speed}` : '' }}{{ tc.progress.eta ? ` · 剩余 ${tc.progress.eta}` : '' }}
+                  {{ tc.progress.percent }}{{ tc.progress.speed ? ` · ${tc.progress.speed}` : '' }}{{ tc.progress.eta ? ` · ${t('chat.remaining')} ${tc.progress.eta}` : '' }}
                 </span>
               </div>
             </div>
           </div>
           <div v-html="formatMessage(msg.content)" class="msg-content" :class="{ streaming: msg.status === 'streaming' || msg.status === 'replying' }"></div>
-          <div v-if="msg.status === 'stopped'" class="msg-stopped">已停止生成</div>
+          <div v-if="msg.status === 'stopped'" class="msg-stopped">{{ t('chat.stopped') }}</div>
           <!-- 用户上传的附件内联展示 -->
           <div v-if="msg.attachments && msg.attachments.length" class="msg-attachments">
             <template v-for="(att, ai) in msg.attachments" :key="ai">
@@ -120,13 +120,13 @@
           </div>
           <!-- 消息操作按钮（始终占位，hover 时显示） -->
           <div class="msg-bottom-actions" :class="{ 'actions-visible': hoverMsg === i }">
-            <el-button text size="small" @click="copyMsg(msg)" title="复制">
+            <el-button text size="small" @click="copyMsg(msg)" :title="t('chat.copy')">
               <el-icon><CopyDocument /></el-icon>
             </el-button>
-            <el-button v-if="msg.role === 'assistant'" text size="small" @click="retryMsg(msg)" title="重新推理">
+            <el-button v-if="msg.role === 'assistant'" text size="small" @click="retryMsg(msg)" :title="t('chat.reInfer')">
               <el-icon><RefreshRight /></el-icon>
             </el-button>
-            <el-button v-if="msg.role === 'assistant'" text size="small" @click="deleteMsg(i)" title="删除">
+            <el-button v-if="msg.role === 'assistant'" text size="small" @click="deleteMsg(i)" :title="t('common.delete')">
               <el-icon><Delete /></el-icon>
             </el-button>
           </div>
@@ -145,7 +145,7 @@
     <!-- 快捷指令面板 -->
     <div class="cmd-panel">
       <div class="cmd-header" @click="showCmdPanel = !showCmdPanel">
-        <span class="cmd-title">快捷指令</span>
+        <span class="cmd-title">{{ t('chat.quickCommands') }}</span>
         <el-icon :size="12"><ArrowUp v-if="showCmdPanel" /><ArrowDown v-else /></el-icon>
       </div>
       <div v-if="showCmdPanel" class="cmd-body">
@@ -176,7 +176,7 @@
       </div>
       <div class="input-row">
         <el-button :icon="Paperclip" :disabled="store.chatLoading || uploading" :loading="uploading"
-                   @click="$refs.fileInput.click()" circle size="small" title="上传素材" class="input-btn" />
+                   @click="$refs.fileInput.click()" circle size="small" :title="t('chat.uploadMaterial')" class="input-btn" />
         <input ref="fileInput" type="file" accept="image/*,video/*,audio/*" hidden @change="onFileSelect" />
         <el-input v-model="inputText" type="textarea" :autosize="{ minRows: 1, maxRows: 6 }"
                   :placeholder="t('editor.inputPlaceholder')"
@@ -194,16 +194,16 @@
       <div v-if="ctxMenu.visible.value" class="context-menu"
            :style="{ left: ctxMenu.position.value.x + 'px', top: ctxMenu.position.value.y + 'px' }">
         <div class="ctx-item" @click="copyMsg(ctxMenu.contextData.value?.msg)">
-          <el-icon><CopyDocument /></el-icon> 复制内容
+          <el-icon><CopyDocument /></el-icon> {{ t('chat.copyContent') }}
         </div>
         <div class="ctx-item" @click="deleteMsg(ctxMenu.contextData.value?.index)">
-          <el-icon><Delete /></el-icon> 删除
+          <el-icon><Delete /></el-icon> {{ t('common.delete') }}
         </div>
       </div>
     </Teleport>
 
     <!-- 临时素材预览弹窗 -->
-    <el-dialog v-model="previewVisible" title="预览" width="640" top="6vh" destroy-on-close append-to-body>
+    <el-dialog v-model="previewVisible" :title="t('chat.preview')" width="640" top="6vh" destroy-on-close append-to-body>
       <video v-if="previewType === 'video'" :src="previewUrl" controls style="width: 100%; max-height: 70vh" />
       <audio v-else-if="previewType === 'audio'" :src="previewUrl" controls style="width: 100%" />
       <img v-else-if="previewType === 'image'" :src="previewUrl" style="width: 100%; max-height: 70vh; object-fit: contain" />
@@ -224,6 +224,7 @@ import FfmpegPreview from './FfmpegPreview.vue'
 import TempAssetCard from './TempAssetCard.vue'
 import { videoApi } from '../../api/modules/video'
 import { assetUrl, API_HOST } from '../../utils/request'
+import { agentApi } from '@/api/modules'
 
 const { t } = useI18n()
 const store = useProjectStore()
@@ -239,9 +240,9 @@ const uploading = ref(false)
 
 // 对话模式
 const chatModes = [
-  { value: 'free', label: '对话', icon: ChatDotRound, desc: '自由对话模式' },
-  { value: 'plan', label: '方案', icon: Film, desc: '生成可编辑的剪辑方案' },
-  { value: 'research', label: '研究', icon: DataAnalysis, desc: '深度分析模式' },
+  { value: 'free', label: t('chat.modeFree'), icon: ChatDotRound, desc: t('chat.modeFreeDesc') },
+  { value: 'plan', label: t('chat.modePlan'), icon: Film, desc: t('chat.modePlanDesc') },
+  { value: 'research', label: t('chat.modeResearch'), icon: DataAnalysis, desc: t('chat.modeResearchDesc') },
 ]
 const selectedOps = computed(() => store.planOperations.filter(o => o.selected))
 
@@ -280,116 +281,116 @@ const deleteMsg = (index) => {
 
 // ========== 快捷指令 ==========
 const cmdCategories = [
-  { key: 'ai', label: 'AI', icon: '🤖' },
-  { key: 'clip', label: '剪辑', icon: '✂️' },
-  { key: 'audio', label: '音频', icon: '🎵' },
-  { key: 'subtitle', label: '字幕', icon: '🔤' },
-  { key: 'videoEffect', label: '视频特效', icon: '🎬' },
-  { key: 'imageEffect', label: '图片特效', icon: '🖼️' },
-  { key: 'material', label: '素材', icon: '📁' },
-  { key: 'tool', label: '工具', icon: '🔧' },
+  { key: 'ai', label: t('chatCmd.catAi'), icon: '🤖' },
+  { key: 'clip', label: t('chatCmd.catClip'), icon: '✂️' },
+  { key: 'audio', label: t('chatCmd.catAudio'), icon: '🎵' },
+  { key: 'subtitle', label: t('chatCmd.catSubtitle'), icon: '🔤' },
+  { key: 'videoEffect', label: t('chatCmd.catVideoEffect'), icon: '🎬' },
+  { key: 'imageEffect', label: t('chatCmd.catImageEffect'), icon: '🖼️' },
+  { key: 'material', label: t('chatCmd.catMaterial'), icon: '📁' },
+  { key: 'tool', label: t('chatCmd.catTool'), icon: '🔧' },
 ]
 
 const cmdData = {
   ai: [
-    { label: '智能剪辑', text: '使用项目素材帮我智能剪辑一个30秒的短视频，风格动感' },
-    { label: '生成配音', text: '帮我生成一段语音：' },
-    { label: '生成BGM', text: '帮我生成一段背景音乐，风格是：' },
-    { label: '推荐BGM', text: '根据我的视频风格推荐适合的背景音乐' },
-    { label: '字幕提取', text: '帮我提取这个视频的字幕' },
-    { label: '分离人声伴奏', text: '帮我分离视频中的人声和伴奏' },
-    { label: 'AI视频分析', text: '帮我用AI深度分析视频内容，理解场景、人物和风格' },
-    { label: 'AI图片分析', text: '帮我分析这张图片的内容' },
-    { label: '分析字幕高光', text: '帮我分析视频字幕，找出高光片段和情感峰值' },
-    { label: '场景检测', text: '帮我检测视频中的场景切换点' },
-    { label: '智能提取关键帧', text: '帮我从视频中智能提取关键帧' },
-    { label: '优化提示词', text: '帮我优化这个AI提示词：' },
-    { label: '翻译文本', text: '帮我把以下内容翻译成：' },
-    { label: '检测语言', text: '帮我检测这段文本是什么语言：' },
+    { label: t('chatCmd.smartClip'), text: '使用项目素材帮我智能剪辑一个30秒的短视频，风格动感' },
+    { label: t('chatCmd.genVoice'), text: '帮我生成一段语音：' },
+    { label: t('chatCmd.genBgm'), text: '帮我生成一段背景音乐，风格是：' },
+    { label: t('chatCmd.recommendBgm'), text: '根据我的视频风格推荐适合的背景音乐' },
+    { label: t('chatCmd.extractSubtitle'), text: '帮我提取这个视频的字幕' },
+    { label: t('chatCmd.separateVocal'), text: '帮我分离视频中的人声和伴奏' },
+    { label: t('chatCmd.aiVideoAnalysis'), text: '帮我用AI深度分析视频内容，理解场景、人物和风格' },
+    { label: t('chatCmd.aiImageAnalysis'), text: '帮我分析这张图片的内容' },
+    { label: t('chatCmd.analysisSubtitleHighlight'), text: '帮我分析视频字幕，找出高光片段和情感峰值' },
+    { label: t('chatCmd.sceneDetect'), text: '帮我检测视频中的场景切换点' },
+    { label: t('chatCmd.smartExtractKeyframe'), text: '帮我从视频中智能提取关键帧' },
+    { label: t('chatCmd.optimizePrompt'), text: '帮我优化这个AI提示词：' },
+    { label: t('chatCmd.translateText'), text: '帮我把以下内容翻译成：' },
+    { label: t('chatCmd.detectLanguage'), text: '帮我检测这段文本是什么语言：' },
   ],
   clip: [
-    { label: '剪切指定时段', text: '帮我剪切视频，从 00:00:05 到 00:00:30' },
-    { label: '合并全部素材', text: '帮我把所有项目素材按顺序合并成一个视频' },
-    { label: '按间隔分割', text: '帮我把视频按每30秒分割成多个片段' },
-    { label: '调整速度', text: '帮我把视频速度调整为1.5倍' },
-    { label: '慢动作', text: '帮我把视频做成慢动作效果' },
-    { label: '慢动作插帧', text: '帮我把视频做成慢动作插帧效果' },
-    { label: '倒放视频', text: '帮我把视频倒放' },
-    { label: '视频防抖', text: '帮我对视频进行防抖稳定处理' },
-    { label: '压缩视频', text: '帮我压缩视频文件大小' },
-    { label: '格式转换', text: '帮我把视频转换为MP4格式' },
-    { label: '转GIF动图', text: '帮我把视频片段转换为GIF动图' },
-    { label: '图片转视频', text: '帮我把图片转为视频，使用缩放效果' },
+    { label: t('chatCmd.cutSegment'), text: '帮我剪切视频，从 00:00:05 到 00:00:30' },
+    { label: t('chatCmd.mergeAllMaterials'), text: '帮我把所有项目素材按顺序合并成一个视频' },
+    { label: t('chatCmd.splitByInterval'), text: '帮我把视频按每30秒分割成多个片段' },
+    { label: t('chatCmd.adjustSpeed'), text: '帮我把视频速度调整为1.5倍' },
+    { label: t('chatCmd.slowMotion'), text: '帮我把视频做成慢动作效果' },
+    { label: t('chatCmd.slowMotionInterpolate'), text: '帮我把视频做成慢动作插帧效果' },
+    { label: t('chatCmd.reverseVideo'), text: '帮我把视频倒放' },
+    { label: t('chatCmd.stabilizeVideo'), text: '帮我对视频进行防抖稳定处理' },
+    { label: t('chatCmd.compressVideo'), text: '帮我压缩视频文件大小' },
+    { label: t('chatCmd.convertFormat'), text: '帮我把视频转换为MP4格式' },
+    { label: t('chatCmd.toGif'), text: '帮我把视频片段转换为GIF动图' },
+    { label: t('chatCmd.imageToVideo'), text: '帮我把图片转为视频，使用缩放效果' },
   ],
   audio: [
-    { label: '提取音频', text: '帮我提取视频的音频轨道' },
-    { label: '添加背景音乐', text: '帮我把背景音乐添加到视频中' },
-    { label: '添加配音', text: '帮我把配音添加到视频中' },
-    { label: '混合音频', text: '帮我把配音和BGM同时混入视频' },
-    { label: '音频标准化', text: '帮我把音频音量标准化' },
-    { label: '音频淡入淡出', text: '帮我把音频添加淡入淡出效果' },
-    { label: '音频降噪', text: '帮我对音频进行降噪处理' },
-    { label: '添加回声', text: '帮我把音频添加回声/混响效果' },
-    { label: '音频变调', text: '帮我把音频升调2个半音' },
-    { label: '音频均衡器', text: '帮我调节音频均衡器' },
-    { label: '音频倒放', text: '帮我把音频倒放' },
+    { label: t('chatCmd.extractAudio'), text: '帮我提取视频的音频轨道' },
+    { label: t('chatCmd.addBgm'), text: '帮我把背景音乐添加到视频中' },
+    { label: t('chatCmd.addVoiceover'), text: '帮我把配音添加到视频中' },
+    { label: t('chatCmd.mixAudio'), text: '帮我把配音和BGM同时混入视频' },
+    { label: t('chatCmd.normalizeAudio'), text: '帮我把音频音量标准化' },
+    { label: t('chatCmd.audioFade'), text: '帮我把音频添加淡入淡出效果' },
+    { label: t('chatCmd.denoiseAudio'), text: '帮我对音频进行降噪处理' },
+    { label: t('chatCmd.addEcho'), text: '帮我把音频添加回声/混响效果' },
+    { label: t('chatCmd.pitchShift'), text: '帮我把音频升调2个半音' },
+    { label: t('chatCmd.equalizer'), text: '帮我调节音频均衡器' },
+    { label: t('chatCmd.reverseAudio'), text: '帮我把音频倒放' },
   ],
   subtitle: [
-    { label: '添加字幕', text: '帮我把字幕文件添加到视频中' },
-    { label: '翻译字幕', text: '帮我把字幕翻译成英语' },
-    { label: 'SRT转ASS', text: '帮我把SRT字幕转换为ASS格式' },
-    { label: '叠加文字', text: '帮我在视频上叠加文字：' },
+    { label: t('chatCmd.addSubtitle'), text: '帮我把字幕文件添加到视频中' },
+    { label: t('chatCmd.translateSubtitle'), text: '帮我把字幕翻译成英语' },
+    { label: t('chatCmd.srtToAss'), text: '帮我把SRT字幕转换为ASS格式' },
+    { label: t('chatCmd.overlayText'), text: '帮我在视频上叠加文字：' },
   ],
   videoEffect: [
-    { label: '调整亮度对比度', text: '帮我调整视频的亮度和对比度' },
-    { label: '调整饱和度', text: '帮我调整视频的饱和度' },
-    { label: '色彩调整', text: '帮我调整视频的色彩风格' },
-    { label: '模糊效果', text: '帮我给视频添加模糊效果' },
-    { label: '锐化', text: '帮我对视频进行锐化处理' },
-    { label: '旋转90度', text: '帮我把视频顺时针旋转90度' },
-    { label: '水平翻转', text: '帮我把视频水平翻转' },
-    { label: '垂直翻转', text: '帮我把视频垂直翻转' },
-    { label: '裁剪画面', text: '帮我裁剪视频画面区域' },
-    { label: '淡入淡出', text: '帮我给视频添加淡入淡出效果' },
-    { label: '画中画', text: '帮我做一个画中画效果，把第二个视频叠加到主视频上' },
-    { label: '添加水印', text: '帮我给视频添加图片水印' },
+    { label: t('chatCmd.adjustBrightness'), text: '帮我调整视频的亮度和对比度' },
+    { label: t('chatCmd.adjustSaturation'), text: '帮我调整视频的饱和度' },
+    { label: t('chatCmd.colorAdjust'), text: '帮我调整视频的色彩风格' },
+    { label: t('chatCmd.blurEffect'), text: '帮我给视频添加模糊效果' },
+    { label: t('chatCmd.sharpen'), text: '帮我对视频进行锐化处理' },
+    { label: t('chatCmd.rotate90'), text: '帮我把视频顺时针旋转90度' },
+    { label: t('chatCmd.horizontalFlip'), text: '帮我把视频水平翻转' },
+    { label: t('chatCmd.verticalFlip'), text: '帮我把视频垂直翻转' },
+    { label: t('chatCmd.cropFrame'), text: '帮我裁剪视频画面区域' },
+    { label: t('chatCmd.fadeInOut'), text: '帮我给视频添加淡入淡出效果' },
+    { label: t('chatCmd.pictureInPicture'), text: '帮我做一个画中画效果，把第二个视频叠加到主视频上' },
+    { label: t('chatCmd.addWatermark'), text: '帮我给视频添加图片水印' },
   ],
   imageEffect: [
-    { label: '缩放图片', text: '帮我把图片缩放到800x600' },
-    { label: '裁剪图片', text: '帮我把图片裁剪到800x600，从中心开始' },
-    { label: '旋转图片', text: '帮我把图片旋转90度' },
-    { label: '翻转图片', text: '帮我把图片水平翻转' },
-    { label: '调整亮度', text: '帮我把图片调亮一点' },
-    { label: '调整对比度', text: '帮我增加图片的对比度' },
-    { label: '调整饱和度', text: '帮我提高图片饱和度' },
-    { label: '模糊图片', text: '帮我给图片加模糊效果' },
-    { label: '锐化图片', text: '帮我锐化图片让它更清晰' },
-    { label: '格式转换', text: '帮我把图片转换为JPG格式' },
-    { label: '压缩图片', text: '帮我压缩图片减小文件大小' },
-    { label: '添加文字', text: '帮我在图片上添加文字：' },
+    { label: t('chatCmd.resizeImage'), text: '帮我把图片缩放到800x600' },
+    { label: t('chatCmd.cropImage'), text: '帮我把图片裁剪到800x600，从中心开始' },
+    { label: t('chatCmd.rotateImage'), text: '帮我把图片旋转90度' },
+    { label: t('chatCmd.flipImage'), text: '帮我把图片水平翻转' },
+    { label: t('chatCmd.adjustImageBrightness'), text: '帮我把图片调亮一点' },
+    { label: t('chatCmd.adjustImageContrast'), text: '帮我增加图片的对比度' },
+    { label: t('chatCmd.adjustImageSaturation'), text: '帮我提高图片饱和度' },
+    { label: t('chatCmd.blurImage'), text: '帮我给图片加模糊效果' },
+    { label: t('chatCmd.sharpenImage'), text: '帮我锐化图片让它更清晰' },
+    { label: t('chatCmd.imageFormatConvert'), text: '帮我把图片转换为JPG格式' },
+    { label: t('chatCmd.compressImage'), text: '帮我压缩图片减小文件大小' },
+    { label: t('chatCmd.addTextToImage'), text: '帮我在图片上添加文字：' },
   ],
   material: [
-    { label: '查看素材库', text: '列出我当前项目的所有素材' },
-    { label: '搜索本地素材', text: '帮我在本地搜索素材：' },
-    { label: '在线搜索视频', text: '帮我在线搜索视频素材，关键词：' },
-    { label: '下载视频', text: '帮我下载视频，URL是：' },
-    { label: '随机素材', text: '帮我随机选一个素材' },
-    { label: '设置封面', text: '帮我把视频当前画面设为封面' },
-    { label: '更新描述', text: '帮我更新素材的描述和标签' },
-    { label: '删除素材', text: '帮我删除素材：' },
-    { label: '批量压缩', text: '帮我批量压缩素材目录下的所有视频' },
-    { label: '搜索文件', text: '帮我在素材目录搜索文件：' },
-    { label: '查看视频详情', text: '帮我查看视频的详细信息（分辨率、帧率、编码等）' },
-    { label: '提取指定帧', text: '帮我提取视频第5秒的截图' },
+    { label: t('chatCmd.viewMaterials'), text: '列出我当前项目的所有素材' },
+    { label: t('chatCmd.searchLocalMaterials'), text: '帮我在本地搜索素材：' },
+    { label: t('chatCmd.searchOnlineVideo'), text: '帮我在线搜索视频素材，关键词：' },
+    { label: t('chatCmd.downloadVideo'), text: '帮我下载视频，URL是：' },
+    { label: t('chatCmd.randomMaterial'), text: '帮我随机选一个素材' },
+    { label: t('chatCmd.setCover'), text: '帮我把视频当前画面设为封面' },
+    { label: t('chatCmd.updateDescription'), text: '帮我更新素材的描述和标签' },
+    { label: t('chatCmd.deleteMaterial'), text: '帮我删除素材：' },
+    { label: t('chatCmd.batchCompress'), text: '帮我批量压缩素材目录下的所有视频' },
+    { label: t('chatCmd.searchFiles'), text: '帮我在素材目录搜索文件：' },
+    { label: t('chatCmd.viewVideoDetail'), text: '帮我查看视频的详细信息（分辨率、帧率、编码等）' },
+    { label: t('chatCmd.extractFrame'), text: '帮我提取视频第5秒的截图' },
   ],
   tool: [
-    { label: '获取系统信息', text: '查看系统信息（GPU、磁盘等）' },
-    { label: '打开文件夹', text: '帮我在文件管理器中打开素材目录' },
-    { label: '时间格式转换', text: '帮我把 90 秒转换为 HH:MM:SS 格式' },
-    { label: '查看任务进度', text: '帮我查看后台任务的执行进度' },
-    { label: '浏览器打开', text: '帮我在浏览器中打开：' },
-    { label: '浏览器截图', text: '帮我截取网页截图：' },
-    { label: '知识库搜索', text: '帮我在知识库中搜索：' },
+    { label: t('chatCmd.systemInfo'), text: '查看系统信息（GPU、磁盘等）' },
+    { label: t('chatCmd.openFolder'), text: '帮我在文件管理器中打开素材目录' },
+    { label: t('chatCmd.timeConvert'), text: '帮我把 90 秒转换为 HH:MM:SS 格式' },
+    { label: t('chatCmd.taskProgress'), text: '帮我查看后台任务的执行进度' },
+    { label: t('chatCmd.browserOpen'), text: '帮我在浏览器中打开：' },
+    { label: t('chatCmd.browserScreenshot'), text: '帮我截取网页截图：' },
+    { label: t('chatCmd.knowledgeSearch'), text: '帮我在知识库中搜索：' },
   ],
 }
 
@@ -444,7 +445,7 @@ const onFileSelect = async (e) => {
       fileType: res.fileType,
     })
   } catch (err) {
-    ElMessage.error('上传失败: ' + (err.message || '未知错误'))
+    ElMessage.error(t('chat.uploadFailed') + ': ' + (err.message || t('chat.unknownError')))
   } finally {
     uploading.value = false
   }
@@ -454,7 +455,7 @@ const clearChat = async () => {
   // 删除该项目的所有后端会话（防止恢复出已删除的历史）
   if (store.projectId) {
     try {
-      await fetch(`${API_HOST}/api/agent/sessions/project/${store.projectId}`, { method: 'DELETE' })
+      await agentApi.deleteProjectSessions(store.projectId)
     } catch (e) { /* ignore */ }
   }
   store.messages = []
@@ -475,10 +476,10 @@ const formatMessage = (content) => {
 const relativeTime = (ts) => {
   if (!ts) return ''
   const diff = Date.now() - ts
-  if (diff < 60000) return '刚刚'
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`
-  return `${Math.floor(diff / 86400000)}天前`
+  if (diff < 60000) return t('chat.justNow')
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}${t('chat.minutesAgo')}`
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}${t('chat.hoursAgo')}`
+  return `${Math.floor(diff / 86400000)}${t('chat.daysAgo')}`
 }
 
 const copyMsg = (msg) => {
@@ -506,9 +507,9 @@ const toggleFavorite = (msg) => {
 const exportChat = () => {
   const lines = store.messages
     .filter(m => m.role === 'user' || m.role === 'assistant')
-    .map(m => `## ${m.role === 'user' ? '用户' : 'AI'}\n\n${m.content || ''}`)
+    .map(m => `## ${m.role === 'user' ? t('chat.user') : 'AI'}\n\n${m.content || ''}`)
     .join('\n\n---\n\n')
-  const blob = new Blob([`# 对话导出\n\n${lines}`], { type: 'text/markdown' })
+  const blob = new Blob([`# ${t('chat.chatExport')}\n\n${lines}`], { type: 'text/markdown' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -518,9 +519,9 @@ const exportChat = () => {
 }
 
 const paramKeyLabels = {
-  video_id: '视频ID', start_time: '开始时间', end_time: '结束时间',
-  output_path: '输出路径', text: '文本', duration: '时长',
-  speed: '速度', volume: '音量', format: '格式', quality: '质量',
+  video_id: t('chat.paramVideoId'), start_time: t('chat.paramStartTime'), end_time: t('chat.paramEndTime'),
+  output_path: t('chat.paramOutputPath'), text: t('chat.paramText'), duration: t('chat.paramDuration'),
+  speed: t('chat.paramSpeed'), volume: t('chat.paramVolume'), format: t('chat.paramFormat'), quality: t('chat.paramQuality'),
 }
 const highlightKeys = new Set(['video_id', 'start_time', 'end_time', 'output_path'])
 const formatParamKey = (key) => paramKeyLabels[key] || key

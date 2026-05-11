@@ -48,9 +48,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useProjectStore } from '@/store/modules/project'
-import { usePublishStore } from '@/store/modules/publish'
-import { publishApi } from '@/api/modules'
-import { API_HOST } from '@/api/modules'
+import { publishApi, projectApi } from '@/api/modules'
 
 const store = useProjectStore()
 const publishStore = usePublishStore()
@@ -81,29 +79,21 @@ const startExport = async () => {
   exporting.value = true
   try {
     const preset = currentPreset.value
-    const res = await fetch(`${API_HOST}/api/projects/${store.projectId}/render`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        platform: selectedPlatform.value,
-        width: preset.width,
-        height: preset.height,
-        bitrate: preset.bitrate,
-        fps: preset.fps,
-        codec: preset.codec,
-      }),
-    }).then(r => r.json())
-    if (res.code === 200) {
-      ElMessage.success('导出任务已提交')
-      exportHistory.value.unshift({
-        id: Date.now(),
-        platform: preset.name,
-        status: 'processing',
-        time: new Date().toLocaleTimeString(),
-      })
-    } else {
-      ElMessage.error(res.message || '导出失败')
-    }
+    await projectApi.render(store.projectId, {
+      platform: selectedPlatform.value,
+      width: preset.width,
+      height: preset.height,
+      bitrate: preset.bitrate,
+      fps: preset.fps,
+      codec: preset.codec,
+    })
+    ElMessage.success('导出任务已提交')
+    exportHistory.value.unshift({
+      id: Date.now(),
+      platform: preset.name,
+      status: 'processing',
+      time: new Date().toLocaleTimeString(),
+    })
   } catch (e) {
     ElMessage.error('导出请求失败')
   } finally {

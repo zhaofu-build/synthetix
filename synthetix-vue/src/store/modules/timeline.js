@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { API_HOST } from '@/api/modules'
+import { timelineApi } from '@/api/modules'
 
 export const useTimelineStore = defineStore('timeline', {
   state: () => ({
@@ -143,11 +143,7 @@ export const useTimelineStore = defineStore('timeline', {
           audio_track: this.tracks.find(t => t.id === 'a1')?.toJSON() || null,
           subtitle_track: this.tracks.find(t => t.id === 's1')?.toJSON() || null,
         }
-        await fetch(`${API_HOST}/api/projects/${projectId}/timeline`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ timeline_data: timelineData }),
-        })
+        await timelineApi.save(projectId, { timeline_data: timelineData })
       } catch (error) {
         console.error('保存时间线失败:', error)
       }

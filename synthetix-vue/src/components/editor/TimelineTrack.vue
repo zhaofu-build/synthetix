@@ -57,7 +57,10 @@ onMounted(() => {
     trackResizeObs.observe(contentRef.value)
   }
 })
-onUnmounted(() => trackResizeObs?.disconnect())
+onUnmounted(() => {
+  trackResizeObs?.disconnect()
+  if (_trackDragCleanup) _trackDragCleanup()
+})
 const selectedClipId = computed(() => timelineStore.selectedClipId)
 
 const trackHeight = computed(() => {
@@ -114,6 +117,7 @@ const onClipDragStart = (e, clip) => {
   const onMouseUp = () => {
     document.removeEventListener('mousemove', onMouseMove)
     document.removeEventListener('mouseup', onMouseUp)
+    _trackDragCleanup = null
     if (dragNewStart.value !== null && dragNewStart.value !== dragOrigStart.value) {
       const clipDuration = dragOrigEnd.value - dragOrigStart.value
       const clip = props.track.clips.find(c => c.id === dragClipId.value)
@@ -128,7 +132,10 @@ const onClipDragStart = (e, clip) => {
 
   document.addEventListener('mousemove', onMouseMove)
   document.addEventListener('mouseup', onMouseUp)
+  _trackDragCleanup = onMouseUp
 }
+
+let _trackDragCleanup = null
 
 const dragClipId = ref(null)
 const dragStartX = ref(0)

@@ -8,6 +8,12 @@ export { comicDramaApi, comicSeriesApi } from './comicDrama'
 export { qualityApi } from './quality'
 export { publishApi } from './publish'
 export { proxyApi } from './proxy'
+export { agentApi } from './agent'
+export { subtitleApi } from './subtitle'
+export { timelineApi } from './timeline'
+export { extensionApi } from './extension'
+export { mcpApi } from './mcp'
+export { metricsApi } from './metrics'
 
 // 导出工具函数和常量
 export { assetUrl, API_HOST } from '../../utils/request'

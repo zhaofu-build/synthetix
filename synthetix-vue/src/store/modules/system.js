@@ -13,6 +13,9 @@ export const useSystemStore = defineStore('system', {
       asr_model: '',
       vl_model: '',
       music_model: '',
+      image_model: '',
+      video_model: '',
+      image_to_video_model: '',
       video_type: 'pexels',
       video_api_keys: '',
       pixabay_api_key: '',
@@ -24,6 +27,9 @@ export const useSystemStore = defineStore('system', {
       ASR: [],
       VL: [],
       TEXT_TO_MUSIC: [],
+      TEXT_TO_IMAGE: [],
+      TEXT_TO_VIDEO: [],
+      IMAGE_TO_VIDEO: [],
     }
   }),
   
@@ -62,6 +68,9 @@ export const useSystemStore = defineStore('system', {
         this.config.asr_model = cn.asr_model || cn.asrModel || ''
         this.config.vl_model = cn.vl_model || cn.vlModel || ''
         this.config.music_model = cn.music_model || cn.musicModel || ''
+        this.config.image_model = cn.image_model || cn.imageModel || ''
+        this.config.video_model = cn.video_model || cn.videoModel || ''
+        this.config.image_to_video_model = cn.image_to_video_model || cn.imageToVideoModel || ''
         delete newConfig.core_nexus
         delete newConfig.coreNexus
       }
@@ -96,6 +105,9 @@ export const useSystemStore = defineStore('system', {
           'core_nexus.asr_model': this.config.asr_model,
           'core_nexus.vl_model': this.config.vl_model,
           'core_nexus.music_model': this.config.music_model,
+          'core_nexus.image_model': this.config.image_model,
+          'core_nexus.video_model': this.config.video_model,
+          'core_nexus.image_to_video_model': this.config.image_to_video_model,
           video_type: this.config.video_type,
           video_api_keys: this.config.video_api_keys,
           pixabay_api_key: this.config.pixabay_api_key,

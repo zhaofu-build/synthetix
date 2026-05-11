@@ -116,7 +116,7 @@
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
-import { API_HOST } from '@/api/modules'
+import { aiApi } from '@/api/modules'
 
 const form = ref({
   language: '',
@@ -182,19 +182,13 @@ const transcribe = async () => {
       if (form.value.numSpeakers > 0) payload.num_speakers = form.value.numSpeakers
     }
 
-    const response = await fetch(`${API_HOST}/api/nexus/asr`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    })
+    const data = await aiApi.asr(payload)
 
-    const data = await response.json()
-
-    if (data?.data) {
-      result.value = data.data
+    if (data) {
+      result.value = data
       ElMessage.success('识别完成')
     } else {
-      throw new Error(data.message || '识别失败')
+      throw new Error('识别失败')
     }
   } catch (error) {
     console.error('ASR 识别失败:', error)

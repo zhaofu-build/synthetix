@@ -94,7 +94,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Download, Loading } from '@element-plus/icons-vue'
-import { API_HOST } from '@/api/modules'
+import { API_HOST, audioApi } from '@/api/modules'
 import { useProjectStore } from '@/store/modules/project'
 
 const store = useProjectStore()
@@ -149,17 +149,8 @@ const generate = async () => {
       audio_source_id: selectedVoice.value || -1,
       speed_factor: speed.value,
     }
-    const response = await fetch(`${API_HOST}/api/audios/tts/fish-speech`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}))
-      throw new Error(err.message || `HTTP ${response.status}`)
-    }
-    const json = await response.json()
-    const webPath = json?.data?.web_path
+    const json = await audioApi.fishVoice(payload)
+    const webPath = json?.web_path
     if (webPath) return `${API_HOST}/${webPath}`
     throw new Error('未返回音频')
   }

@@ -75,7 +75,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { useProjectStore } from '@/store/modules/project'
-import { API_HOST } from '@/api/modules'
+import { agentApi } from '@/api/modules'
 
 const { t } = useI18n()
 const store = useProjectStore()
@@ -95,15 +95,11 @@ const doSearch = async () => {
   searching.value = true
   searched.value = true
   try {
-    const res = await fetch(`${API_HOST}/api/agent/execute`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        tool_name: 'knowledge_search',
-        arguments: { query: searchQuery.value, project_id: store.projectId, mode: searchMode.value },
-      }),
-    }).then(r => r.json())
-    results.value = res.data?.results || []
+    const res = await agentApi.execute({
+      tool_name: 'knowledge_search',
+      arguments: { query: searchQuery.value, project_id: store.projectId, mode: searchMode.value },
+    })
+    results.value = res?.results || []
   } catch {
     ElMessage.error('搜索失败')
   } finally {
@@ -117,18 +113,14 @@ const doAdd = async () => {
   adding.value = true
   try {
     const tags = addForm.value.tagsStr ? addForm.value.tagsStr.split(',').map(t => t.trim()).filter(Boolean) : []
-    await fetch(`${API_HOST}/api/agent/execute`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        tool_name: 'knowledge_add',
-        arguments: {
-          content: addForm.value.content,
-          source: addForm.value.source,
-          tags,
-          project_id: store.projectId,
-        },
-      }),
+    await agentApi.execute({
+      tool_name: 'knowledge_add',
+      arguments: {
+        content: addForm.value.content,
+        source: addForm.value.source,
+        tags,
+        project_id: store.projectId,
+      },
     })
     ElMessage.success('已添加')
     showAdd.value = false
@@ -143,12 +135,8 @@ const doAdd = async () => {
 const loadStats = async () => {
   if (!store.projectId) return
   try {
-    const res = await fetch(`${API_HOST}/api/agent/execute`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tool: 'knowledge_stats', params: { project_id: store.projectId } }),
-    }).then(r => r.json())
-    if (res.data?.stats) stats.value = res.data.stats
+    const res = await agentApi.execute({ tool: 'knowledge_stats', params: { project_id: store.projectId } })
+    if (res?.stats) stats.value = res.stats
   } catch {}
 }
 

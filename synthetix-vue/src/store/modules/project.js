@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { projectApi, videoApi, audioApi } from '@/api/modules'
+import { projectApi, videoApi, audioApi, agentApi, publishApi } from '@/api/modules'
 import { API_HOST } from '@/api/modules'
 import { ElMessage } from 'element-plus'
 import { storage } from '@/utils/storage'
@@ -78,8 +78,6 @@ export const useProjectStore = defineStore('project', {
     bgmList: [],
     voiceList: [],
     audioLoading: false,
-    // 方案
-    planLoading: false,
     // 预览
     previewVideoPath: null,
     // 渲染
@@ -250,16 +248,7 @@ export const useProjectStore = defineStore('project', {
         }
         if (this.projectId) body.project_id = this.projectId
 
-        const response = await fetch(`${API_HOST}/api/agent/chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        })
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const res = await response.json()
-        if (!res.success) throw new Error(res.message || '请求失败')
-
-        const data = res.data
+        const data = await agentApi.chat(body)
         this.sessionId = data.sessionId || data.session_id || this.sessionId
         if (this.projectId && this.sessionId) {
           localStorage.setItem(`session_${this.projectId}`, this.sessionId)
@@ -483,16 +472,7 @@ export const useProjectStore = defineStore('project', {
         }
         if (this.projectId) body.project_id = this.projectId
 
-        const response = await fetch(`${API_HOST}/api/agent/chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        })
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const res = await response.json()
-        if (!res.success) throw new Error(res.message || '执行失败')
-
-        const data = res.data
+        const data = await agentApi.chat(body)
         this.sessionId = data.sessionId || data.session_id || this.sessionId
         if (this.projectId && this.sessionId) {
           localStorage.setItem(`session_${this.projectId}`, this.sessionId)
@@ -524,14 +504,7 @@ export const useProjectStore = defineStore('project', {
           message: '取消执行',
           context: { project_id: this.projectId || null },
         }
-        const response = await fetch(`${API_HOST}/api/agent/chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        })
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const res = await response.json()
-        const data = res.data
+        const data = await agentApi.chat(body)
         this.messages.push({ role: 'assistant', content: data?.reply || '操作已取消' })
         this._saveChatHistory()
       } catch (error) {
@@ -738,32 +711,21 @@ export const useProjectStore = defineStore('project', {
       this.planExecutionState = 'generating'
       this.planOperations = []
       try {
-        const response = await fetch(`${API_HOST}/api/agent/plan`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message,
-            project_id: this.projectId,
-            session_id: this.sessionId,
-          }),
+        const planData = await agentApi.generatePlan({
+          message,
+          project_id: this.projectId,
+          session_id: this.sessionId,
         })
-        const result = await response.json()
-        if (result.code === 200 && result.data) {
-          const planData = result.data
-          this.planSummary = planData.summary || ''
-          const ops = (planData.operations || []).map((op, i) => ({
-            ...op,
-            id: op.id || `op_${i}`,
-            status: 'pending',
-            selected: true,
-          }))
-          this.planOperations = ops
-          this.planExecutionState = ops.length ? 'confirming' : 'idle'
-          return planData
-        } else {
-          ElMessage.error(result.message || '方案生成失败')
-          this.planExecutionState = 'idle'
-        }
+        this.planSummary = planData.summary || ''
+        const ops = (planData.operations || []).map((op, i) => ({
+          ...op,
+          id: op.id || `op_${i}`,
+          status: 'pending',
+          selected: true,
+        }))
+        this.planOperations = ops
+        this.planExecutionState = ops.length ? 'confirming' : 'idle'
+        return planData
       } catch (error) {
         ElMessage.error('方案生成失败: ' + error.message)
         this.planExecutionState = 'idle'
@@ -793,18 +755,10 @@ export const useProjectStore = defineStore('project', {
       for (const op of selected) {
         op.status = 'executing'
         try {
-          const response = await fetch(`${API_HOST}/api/agent/execute`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tool: op.tool, params: op.params }),
-          })
-          const result = await response.json()
-          op.status = result.code === 200 ? 'done' : 'error'
-          op.result = result.data
-          // 处理工具结果（复用现有逻辑）
-          if (result.code === 200) {
-            this._handleToolResult(op.tool, result.data)
-          }
+          const data = await agentApi.execute({ tool: op.tool, params: op.params })
+          op.status = 'done'
+          op.result = data
+          this._handleToolResult(op.tool, data)
         } catch (error) {
           op.status = 'error'
           op.error = error.message
@@ -826,16 +780,9 @@ export const useProjectStore = defineStore('project', {
         materialCount: this.materials.length,
       }
       try {
-        const res = await fetch(`${API_HOST}/api/projects/${this.projectId}/plan/snapshot`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ label, data: snapshot }),
-        })
-        const result = await res.json()
-        if (result.code === 200) {
-          this.versionSnapshots.unshift(snapshot)
-          ElMessage.success('快照已保存')
-        }
+        await publishApi.createSnapshot(this.projectId, label, snapshot)
+        this.versionSnapshots.unshift(snapshot)
+        ElMessage.success('快照已保存')
       } catch (e) {
         this.versionSnapshots.unshift(snapshot)
       }
@@ -844,9 +791,9 @@ export const useProjectStore = defineStore('project', {
     async loadSnapshots() {
       if (!this.projectId) return
       try {
-        const res = await fetch(`${API_HOST}/api/projects/${this.projectId}/plan/snapshots`).then(r => r.json())
-        if (res.code === 200 && res.data?.snapshots) {
-          this.versionSnapshots = res.data.snapshots
+        const data = await publishApi.getSnapshots(this.projectId)
+        if (data?.snapshots) {
+          this.versionSnapshots = data.snapshots
         }
       } catch (e) {}
     },

@@ -16,7 +16,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { Loading } from '@element-plus/icons-vue'
-import { API_HOST } from '@/api/modules'
+import { metricsApi } from '@/api/modules'
 
 const COST_PER_1K = 0.002
 const loading = ref(true)
@@ -24,9 +24,7 @@ const metrics = ref({ calls: 0, tokens: 0, cost: '0.00' })
 
 onMounted(async () => {
   try {
-    const res = await fetch(`${API_HOST}/api/metrics/ai`)
-    const json = await res.json()
-    const data = json.data || json
+    const data = await metricsApi.getAiMetrics()
     const tokens = data.total_tokens ?? data.tokens ?? 0
     const calls = data.total_calls ?? data.calls ?? 0
     metrics.value = {

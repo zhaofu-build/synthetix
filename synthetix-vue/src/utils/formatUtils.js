@@ -6,23 +6,21 @@
  *   ClipPlanPanel.vue, PreviewPanel.vue
  */
 
+import i18n from '@/locales'
+
 // ---------------------------------------------------------------------------
 // Status helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Map project status to a human-readable Chinese label.
+ * Map project status to a human-readable i18n label.
  * Covers: draft / ready / processing / completed / error
  */
 export function getStatusText(status) {
-  const map = {
-    draft: '草稿',
-    ready: '就绪',
-    processing: '处理中',
-    completed: '完成',
-    error: '错误',
-  }
-  return map[status] || status || '草稿'
+  const t = i18n.global.t
+  const map = ['draft', 'ready', 'processing', 'completed', 'error']
+  if (!status || !map.includes(status)) return t('status.draft')
+  return t(`status.${status}`)
 }
 
 /** @deprecated Use getStatusText – kept for backward compatibility with UnifiedEditor */

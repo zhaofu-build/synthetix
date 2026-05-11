@@ -4,34 +4,34 @@
     <template v-if="!store.isLoaded">
       <div class="welcome-view">
         <div class="welcome-card">
-          <h2 class="welcome-title">AI 剪辑工作台</h2>
-          <p class="welcome-desc">选择或创建一个项目开始创作</p>
+          <h2 class="welcome-title">{{ t('unifiedEditor.welcomeTitle') }}</h2>
+          <p class="welcome-desc">{{ t('unifiedEditor.welcomeDesc') }}</p>
 
           <!-- 模式选择入口 -->
           <div class="mode-cards">
             <div class="mode-card mode-card-edit" @click="openCreate">
               <span class="mode-card-icon">🎬</span>
-              <span class="mode-card-title">AI 剪辑</span>
-              <span class="mode-card-desc">对话式 / 工作流视频剪辑</span>
+              <span class="mode-card-title">{{ t('unifiedEditor.modeEditTitle') }}</span>
+              <span class="mode-card-desc">{{ t('unifiedEditor.modeEditDesc') }}</span>
             </div>
             <div class="mode-card mode-card-comic" @click="openComicCreate">
               <span class="mode-card-icon">🎨</span>
-              <span class="mode-card-title">漫剧制作</span>
-              <span class="mode-card-desc">AI 分镜脚本 · 角色配音 · 合成</span>
+              <span class="mode-card-title">{{ t('unifiedEditor.modeComicTitle') }}</span>
+              <span class="mode-card-desc">{{ t('unifiedEditor.modeComicDesc') }}</span>
             </div>
           </div>
 
           <div v-if="allProjects.length" class="project-list-section">
             <!-- 今日 -->
             <template v-if="todayProjects.length">
-              <el-divider>今日编辑</el-divider>
+              <el-divider>{{ t('unifiedEditor.todayEdit') }}</el-divider>
               <div class="project-grid">
                 <div v-for="row in todayProjects" :key="row._key" class="project-card"
                      @click="openProject(row)">
                   <div class="project-card-header">
                     <span class="project-card-name">{{ row.name }}</span>
                     <div class="project-card-tags">
-                      <el-tag size="small" :type="row._type === 'comic' ? 'warning' : 'primary'" class="type-tag">{{ row._type === 'comic' ? '漫剧' : '剪辑' }}</el-tag>
+                      <el-tag size="small" :type="row._type === 'comic' ? 'warning' : 'primary'" class="type-tag">{{ row._type === 'comic' ? t('unifiedEditor.typeComic') : t('unifiedEditor.typeEdit') }}</el-tag>
                       <el-tag size="small" :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag>
                     </div>
                   </div>
@@ -40,23 +40,23 @@
                     <span>{{ formatTime(row.updatedAt || row.updated_at) }}</span>
                   </div>
                   <div class="project-card-footer">
-                    <el-button text size="small" @click.stop="openProject(row)">打开</el-button>
-                    <el-button text size="small" @click.stop="exportProject(row)">导出</el-button>
-                    <el-button text size="small" type="danger" @click.stop="deleteProject(row)">删除</el-button>
+                    <el-button text size="small" @click.stop="openProject(row)">{{ t('unifiedEditor.open') }}</el-button>
+                    <el-button text size="small" @click.stop="exportProject(row)">{{ t('unifiedEditor.export') }}</el-button>
+                    <el-button text size="small" type="danger" @click.stop="deleteProject(row)">{{ t('common.delete') }}</el-button>
                   </div>
                 </div>
               </div>
             </template>
             <!-- 昨日 -->
             <template v-if="yesterdayProjects.length">
-              <el-divider>昨日编辑</el-divider>
+              <el-divider>{{ t('unifiedEditor.yesterdayEdit') }}</el-divider>
               <div class="project-grid">
                 <div v-for="row in yesterdayProjects" :key="row._key" class="project-card"
                      @click="openProject(row)">
                   <div class="project-card-header">
                     <span class="project-card-name">{{ row.name }}</span>
                     <div class="project-card-tags">
-                      <el-tag size="small" :type="row._type === 'comic' ? 'warning' : 'primary'" class="type-tag">{{ row._type === 'comic' ? '漫剧' : '剪辑' }}</el-tag>
+                      <el-tag size="small" :type="row._type === 'comic' ? 'warning' : 'primary'" class="type-tag">{{ row._type === 'comic' ? t('unifiedEditor.typeComic') : t('unifiedEditor.typeEdit') }}</el-tag>
                       <el-tag size="small" :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag>
                     </div>
                   </div>
@@ -65,23 +65,23 @@
                     <span>{{ formatTime(row.updatedAt || row.updated_at) }}</span>
                   </div>
                   <div class="project-card-footer">
-                    <el-button text size="small" @click.stop="openProject(row)">打开</el-button>
-                    <el-button text size="small" @click.stop="exportProject(row)">导出</el-button>
-                    <el-button text size="small" type="danger" @click.stop="deleteProject(row)">删除</el-button>
+                    <el-button text size="small" @click.stop="openProject(row)">{{ t('unifiedEditor.open') }}</el-button>
+                    <el-button text size="small" @click.stop="exportProject(row)">{{ t('unifiedEditor.export') }}</el-button>
+                    <el-button text size="small" type="danger" @click.stop="deleteProject(row)">{{ t('common.delete') }}</el-button>
                   </div>
                 </div>
               </div>
             </template>
             <!-- 更早 -->
             <template v-if="olderProjects.length">
-              <el-divider>更早</el-divider>
+              <el-divider>{{ t('unifiedEditor.older') }}</el-divider>
               <div class="project-grid">
                 <div v-for="row in olderProjects" :key="row._key" class="project-card"
                      @click="openProject(row)">
                   <div class="project-card-header">
                     <span class="project-card-name">{{ row.name }}</span>
                     <div class="project-card-tags">
-                      <el-tag size="small" :type="row._type === 'comic' ? 'warning' : 'primary'" class="type-tag">{{ row._type === 'comic' ? '漫剧' : '剪辑' }}</el-tag>
+                      <el-tag size="small" :type="row._type === 'comic' ? 'warning' : 'primary'" class="type-tag">{{ row._type === 'comic' ? t('unifiedEditor.typeComic') : t('unifiedEditor.typeEdit') }}</el-tag>
                       <el-tag size="small" :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag>
                     </div>
                   </div>
@@ -90,25 +90,25 @@
                     <span>{{ formatTime(row.updatedAt || row.updated_at) }}</span>
                   </div>
                   <div class="project-card-footer">
-                    <el-button text size="small" @click.stop="openProject(row)">打开</el-button>
-                    <el-button text size="small" @click.stop="exportProject(row)">导出</el-button>
-                    <el-button text size="small" type="danger" @click.stop="deleteProject(row)">删除</el-button>
+                    <el-button text size="small" @click.stop="openProject(row)">{{ t('unifiedEditor.open') }}</el-button>
+                    <el-button text size="small" @click.stop="exportProject(row)">{{ t('unifiedEditor.export') }}</el-button>
+                    <el-button text size="small" type="danger" @click.stop="deleteProject(row)">{{ t('common.delete') }}</el-button>
                   </div>
                 </div>
               </div>
             </template>
           </div>
           <el-skeleton v-else-if="listLoading" :rows="5" animated />
-          <el-empty v-else description="暂无项目，点击上方卡片创建" />
+          <el-empty v-else :description="t('unifiedEditor.noProjects')" />
         </div>
       </div>
     </template>
 
     <!-- ==================== 创建AI剪辑项目弹窗 ==================== -->
-    <el-dialog v-model="showCreateDialog" title="创建 AI 剪辑项目" width="460" :close-on-click-modal="false">
+    <el-dialog v-model="showCreateDialog" :title="t('unifiedEditor.createAiClipProject')" width="460" :close-on-click-modal="false">
       <!-- 快速模板 -->
       <div class="template-quick-pick">
-        <div class="template-quick-title">快速模板</div>
+        <div class="template-quick-title">{{ t('unifiedEditor.quickTemplate') }}</div>
         <div class="template-quick-grid">
           <div v-for="tpl in quickTemplates" :key="tpl.name" class="template-quick-card"
                :class="{ active: selectedTemplate === tpl.name }" @click="applyQuickTemplate(tpl)">
@@ -119,36 +119,36 @@
       </div>
       <el-divider style="margin: 12px 0" />
       <el-form @submit.prevent="confirmCreate">
-        <el-form-item label="项目名称">
-          <el-input ref="nameInput" v-model="projectName" placeholder="请输入项目名称"
+        <el-form-item :label="t('unifiedEditor.projectName')">
+          <el-input ref="nameInput" v-model="projectName" :placeholder="t('unifiedEditor.enterProjectName')"
                     @keydown.enter="confirmCreate" />
         </el-form-item>
-        <el-form-item label="项目描述">
-          <el-input v-model="projectDesc" type="textarea" :rows="2" placeholder="可选描述" />
+        <el-form-item :label="t('unifiedEditor.projectDesc')">
+          <el-input v-model="projectDesc" type="textarea" :rows="2" :placeholder="t('unifiedEditor.optionalDesc')" />
         </el-form-item>
         <div class="config-row">
-          <el-form-item label="项目类型">
-            <el-select v-model="projectType" placeholder="选择类型">
-              <el-option label="短视频" value="short" />
-              <el-option label="长视频" value="long" />
-              <el-option label="混剪" value="mix" />
+          <el-form-item :label="t('unifiedEditor.projectType')">
+            <el-select v-model="projectType" :placeholder="t('unifiedEditor.selectType')">
+              <el-option :label="t('unifiedEditor.shortVideo')" value="short" />
+              <el-option :label="t('unifiedEditor.longVideo')" value="long" />
+              <el-option :label="t('unifiedEditor.mixVideo')" value="mix" />
             </el-select>
           </el-form-item>
-          <el-form-item label="目标平台">
-            <el-select v-model="projectPlatform" placeholder="选择平台">
-              <el-option label="不限" value="" />
-              <el-option label="抖音 (9:16)" value="douyin" />
-              <el-option label="B站 (16:9)" value="bilibili" />
-              <el-option label="YouTube (16:9)" value="youtube" />
-              <el-option label="小红书 (3:4)" value="xiaohongshu" />
+          <el-form-item :label="t('unifiedEditor.targetPlatform')">
+            <el-select v-model="projectPlatform" :placeholder="t('unifiedEditor.selectPlatform')">
+              <el-option :label="t('unifiedEditor.platformAny')" value="" />
+              <el-option :label="t('unifiedEditor.platformDouyin')" value="douyin" />
+              <el-option :label="t('unifiedEditor.platformBilibili')" value="bilibili" />
+              <el-option :label="t('unifiedEditor.platformYoutube')" value="youtube" />
+              <el-option :label="t('unifiedEditor.platformXiaohongshu')" value="xiaohongshu" />
             </el-select>
           </el-form-item>
         </div>
         <div v-if="createError" class="el-form-item__error">{{ createError }}</div>
       </el-form>
       <template #footer>
-        <el-button @click="showCreateDialog = false">取消</el-button>
-        <el-button type="primary" :loading="creating" @click="confirmCreate">创建</el-button>
+        <el-button @click="showCreateDialog = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="creating" @click="confirmCreate">{{ t('common.add') }}</el-button>
       </template>
     </el-dialog>
 
@@ -171,7 +171,7 @@
         <div class="right-panel" :class="{ collapsed: store.rightPanelCollapsed }">
           <!-- 折叠态 -->
           <div v-if="store.rightPanelCollapsed" class="right-collapsed-bar">
-            <el-button text circle @click="store.toggleRightPanel()" title="展开">
+            <el-button text circle @click="store.toggleRightPanel()" :title="t('unifiedEditor.expand')">
               <el-icon><DArrowLeft /></el-icon>
             </el-button>
           </div>
@@ -179,11 +179,11 @@
           <template v-else>
             <div class="right-toolbar">
               <el-radio-group v-model="rightTab" size="small">
-                <el-radio-button value="materials">素材</el-radio-button>
-                <el-radio-button value="tts">音色</el-radio-button>
-                <el-radio-button value="bgm">BGM</el-radio-button>
+                <el-radio-button value="materials">{{ t('unifiedEditor.materials') }}</el-radio-button>
+                <el-radio-button value="tts">{{ t('unifiedEditor.voice') }}</el-radio-button>
+                <el-radio-button value="bgm">{{ t('unifiedEditor.bgm') }}</el-radio-button>
               </el-radio-group>
-              <el-button text size="small" @click="store.toggleRightPanel()" title="收起">
+              <el-button text size="small" @click="store.toggleRightPanel()" :title="t('unifiedEditor.collapse')">
                 <el-icon><DArrowRight /></el-icon>
               </el-button>
             </div>
@@ -201,7 +201,7 @@
       <div v-if="store.isLoaded && store.rightPanelCollapsed"
            class="floating-ai" @click="store.toggleRightPanel()">
         <el-icon size="18"><DArrowLeft /></el-icon>
-        <span>素材</span>
+        <span>{{ t('unifiedEditor.materials') }}</span>
       </div>
 
       <!-- 底部状态栏 -->
@@ -209,12 +209,12 @@
     </template>
 
     <!-- 素材预览弹窗 -->
-    <el-dialog v-model="showPreview" title="素材预览" width="640" top="6vh" destroy-on-close append-to-body>
+    <el-dialog v-model="showPreview" :title="t('unifiedEditor.materialPreview')" width="640" top="6vh" destroy-on-close append-to-body>
       <video v-if="previewingUrl && previewingType === 'video'" :src="previewingUrl" controls style="width: 100%; max-height: 70vh" />
       <audio v-else-if="previewingUrl && previewingType === 'audio'" :src="previewingUrl" controls style="width: 100%" />
       <img v-else-if="previewingUrl && previewingType === 'image'" :src="previewingUrl" style="width: 100%; max-height: 70vh; object-fit: contain" />
       <div v-else-if="previewingUrl" style="text-align: center; padding: 40px">
-        <el-button type="primary" @click="window.open(previewingUrl, '_blank')">打开文件</el-button>
+        <el-button type="primary" @click="window.open(previewingUrl, '_blank')">{{ t('unifiedEditor.openFile') }}</el-button>
       </div>
     </el-dialog>
   </div>
@@ -224,6 +224,7 @@
 import { ref, computed, onMounted, nextTick, provide, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useI18n } from 'vue-i18n'
 import { useProjectStore } from '@/store/modules/project'
 import { projectApi, comicDramaApi } from '@/api/modules'
 import { Plus, DArrowLeft, DArrowRight } from '@element-plus/icons-vue'
@@ -241,6 +242,7 @@ import StatusBar from './StatusBar.vue'
 const router = useRouter()
 const route = useRoute()
 const store = useProjectStore()
+const { t } = useI18n()
 
 // ==================== 可拖拽分割面板 ====================
 const editorBodyRef = ref(null)
@@ -302,7 +304,7 @@ const loadProjectList = async () => {
     projectList.value = editData.items || []
     comicList.value = comicData.items || []
   } catch {
-    ElMessage.error('获取项目列表失败')
+    ElMessage.error(t('unifiedEditor.loadFailed'))
   } finally {
     listLoading.value = false
   }
@@ -343,12 +345,12 @@ const openProject = async (row) => {
 
 const deleteProject = async (row) => {
   try {
-    await ElMessageBox.prompt(`请输入 "${row.name}" 确认删除`, '删除项目', {
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
+    await ElMessageBox.prompt(t('unifiedEditor.deleteConfirm', { name: row.name }), t('unifiedEditor.deleteProject'), {
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
       confirmButtonClass: 'el-button--danger',
       inputPattern: new RegExp(`^${row.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`),
-      inputErrorMessage: '项目名称不匹配',
+      inputErrorMessage: t('unifiedEditor.nameMismatch'),
       type: 'warning',
     })
     if (row._type === 'comic') {
@@ -356,7 +358,7 @@ const deleteProject = async (row) => {
     } else {
       await projectApi.remove(row.id || row.projectId)
     }
-    ElMessage.success('已删除')
+    ElMessage.success(t('unifiedEditor.deleted'))
     loadProjectList()
   } catch { /* cancelled */ }
 }
@@ -377,9 +379,9 @@ const exportProject = async (row) => {
     a.download = `${row.name || 'project'}.json`
     a.click()
     URL.revokeObjectURL(url)
-    ElMessage.success('导出成功')
+    ElMessage.success(t('unifiedEditor.exportSuccess'))
   } catch {
-    ElMessage.error('导出失败')
+    ElMessage.error(t('unifiedEditor.exportFailed'))
   }
 }
 
@@ -396,16 +398,16 @@ const nameInput = ref(null)
 const selectedTemplate = ref('')
 
 const quickTemplates = [
-  { name: '短视频', icon: '🎬', type: 'short', platform: 'douyin', desc: '15-60秒竖屏短视频' },
-  { name: 'Vlog', icon: '✈️', type: 'mix', platform: '', desc: '旅行/日常 Vlog 混剪' },
-  { name: '教学', icon: '📚', type: 'long', platform: 'bilibili', desc: '教学视频，知识讲解' },
-  { name: '产品', icon: '💎', type: 'short', platform: '', desc: '产品展示/宣传' },
-  { name: '空白', icon: '📝', type: 'short', platform: '', desc: '从空白项目开始' },
+  { name: t('unifiedEditor.tplShortVideo'), icon: '🎬', type: 'short', platform: 'douyin', desc: t('unifiedEditor.tplShortVideoDesc') },
+  { name: t('unifiedEditor.tplVlog'), icon: '✈️', type: 'mix', platform: '', desc: t('unifiedEditor.tplVlogDesc') },
+  { name: t('unifiedEditor.tplTeaching'), icon: '📚', type: 'long', platform: 'bilibili', desc: t('unifiedEditor.tplTeachingDesc') },
+  { name: t('unifiedEditor.tplProduct'), icon: '💎', type: 'short', platform: '', desc: t('unifiedEditor.tplProductDesc') },
+  { name: t('unifiedEditor.tplBlank'), icon: '📝', type: 'short', platform: '', desc: t('unifiedEditor.tplBlankDesc') },
 ]
 
 const applyQuickTemplate = (tpl) => {
   selectedTemplate.value = tpl.name
-  projectName.value = tpl.name === '空白' ? '' : `我的${tpl.name}项目`
+  projectName.value = tpl.name === t('unifiedEditor.tplBlank') ? '' : t('unifiedEditor.myProject', [tpl.name])
   projectType.value = tpl.type
   projectPlatform.value = tpl.platform
   projectDesc.value = tpl.desc
@@ -455,7 +457,7 @@ const quickCreate = async (name) => {
 
 const confirmCreate = async () => {
   const name = projectName.value.trim()
-  if (!name) { createError.value = '请输入项目名称'; return }
+  if (!name) { createError.value = t('unifiedEditor.nameRequired'); return }
 
   creating.value = true
   createError.value = ''

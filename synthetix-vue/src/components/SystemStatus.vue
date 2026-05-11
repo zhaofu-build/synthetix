@@ -117,7 +117,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { API_HOST } from '@/api/modules'
+import { metricsApi } from '@/api/modules'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -148,7 +148,7 @@ const nexusLabel = computed(() => {
 
 const fetchHealth = async () => {
   try {
-    const res = await fetch(`${API_HOST}/health`).then(r => r.json())
+    const res = await metricsApi.health()
     health.value = res
   } catch {
     health.value = { status: 'error' }
@@ -157,7 +157,7 @@ const fetchHealth = async () => {
 
 const fetchAiStats = async () => {
   try {
-    const res = await fetch(`${API_HOST}/api/metrics/ai`).then(r => r.json())
+    const res = await metricsApi.getAiMetrics()
     aiStats.value = res
   } catch {
     aiStats.value = {}
@@ -166,7 +166,7 @@ const fetchAiStats = async () => {
 
 const fetchResources = async () => {
   try {
-    const res = await fetch(`${API_HOST}/health`).then(r => r.json())
+    const res = await metricsApi.health()
     if (res.resource_profile) {
       const rp = res.resource_profile
       resInfo.value = {

@@ -70,7 +70,7 @@ import { Delete, Setting } from '@element-plus/icons-vue'
 import { useSubtitleStore } from '@/store/modules/subtitle'
 import { useTimelineStore } from '@/store/modules/timeline'
 import { useProjectStore } from '@/store/modules/project'
-import { API_HOST } from '@/api/modules'
+import { agentApi } from '@/api/modules'
 import SpeakerTag from './SpeakerTag.vue'
 import SubtitleStyleEditor from './SubtitleStyleEditor.vue'
 
@@ -148,14 +148,9 @@ const loadFromTranscription = async () => {
     }
     // 对第一个素材进行 ASR
     const video = materials[0]
-    const resp = await fetch(`${API_HOST}/api/agent/execute`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tool: 'transcribe_video', params: { video_id: video.id } }),
-    })
-    const result = await resp.json()
-    if (result.code === 200 && result.data?.success) {
-      subtitleStore.loadFromSrt(result.data.subtitle)
+    const result = await agentApi.execute({ tool: 'transcribe_video', params: { video_id: video.id } })
+    if (result?.success) {
+      subtitleStore.loadFromSrt(result.subtitle)
     }
   } catch (error) {
     console.error('导入 ASR 失败:', error)
