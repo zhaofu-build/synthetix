@@ -166,6 +166,7 @@ def build_system_prompt(tools_description: str, project_id, project_name: str) -
         "6. 尽可能在一轮中同时调用多个互不依赖的工具（例如同时分析多个视频、同时下载多个素材）",
         "7. 避免重复调用已获取过的信息（如多次 list_views），已获取的数据直接使用",
         "8. 如果素材不匹配需求，直接更换素材或调整方案，不要反复分析同一个不合适的素材",
+        "9. 必须使用工具返回的真实数据，严禁编造、猜测或虚构内容。如果工具调用失败需要重试，必须使用之前工具返回的原始数据，不能凭想象重新生成",
         "",
         "## 当前上下文",
         "",
@@ -1323,6 +1324,7 @@ class ReActAgent:
         progress_dict: Dict = None,
     ) -> Dict[str, Any]:
         """执行单个工具（支持 registry 工具和 MCP 外部工具）"""
+        logger.info(f"[_execute_tool] tool={tool_name}, params={json.dumps(params, ensure_ascii=False, default=str)[:200]}")
         tool = registry.get_tool(tool_name)
 
         # 权限门控：modify/destructive 工具需确认

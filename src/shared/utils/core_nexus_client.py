@@ -583,7 +583,7 @@ class CoreNexusClient:
         """ASR 语音识别"""
         audio_data = self._process_audio_input(audio)
 
-        payload = {"audio": audio_data}
+        payload = {"audio": audio_data, "return_segments": True}
         if language:
             payload["language"] = language
         if model:
@@ -604,7 +604,7 @@ class CoreNexusClient:
         """ASR 异步语音识别"""
         audio_data = self._process_audio_input(audio)
 
-        payload = {"audio": audio_data}
+        payload = {"audio": audio_data, "return_segments": True}
         if language:
             payload["language"] = language
         if model:
