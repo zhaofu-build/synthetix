@@ -5,5 +5,58 @@
   "entry": "",
   "system_prompt": "会议纪要提取：从会议/访谈视频中提取关键决策、讨论要点和结论，生成结构化纪要。\n\n适用场景: 会议录像、访谈、讲座、讨论会\n参数: target_duration(目标摘要时长, 默认180秒), language(语言, 默认zh)\n所需工具: transcribe_video, analyze_transcript, cut_video\n\n## 执行流程\n\n1. 使用 transcribe_video 获取完整转录文本\n2. 分析转录文本，识别以下要素：\n   - 关键决策和结论\n   - 重要讨论要点\n   - 行动项和负责人\n   - 时间节点和截止日期\n3. 使用 cut_video 提取包含关键内容的时间段\n4. 将提取的片段按逻辑顺序组合\n5. 生成结构化纪要文本\n\n## 提示策略\n\n- 优先保留包含明确决策和行动项的片段\n- 删除寒暄、重复讨论、跑题内容\n- 保留发言人转换的上下文\n- 确保最终时长在 target_duration 范围内",
   "enabled": false,
-  "mode": "video"
+  "mode": "video",
+  "pipeline": {
+    "icon": "📝",
+    "category": "analysis",
+    "required_tools": ["get_video_detail", "cut_video"],
+    "user_params": [
+      {
+        "key": "video_index",
+        "label": "视频序号（1开始）",
+        "type": "number",
+        "default": 1,
+        "required": true
+      },
+      {
+        "key": "language",
+        "label": "语言",
+        "type": "select",
+        "options": [
+          "zh",
+          "en"
+        ],
+        "default": "zh",
+        "required": false
+      }
+    ],
+    "steps": [
+      {
+        "id": "step_0",
+        "tool": "list_videos",
+        "params": {},
+        "description": "列出项目素材",
+        "estimated_time": 1
+      },
+      {
+        "id": "step_1",
+        "tool": "transcribe_video",
+        "params": {
+          "video_id": "{{video_index}}",
+          "language": "{{language}}"
+        },
+        "description": "转录视频语音",
+        "estimated_time": 60
+      },
+      {
+        "id": "step_2",
+        "tool": "analyze_transcript",
+        "params": {
+          "video_id": "{{video_index}}"
+        },
+        "description": "分析转录内容，提取要点",
+        "estimated_time": 30
+      }
+    ]
+  }
 }

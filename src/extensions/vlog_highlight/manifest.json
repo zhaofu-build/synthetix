@@ -5,5 +5,55 @@
   "entry": "",
   "system_prompt": "Vlog 高光提取：从旅行/日常 Vlog 中提取最精彩的瞬间，制作节奏紧凑的精华视频。\n\n适用场景: 旅行 Vlog、日常记录、活动回顾、派对视频\n参数: style(节奏: 紧凑/舒缓, 默认紧凑), duration(目标时长, 默认60秒)\n所需工具: list_videos, analyze_video_vl, detect_scene_change, detect_silence, cut_video, merge_videos\n\n## 执行流程\n\n1. 列出所有素材 list_videos\n2. 多信号分析：\n   - analyze_video_vl 视觉分析（人物表情、景色壮丽度、动作幅度）\n   - detect_scene_change 场景切换密度（高频区域通常更精彩）\n   - detect_silence 静音检测（有音乐/笑声/欢呼声的段更有趣）\n3. 综合评分筛选高光片段：\n   - 视觉丰富度 50%\n   - 音频活跃度 30%\n   - 场景多样性 20%\n4. 按 style 调整剪辑节奏：\n   - 紧凑：每片段 2-4 秒，快速转场\n   - 舒缓：每片段 4-8 秒，淡入淡出\n5. 使用 cut_video + merge_videos 组合\n\n## 剪辑策略\n\n- 开头用最震撼/有趣的画面\n- 保持画面多样性（不连续使用同一场景）\n- 音乐节拍点对齐画面切换\n- 人物表情特写优于空镜头",
   "enabled": false,
-  "mode": "video"
+  "mode": "video",
+  "pipeline": {
+    "icon": "✨",
+    "category": "clip",
+    "required_tools": ["get_video_detail", "detect_scene_change", "detect_silence", "cut_video", "merge_videos"],
+    "user_params": [
+      {
+        "key": "video_index",
+        "label": "视频序号（1开始）",
+        "type": "number",
+        "default": 1,
+        "required": true
+      },
+      {
+        "key": "target_duration",
+        "label": "目标时长（秒）",
+        "type": "number",
+        "default": 30,
+        "required": false
+      }
+    ],
+    "steps": [
+      {
+        "id": "step_0",
+        "tool": "list_videos",
+        "params": {},
+        "description": "列出项目素材",
+        "estimated_time": 1
+      },
+      {
+        "id": "step_1",
+        "tool": "analyze_video_vl",
+        "params": {
+          "video_id": "{{video_index}}"
+        },
+        "description": "AI 分析视频内容，识别精彩片段",
+        "estimated_time": 30
+      },
+      {
+        "id": "step_2",
+        "tool": "smart_clip",
+        "params": {
+          "video_id": "{{video_index}}",
+          "target_duration": "{{target_duration}}"
+        },
+        "description": "智能提取精彩片段",
+        "risk": "needs_confirm",
+        "estimated_time": 60
+      }
+    ]
+  }
 }

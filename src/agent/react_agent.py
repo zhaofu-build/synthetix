@@ -664,6 +664,10 @@ class ReActAgent:
             mode_val = context.get("mode")
             if mode_val and state.mode == "video":
                 state.mode = mode_val
+            # 按需激活的扩展列表（@ 流水线触发）
+            active_ext = context.get("active_extensions")
+            if active_ext:
+                state.metadata["active_extensions"] = active_ext
 
         yield {"type": "session", "session_id": state.session_id}
         logger.info(f"[ReAct-Stream] 用户输入: '{user_input}', project_id={state.project_id}")
@@ -696,6 +700,7 @@ class ReActAgent:
             return
 
         pending_tasks: set = set()
+        _supplemented_tools: set = set()  # 已动态补充参数描述的工具
         try:
             # 历史过长时触发压缩
             await self._compact_history(state)
@@ -872,6 +877,16 @@ class ReActAgent:
                 messages.append({"role": "assistant", "content": response_text})
                 observation = self._format_observations(tool_results)
                 messages.append({"role": "user", "content": observation})
+
+                # 动态补充非核心工具的完整参数描述
+                for tc in tool_calls:
+                    tname = tc["name"]
+                    if tname not in registry.CORE_TOOLS and tname not in _supplemented_tools:
+                        full_desc = registry.get_tool_full_description(tname)
+                        if full_desc:
+                            messages.append({"role": "system", "content":
+                                f"[工具参数补充] {tname} 的完整参数：\n\n{full_desc}"})
+                            _supplemented_tools.add(tname)
             else:
                 # 超过最大循环次数
                 final_reply = response_text if response_text else "处理超时，请简化您的问题后重试。"
@@ -987,6 +1002,7 @@ class ReActAgent:
                 # 运行 TAOR 循环
                 stage_reply = ""
                 kv_session_id = None
+                _dr_supplemented: set = set()  # 深度研究内补充过的工具
                 for iteration in range(self.MAX_ITERATIONS):
                     yield {"type": "thinking", "iteration": iteration + 1, "stage": stage_name}
 
@@ -1041,6 +1057,16 @@ class ReActAgent:
                     observation = self._format_observations(tool_results)
                     messages.append({"role": "user", "content": observation})
 
+                    # 动态补充非核心工具的完整参数描述
+                    for tc in tool_calls:
+                        tname = tc["name"]
+                        if tname not in registry.CORE_TOOLS and tname not in _dr_supplemented:
+                            full_desc = registry.get_tool_full_description(tname)
+                            if full_desc:
+                                messages.append({"role": "system", "content":
+                                    f"[工具参数补充] {tname} 的完整参数：\n\n{full_desc}"})
+                                _dr_supplemented.add(tname)
+
                 if not stage_reply:
                     stage_reply = response_text if response_text else "本阶段无输出"
 
@@ -1082,6 +1108,172 @@ class ReActAgent:
             logger.error(f"[DeepResearch] 失败: {e}", exc_info=True)
             yield {"type": "error", "message": str(e), "session_id": state.session_id}
 
+    async def process_plan_stream(
+        self,
+        session_id: Optional[str],
+        user_input: str,
+        context: Optional[Dict] = None,
+    ):
+        """
+        计划模式：一次 LLM 调用生成执行计划 → 用户确认 → 按序执行。
+
+        SSE 事件流:
+        - session: 会话信息
+        - thinking: LLM 正在生成计划
+        - plan: 计划内容（summary + steps）
+        - plan_step_start / plan_step_result / plan_step_confirm: 执行过程
+        - plan_done: 计划执行完成
+        - reply: 最终总结
+        - done: 处理完成
+        - error: 处理出错
+        """
+        from src.agent.plan_generator import generate_plan_from_llm
+        from src.agent.plan_executor import PlanExecutor
+
+        project_id = context.get("project_id") if context else None
+        state = self._resolve_session(session_id, project_id)
+        state.add_message("user", user_input)
+
+        if context:
+            pid = context.get("project_id")
+            if pid:
+                state.project_id = int(pid)
+                state.metadata["project_id"] = state.project_id
+            attachments = context.get("attachments")
+            if attachments:
+                state.metadata["pending_attachments"] = attachments
+            mode_val = context.get("mode")
+            if mode_val and state.mode == "video":
+                state.mode = mode_val
+
+        yield {"type": "session", "session_id": state.session_id}
+
+        try:
+            # Phase 1: LLM 生成计划
+            yield {"type": "thinking", "iteration": 1, "message": "正在规划执行方案..."}
+
+            plan_data = await generate_plan_from_llm(
+                user_input=user_input,
+                state=state,
+                mode=getattr(state, 'mode', 'video'),
+            )
+
+            plan_id = plan_data.get("plan_id", f"plan_{int(time.time())}")
+            steps = plan_data.get("steps", [])
+            summary = plan_data.get("summary", "")
+
+            if not steps:
+                # LLM 未能生成有效计划，降级为普通回复
+                raw = plan_data.get("raw", summary)
+                yield {"type": "reply", "content": raw or "抱歉，无法生成执行计划。"}
+                yield {"type": "done", "status": "completed", "session_id": state.session_id}
+                state.add_message("assistant", raw or "无法生成执行计划")
+                self.sessions.persist_session(state)
+                return
+
+            # yield 计划事件，等待前端确认
+            yield {
+                "type": "plan",
+                "plan_id": plan_id,
+                "summary": summary,
+                "steps": steps,
+                "total_steps": len(steps),
+            }
+
+            # 存储计划到会话元数据
+            state.metadata["_pending_plan"] = plan_data
+            state.metadata["_plan_confirmed"] = False
+            state.metadata["_plan_cancelled"] = False
+            self.sessions.persist_session(state)
+
+            # Phase 2: 等待用户确认
+            confirm_timeout = 300  # 5 分钟等待确认
+            elapsed = 0
+            check_interval = 0.5
+            while elapsed < confirm_timeout:
+                if state.metadata.get("_plan_cancelled"):
+                    yield {"type": "reply", "content": "方案已取消。"}
+                    yield {"type": "plan_done", "status": "cancelled", "completed_steps": 0, "total_steps": len(steps)}
+                    yield {"type": "done", "status": "completed", "session_id": state.session_id}
+                    state.add_message("assistant", "用户取消了执行方案")
+                    self.sessions.persist_session(state)
+                    return
+                if state.metadata.get("_plan_confirmed"):
+                    break
+                await asyncio.sleep(check_interval)
+                elapsed += check_interval
+            else:
+                # 确认超时
+                yield {"type": "reply", "content": "方案确认超时，请重新发送。"}
+                yield {"type": "plan_done", "status": "timeout", "completed_steps": 0, "total_steps": len(steps)}
+                yield {"type": "done", "status": "completed", "session_id": state.session_id}
+                state.add_message("assistant", "方案确认超时")
+                self.sessions.persist_session(state)
+                return
+
+            # Phase 3: 执行计划
+            executor = PlanExecutor(self)
+            from src.agent.plan_executor import PlanStep
+
+            plan_steps = [
+                PlanStep(
+                    id=s["id"],
+                    tool=s["tool"],
+                    params=s["params"],
+                    description=s["description"],
+                    risk=s.get("risk", "safe"),
+                    estimated_time=s.get("estimated_time"),
+                )
+                for s in steps
+            ]
+
+            all_results = []
+            async for event in executor.execute_plan_stream(plan_steps, state):
+                if event["type"] == "plan_done":
+                    # 计划执行完成，构建最终回复
+                    completed = event.get("completed_steps", 0)
+                    total = event.get("total_steps", len(steps))
+                    final_status = event.get("status", "completed")
+
+                    if final_status == "completed":
+                        reply_text = f"执行完成！共 {total} 步，成功 {completed} 步。\n\n{summary}"
+                    elif final_status == "cancelled":
+                        reply_text = f"执行已取消。已完成 {completed}/{total} 步。"
+                    else:
+                        reply_text = f"执行异常。已完成 {completed}/{total} 步。"
+
+                    yield {"type": "reply", "content": reply_text}
+                    yield event  # plan_done
+
+                    # 持久化
+                    state.add_message("assistant", reply_text)
+                    self.sessions.persist_session(state)
+
+                    # 提取偏好
+                    if state.project_id:
+                        try:
+                            new_prefs = await extract_preferences_from_messages(state.history[-10:])
+                            if new_prefs:
+                                memory = get_project_memory(state.project_id)
+                                for k, v in new_prefs.items():
+                                    memory.set_preference(k, v)
+                        except Exception:
+                            pass
+
+                    yield {"type": "done", "status": "completed", "session_id": state.session_id}
+                    return
+                else:
+                    yield event
+
+        except asyncio.CancelledError:
+            logger.info("[PlanStream] 客户端断连")
+            state.metadata["_plan_cancelled"] = True
+            yield {"type": "done", "status": "cancelled", "session_id": state.session_id}
+
+        except Exception as e:
+            logger.error(f"[PlanStream] 失败: {e}", exc_info=True)
+            yield {"type": "error", "message": str(e), "session_id": state.session_id}
+
     async def _taor_loop(self, state: DialogState, user_input: str):
         """
         TAOR 主循环: Think → Act → Observe → Repeat
@@ -1097,6 +1289,7 @@ class ReActAgent:
         has_temp_asset = False
         all_tool_results = []  # 收集所有轮次的工具结果
         kv_session_id = None  # KV Cache session_id，跨迭代复用
+        _supplemented_tools: set = set()  # 已动态补充参数描述的工具
 
         for iteration in range(self.MAX_ITERATIONS):
             logger.info(f"[ReAct] 第{iteration+1}轮循环")
@@ -1189,6 +1382,16 @@ class ReActAgent:
             messages.append({"role": "user", "content": observation})
             logger.info(f"[ReAct] 观察: {observation[:300]}")
 
+            # 动态补充非核心工具的完整参数描述
+            for tc in tool_calls:
+                tname = tc["name"]
+                if tname not in registry.CORE_TOOLS and tname not in _supplemented_tools:
+                    full_desc = registry.get_tool_full_description(tname)
+                    if full_desc:
+                        messages.append({"role": "system", "content":
+                            f"[工具参数补充] {tname} 的完整参数：\n\n{full_desc}"})
+                        _supplemented_tools.add(tname)
+
         # 超过最大循环次数
         reply = "" if has_temp_asset else (response_text if response_text else "处理超时，请简化您的问题后重试。")
         return reply, self._build_tool_summary(all_tool_results)
@@ -1197,7 +1400,29 @@ class ReActAgent:
         """构建发送给 LLM 的消息列表"""
         # 按模式过滤工具
         mode = getattr(state, 'mode', 'video')
-        tools_desc = registry.get_tools_description_by_category(mode)
+        active_ext = state.metadata.get("active_extensions") if hasattr(state, 'metadata') else None
+
+        # 根据是否有激活的扩展，选择工具描述策略
+        if active_ext and len(active_ext) > 0:
+            # @ 模板模式：只注入模板所需的工具
+            tool_names = set()
+            for ext_name in active_ext:
+                try:
+                    from src.agent.extension_loader import get_extension_tools
+                    tool_names |= get_extension_tools(ext_name)
+                except Exception:
+                    pass
+            # 合并运行时用户自定义的额外工具
+            runtime_tools = state.metadata.get("pipeline_required_tools", [])
+            if runtime_tools:
+                tool_names |= set(runtime_tools)
+            if tool_names:
+                tools_desc = registry.get_tools_description_filtered(tool_names)
+            else:
+                tools_desc = registry.get_tools_description_by_category(mode)
+        else:
+            # 普通对话模式：核心工具完整描述 + 其他工具仅名称
+            tools_desc = registry.get_tools_description_condensed(mode)
         project_name = ""
         if state.project_id:
             try:
@@ -1231,10 +1456,11 @@ class ReActAgent:
             except Exception:
                 pass
 
-        # 注入扩展提示词（按 mode 过滤）
+        # 注入扩展提示词（system 级常驻 + 按需激活的 user 级）
         try:
             from src.agent.extension_loader import get_extensions_prompt_section
-            ext_section = get_extensions_prompt_section(current_mode=mode)
+            active_ext = state.metadata.get("active_extensions") if hasattr(state, 'metadata') else None
+            ext_section = get_extensions_prompt_section(current_mode=mode, active_extensions=active_ext)
             if ext_section:
                 system_prompt += f"\n\n{ext_section}"
         except Exception:

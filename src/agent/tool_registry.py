@@ -665,6 +665,82 @@ class ToolRegistry:
                 )
         return "\n".join(descriptions)
 
+    # 核心工具：普通对话首轮始终给完整描述
+    CORE_TOOLS = frozenset([
+        "list_videos", "get_video_description", "cut_video", "merge_videos",
+        "generate_tts", "add_subtitle", "transcribe_video", "add_audio",
+        "search_material", "download_video", "analyze_video", "analyze_video_vl",
+        "smart_clip", "get_current_time", "get_video_detail", "help",
+    ])
+
+    def get_tools_description_filtered(self, tool_names: set) -> str:
+        """只注入指定工具的完整描述（@ 模板模式使用）"""
+        descriptions = []
+        for name in tool_names:
+            tool = self._tools.get(name)
+            if tool:
+                params_str = ", ".join(tool.parameters.keys())
+                descriptions.append(
+                    f"- {tool.name}: {tool.description}\n"
+                    f"  参数: {params_str}"
+                )
+        return "\n".join(descriptions)
+
+    def get_tools_description_condensed(self, mode: str = "video") -> str:
+        """两阶段工具描述：核心工具给完整描述，其余只给名称+简述（普通对话模式使用）"""
+        core_lines = []
+        condensed_lines = []
+        for tool in self._tools.values():
+            if tool.category != "common" and tool.category != mode:
+                continue
+            if tool.name in self.CORE_TOOLS:
+                params_str = ", ".join(tool.parameters.keys())
+                core_lines.append(
+                    f"- {tool.name}: {tool.description}\n"
+                    f"  参数: {params_str}"
+                )
+            else:
+                condensed_lines.append(f"- {tool.name}: {tool.description}")
+
+        condensed_section = ""
+        if condensed_lines:
+            condensed_section = (
+                "\n\n## 其他可用工具（仅名称，如需使用请直接调用，系统会自动补全参数）\n\n"
+                + "\n".join(condensed_lines)
+            )
+        return "\n".join(core_lines) + condensed_section
+
+    def get_tool_full_description(self, tool_name: str) -> Optional[str]:
+        """返回单个工具的完整描述（含参数详情），用于 TAOR 循环动态补充"""
+        tool = self._tools.get(tool_name)
+        if not tool:
+            return None
+        lines = [f"- {tool.name}: {tool.description}"]
+        if tool.parameters:
+            lines.append("  参数:")
+            for pname, pinfo in tool.parameters.items():
+                if isinstance(pinfo, dict):
+                    ptype = pinfo.get("type", "any")
+                    pdesc = pinfo.get("description", "")
+                    lines.append(f"    - {pname} ({ptype}): {pdesc}")
+                else:
+                    lines.append(f"    - {pname}")
+        return "\n".join(lines)
+
+    def list_tools_structured(self) -> Dict[str, List[Dict]]:
+        """返回按 category 分组的工具列表（前端工具选择 UI 使用）"""
+        result: Dict[str, List[Dict]] = {}
+        for tool in self._tools.values():
+            cat = tool.category
+            if cat not in result:
+                result[cat] = []
+            result[cat].append({
+                "name": tool.name,
+                "description": tool.description,
+                "permission": tool.permission,
+            })
+        return result
+
     def has_tool(self, name: str) -> bool:
         """检查工具是否存在"""
         return name in self._tools
@@ -1376,6 +1452,20 @@ async def tool_analyze_video(
         }
 
 
+def _try_add_duration(result_dict, file_path):
+    """尝试获取音频/视频文件时长并添加到返回结果中"""
+    if not file_path or not os.path.isfile(file_path):
+        return
+    try:
+        from src.application.services.ffmpeg_adapter import _get_duration
+        dur = _get_duration(file_path)
+        if dur > 0:
+            result_dict["duration"] = dur
+            result_dict["duration_hms"] = f"{int(dur // 3600):02d}:{int(dur % 3600 // 60):02d}:{int(dur % 60):02d}"
+    except Exception:
+        pass
+
+
 @registry.register(
     name="generate_tts",
     description="文本转语音，生成配音。不需要先查询音色列表，系统会自动使用默认音色。仅在需要指定特定音色时才传 speaker_id",
@@ -1425,14 +1515,18 @@ async def tool_generate_tts(
                 message="语音生成完成",
             )
             if save_result.get("is_temp_asset"):
+                # 补充音频时长
+                _try_add_duration(save_result, local_path)
                 return save_result
 
-        return {
+        ret = {
             "success": True,
             "web_path": result.get("web_path"),
             "local_path": result.get("local_path"),
             "message": "语音生成完成",
         }
+        _try_add_duration(ret, local_path)
+        return ret
 
     except Exception as e:
         logger.error(f"语音生成失败: {e}")
@@ -7725,3 +7819,107 @@ async def tool_create_directory(
         return {"success": True, "path": str(target), "message": f"目录已创建: {target}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ========== 新闻查询工具 ==========
+
+class FetchNewsParams(BaseModel):
+    query: str = Field(..., description="搜索关键词")
+    count: int = Field(default=5, description="返回数量", ge=1, le=20)
+
+
+@registry.register(
+    name="fetch_news",
+    description="查询新闻资讯，获取最新新闻标题和摘要，用于制作新闻视频",
+    parameters={
+        "query": {"type": "string", "description": "新闻搜索关键词"},
+        "count": {"type": "integer", "description": "返回新闻条数（1-20，默认5）"},
+    },
+    examples=["查询今天的科技新闻", "搜索最近的国际新闻"],
+    param_model=FetchNewsParams,
+    permission="read_only",
+    category="common",
+)
+async def tool_fetch_news(
+    query: str,
+    count: int = 5,
+    **kwargs
+) -> Dict[str, Any]:
+    """新闻查询工具 - 调用外部新闻 API"""
+    import httpx
+
+    try:
+        news_api_key = getattr(config, 'NEWS_API_KEY', '') or os.environ.get('NEWS_API_KEY', '')
+        base_url = getattr(config, 'NEWS_API_BASE_URL', '') or os.environ.get('NEWS_API_BASE_URL', 'https://newsapi.org/v2')
+
+        tian_api_key = getattr(config, 'TIAN_API_KEY', '') or os.environ.get('TIAN_API_KEY', '')
+
+        # 天行数据 API（国内友好）
+        if tian_api_key:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    'http://api.tianapi.com/generalnews/index',
+                    params={'key': tian_api_key, 'word': query, 'num': count}
+                )
+                data = resp.json()
+                if data.get('code') == 200:
+                    news_list = []
+                    for item in data.get('newslist', []):
+                        news_list.append({
+                            'title': item.get('title', ''),
+                            'description': item.get('description', ''),
+                            'content': item.get('description', ''),
+                            'source': item.get('source', ''),
+                            'url': item.get('url', ''),
+                            'pub_time': item.get('ctime', ''),
+                        })
+                    return {
+                        'success': True,
+                        'news': news_list,
+                        'count': len(news_list),
+                        'source': 'tianapi',
+                        'message': f"查到 {len(news_list)} 条相关新闻"
+                    }
+
+        # NewsAPI.org
+        if news_api_key:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    f'{base_url}/everything',
+                    params={
+                        'q': query,
+                        'language': 'zh',
+                        'pageSize': count,
+                        'sortBy': 'publishedAt',
+                        'apiKey': news_api_key,
+                    }
+                )
+                data = resp.json()
+                if data.get('status') == 'ok':
+                    news_list = []
+                    for item in data.get('articles', []):
+                        news_list.append({
+                            'title': item.get('title', ''),
+                            'description': item.get('description', ''),
+                            'content': item.get('content', ''),
+                            'source': item.get('source', {}).get('name', ''),
+                            'url': item.get('url', ''),
+                            'pub_time': item.get('publishedAt', ''),
+                        })
+                    return {
+                        'success': True,
+                        'news': news_list,
+                        'count': len(news_list),
+                        'source': 'newsapi',
+                        'message': f"查到 {len(news_list)} 条相关新闻"
+                    }
+
+        return {
+            'success': False,
+            'error': '未配置新闻 API Key。请在设置页或 .env 中配置 TIAN_API_KEY（天行数据）或 NEWS_API_KEY（NewsAPI）',
+            'news': [],
+        }
+
+    except Exception as e:
+        logger.error(f"新闻查询失败: {e}")
+        return {"success": False, "error": f"新闻查询失败: {str(e)}", "news": []}

@@ -52,6 +52,14 @@ class DeepResearchRequest(BaseModel):
     context: Optional[Dict[str, Any]] = None
 
 
+class PlanConfirmRequest(BaseModel):
+    """计划确认请求"""
+    session_id: str
+    plan_id: str
+    action: str = "confirm"  # "confirm" | "cancel"
+    step_id: Optional[str] = None  # 确认单个破坏性步骤时使用
+
+
 # ==================== 对话接口 ====================
 
 @router.post("/chat", summary="处理对话消息")
@@ -142,6 +150,67 @@ async def deep_research(request: DeepResearchRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+
+
+# ==================== 计划模式接口（Plan Confirmation Mode）====================
+
+@router.post("/plan/stream", summary="计划模式流式对话")
+async def plan_stream(request: ChatRequest):
+    """
+    计划模式：一次 LLM 调用生成执行计划 → 用户确认 → 按序执行工具。
+
+    SSE 事件类型: session, thinking, plan, plan_step_start, plan_step_result,
+                 plan_step_confirm, plan_done, reply, done, error
+    """
+    async def event_generator():
+        try:
+            agent = get_react_agent()
+            async for event in agent.process_plan_stream(
+                session_id=request.session_id,
+                user_input=request.message,
+                context=request.context,
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"计划模式 SSE 失败: {e}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'message': '处理请求时发生错误，请稍后重试'}, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.post("/plan/confirm", summary="确认或取消计划")
+async def confirm_plan(request: PlanConfirmRequest):
+    """
+    确认或取消待执行的计划/步骤。
+
+    action: "confirm" 确认整个计划, "cancel" 取消计划,
+            "confirm_step" 确认单个破坏性步骤（需提供 step_id）
+    """
+    from src.agent.session_manager import get_session_manager
+    from src.agent.plan_executor import PlanExecutor
+
+    manager = get_session_manager()
+    state = manager.get_session(request.session_id)
+    if not state:
+        return error_response(error="NotFound", message="会话不存在", code=404)
+
+    if request.action == "confirm":
+        state.metadata["_plan_confirmed"] = True
+        state.metadata["_plan_cancelled"] = False
+    elif request.action == "cancel":
+        state.metadata["_plan_cancelled"] = True
+        state.metadata["_plan_confirmed"] = False
+    elif request.action == "confirm_step" and request.step_id:
+        PlanExecutor.confirm_step(state, request.step_id)
+
+    manager.persist_session(state)
+    return success_response(message="操作成功")
 
 
 # ==================== 方案模式接口 ====================
@@ -279,14 +348,24 @@ async def analyze_video(video_id: int):
 # ==================== 工具列表接口 ====================
 
 @router.get("/tools", summary="获取可用工具列表")
-async def list_tools():
+async def list_tools(grouped: bool = False):
     """
     获取所有可用工具
+
+    Args:
+        grouped: 是否按 category 分组返回
 
     Returns:
         工具列表
     """
     from src.agent.tool_registry import registry
+
+    if grouped:
+        data = registry.list_tools_structured()
+        return success_response(data={
+            "tools_by_category": data,
+            "count": sum(len(v) for v in data.values()),
+        })
 
     tools = []
     for tool in registry.list_tools():
@@ -458,3 +537,178 @@ async def batch_execute(request: BatchExecuteRequest):
         "total": len(request.tasks),
         "success_count": success_count,
     })
+
+
+# ==================== 流水线模板 ====================
+
+@router.get("/pipelines", summary="获取流水线模板列表")
+async def list_pipelines(mode: str = "video"):
+    """
+    获取所有可用的流水线模板。
+
+    Args:
+        mode: 过滤模式（video/comic）
+
+    Returns:
+        模板列表
+    """
+    from src.agent.extension_loader import list_pipelines as _list_pipelines
+    pipelines = _list_pipelines(mode)
+
+    # 也加载项目级个人模板（如果传了 project_id 则包含个人模板）
+    return success_response(data={
+        "pipelines": pipelines,
+        "count": len(pipelines),
+    })
+
+
+class PipelineExecuteRequest(BaseModel):
+    """流水线执行请求"""
+    session_id: Optional[str] = None
+    project_id: Optional[int] = None
+    pipeline_name: str
+    params: Dict[str, Any] = {}  # 用户填写的模板参数
+    required_tools: List[str] = []  # 用户自定义的额外工具
+
+
+@router.post("/pipelines/execute", summary="执行流水线模板（SSE）")
+async def execute_pipeline(request: PipelineExecuteRequest):
+    """
+    执行流水线模板，通过 SSE 流式推送进度。
+
+    事件类型: session, plan_start, plan_step_start, plan_step_result, plan_done
+    """
+    from src.agent.extension_loader import list_pipelines as _list_pipelines
+    from src.agent.pipeline_engine import PipelineEngine
+    from src.agent.plan_executor import PlanExecutor
+    from src.agent.react_agent import get_react_agent
+    from src.agent.session_manager import get_session_manager
+
+    # 查找模板
+    pipelines = _list_pipelines("video") + _list_pipelines("comic")
+    template = None
+    for p in pipelines:
+        if p["name"] == request.pipeline_name:
+            template = p
+            break
+
+    if not template:
+        return error_response(error="NotFound", message=f"流水线模板不存在: {request.pipeline_name}", code=404)
+
+    # 生成计划
+    engine = PipelineEngine()
+    try:
+        plan_data = engine.template_to_plan(template, request.params)
+    except ValueError as e:
+        return error_response(error="ValidationError", message=str(e), code=400)
+
+    # 解析/创建会话
+    agent = get_react_agent()
+    manager = get_session_manager()
+    state = manager.get_session(request.session_id) if request.session_id else None
+    if not state:
+        state = manager.create_session(project_id=request.project_id)
+
+    if request.project_id:
+        state.project_id = request.project_id
+
+    # 注入用户自定义的额外工具到会话元数据
+    if request.required_tools:
+        state.metadata["pipeline_required_tools"] = request.required_tools
+
+    async def event_generator():
+        try:
+            yield f"data: {json.dumps({'type': 'session', 'session_id': state.session_id}, ensure_ascii=False)}\n\n"
+
+            executor = PlanExecutor(agent)
+            plan_steps = [
+                PlanStep(
+                    id=s["id"],
+                    tool=s["tool"],
+                    params=s["params"],
+                    description=s["description"],
+                    risk=s.get("risk", "safe"),
+                    estimated_time=s.get("estimated_time"),
+                )
+                for s in plan_data["steps"]
+            ]
+
+            async for event in executor.execute_plan_stream(plan_steps, state):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"流水线执行失败: {e}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+# ==================== 个人风格模板 ====================
+
+class SaveTemplateRequest(BaseModel):
+    """保存个人模板请求"""
+    project_id: int
+    name: str
+    description: str = ""
+    icon: str = "🎨"
+    steps: List[Dict[str, Any]] = []
+    user_params: List[Dict[str, Any]] = []
+
+
+@router.post("/pipelines/save-template", summary="保存个人风格模板")
+async def save_template(request: SaveTemplateRequest):
+    """将执行过的计划保存为个人风格模板"""
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.video_project import VideoProject
+
+    with get_db_context() as db:
+        project = db.query(VideoProject).filter(VideoProject.id == request.project_id).first()
+        if not project:
+            return error_response(error="NotFound", message="项目不存在", code=404)
+
+        templates = project.metadata_.get("personal_templates", []) if project.metadata_ else []
+        template = {
+            "name": f"personal_{request.name}",
+            "description": request.description or request.name,
+            "version": "1.0.0",
+            "icon": request.icon,
+            "category": "personal",
+            "mode": "all",
+            "enabled": True,
+            "pipeline": {
+                "icon": request.icon,
+                "category": "personal",
+                "user_params": request.user_params,
+                "steps": request.steps,
+            },
+            "created_at": __import__("time").time(),
+        }
+        templates.append(template)
+        if not project.metadata_:
+            project.metadata_ = {}
+        project.metadata_["personal_templates"] = templates
+        db.commit()
+
+    return success_response(data=template, message="模板已保存")
+
+
+@router.get("/pipelines/personal", summary="获取个人风格模板")
+async def list_personal_templates(project_id: int):
+    """获取项目级个人风格模板"""
+    from src.infrastructure.db.session import get_db_context
+    from src.domain.entities.video_project import VideoProject
+
+    with get_db_context() as db:
+        project = db.query(VideoProject).filter(VideoProject.id == project_id).first()
+        if not project:
+            return error_response(error="NotFound", message="项目不存在", code=404)
+
+        templates = project.metadata_.get("personal_templates", []) if project.metadata_ else []
+
+    return success_response(data={"pipelines": templates, "count": len(templates)})

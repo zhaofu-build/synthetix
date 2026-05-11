@@ -1,0 +1,66 @@
+{
+  "name": "social_export",
+  "version": "1.0.0",
+  "description": "导出社交媒体格式视频（抖音/小红书/视频号），自动适配竖屏+压缩",
+  "entry": "",
+  "system_prompt": "",
+  "enabled": false,
+  "mode": "video",
+  "pipeline": {
+    "icon": "📱",
+    "category": "export",
+    "required_tools": ["get_video_detail"],
+    "user_params": [
+      {
+        "key": "video_index",
+        "label": "视频序号（1开始）",
+        "type": "number",
+        "default": 1,
+        "required": true
+      },
+      {
+        "key": "platform",
+        "label": "目标平台",
+        "type": "select",
+        "options": [
+          "douyin",
+          "xiaohongshu",
+          "weishi"
+        ],
+        "default": "douyin",
+        "required": true
+      }
+    ],
+    "steps": [
+      {
+        "id": "step_0",
+        "tool": "list_videos",
+        "params": {},
+        "description": "列出项目素材",
+        "estimated_time": 1
+      },
+      {
+        "id": "step_1",
+        "tool": "crop_video",
+        "params": {
+          "video_id": "{{video_index}}",
+          "width": 1080,
+          "height": 1920
+        },
+        "description": "裁剪为9:16竖屏",
+        "risk": "needs_confirm",
+        "estimated_time": 15
+      },
+      {
+        "id": "step_2",
+        "tool": "compress_video",
+        "params": {
+          "video_id": "$step1.video_id",
+          "quality": "medium"
+        },
+        "description": "压缩适配平台大小限制",
+        "estimated_time": 30
+      }
+    ]
+  }
+}

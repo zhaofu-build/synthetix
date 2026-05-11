@@ -664,17 +664,33 @@ def get_audio(video_path, output_path):
 
 
 # # 添加音频
+def _get_duration(file_path):
+    """获取媒体文件时长（秒），兼容视频和音频"""
+    try:
+        cmd = [
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            str(file_path)
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                encoding='utf-8', errors='replace')
+        return float(result.stdout.strip())
+    except Exception:
+        return 0.0
+
+
 def add_audio_to_video(video_path, audio_path, output_path):
     command = [
         '-y',
-        '-i', video_path,  # 输入视频文件
-        '-i', audio_path,  # 输入音频文件
-        '-c:v', 'copy',  # 复制视频流，不重新编码
-        '-c:a', 'aac',  # 使用AAC编码器编码音频
-        '-map', '0:v:0',  # 映射第一个输入的第一个视频流
-        '-map', '1:a:0',  # 映射第二个输入的第一个音频流
-        '-shortest',  # 使输出文件长度与最短的输入文件相同
-        output_path  # 输出文件
+        '-i', video_path,
+        '-i', audio_path,
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-map', '0:v:0',
+        '-map', '1:a:0',
+        '-shortest',
+        output_path
     ]
     run_ffmpeg_cmd(command)
     return output_path

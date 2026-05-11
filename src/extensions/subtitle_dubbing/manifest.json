@@ -1,0 +1,24 @@
+{
+  "name": "subtitle_dubbing",
+  "version": "1.0.0",
+  "description": "提取视频字幕并生成配音，一键完成字幕配音工作流",
+  "entry": "",
+  "system_prompt": "",
+  "enabled": true,
+  "mode": "video",
+  "pipeline": {
+    "icon": "🎬",
+    "category": "audio",
+    "required_tools": ["get_video_detail"],
+    "user_params": [
+      {"key": "video_index", "label": "视频序号（1开始）", "type": "number", "default": 1, "required": true},
+      {"key": "language", "label": "语言", "type": "select", "options": ["zh", "en", "ja"], "default": "zh", "required": false}
+    ],
+    "steps": [
+      {"id": "step_0", "tool": "list_videos", "params": {}, "description": "列出项目素材", "estimated_time": 1},
+      {"id": "step_1", "tool": "transcribe_video", "params": {"video_id": "{{video_index}}", "language": "{{language}}"}, "description": "提取视频字幕", "estimated_time": 60},
+      {"id": "step_2", "tool": "generate_tts", "params": {"text": "$step1.result.subtitle", "language": "{{language}}"}, "description": "根据字幕生成配音", "estimated_time": 30},
+      {"id": "step_3", "tool": "add_audio", "params": {"video_id": "{{video_index}}", "audio_path": "$step2.output_path"}, "description": "将配音混入视频", "risk": "needs_confirm", "estimated_time": 15}
+    ]
+  }
+}

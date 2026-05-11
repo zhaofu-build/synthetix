@@ -1,0 +1,130 @@
+{
+  "name": "news_video",
+  "version": "1.0.0",
+  "description": "根据新闻主题自动制作新闻播报视频：查询新闻→生成文案→语音合成→匹配素材→剪切合并→烧录字幕",
+  "entry": "",
+  "system_prompt": "新闻视频制作流程：根据用户给定的主题，自动完成新闻播报视频制作。\n\n## 标准执行流程（严格按此顺序）\n\n### 阶段1：获取新闻与生成文案\n1. 调用 fetch_news 查询相关新闻（query=用户主题）\n2. 如果用户提供了文案（script），直接使用\n3. 如果用户没有提供文案，根据新闻内容生成一段新闻播报文案：\n   - 开头：简短引言（\"观众朋友们，今天我们来关注...\"）\n   - 主体：2-3条新闻要点，每条包含核心事实\n   - 结尾：总结或展望\n   - 总字数控制在 200-500 字（对应约 1-3 分钟语音）\n\n### 阶段2：生成语音\n4. 调用 generate_tts 将文案转为语音\n5. **关键**：记住返回结果中的 duration（秒）和 local_path\n\n### 阶段3：准备素材\n6. 调用 list_videos 检查项目已有素材\n7. 如果素材不够，调用 search_material 搜索下载匹配主题的视频素材\n\n### 阶段4：剪切与合并（总时长必须等于语音时长）\n8. 调用 get_video_detail 获取素材时长信息\n9. 根据语音的 duration，将素材剪切成多段：\n   - 每段 3-8 秒\n   - **所有片段时长之和 = 语音时长（duration 字段）**\n   - 例如语音 33 秒 → 剪切 6 段各 5.5 秒，或 5 段（2段6s + 3段7s）\n   - 确保总时长不小于语音时长\n10. 调用 cut_video 逐段剪切（可批量调用）\n11. 调用 merge_videos 合并所有片段\n\n### 阶段5：合成音视频\n12. 调用 mix_audio_to_video 将语音混入合并后的视频\n    - tts_path 参数传 generate_tts 返回的 local_path 或 web_path\n\n### 阶段6：添加字幕\n13. 调用 transcribe_video 对合成后的视频提取 SRT 字幕\n14. 调用 add_subtitle 烧录字幕，参数要求：\n    - subtitle_content: 必须传 transcribe_video 返回的 **subtitle 字段的完整 SRT 文本内容**\n      ⚠️ 绝不能传文件路径！必须是 SRT 格式的文本（以序号 1 开头的多行文本）\n    - fontname: \"SimHei\"\n    - fontsize: 22\n    - fontcolor: \"&Hffffff\"\n    - fontbordercolor: \"&H000000\"\n    - bold: true\n    - outline_width: 2\n    - alignment: 2\n\n## 关键约束\n\n- **剪切素材的总时长必须等于 generate_tts 返回的 duration**，不能短也不能长\n- 字幕必须传 SRT 文本内容，不要传文件路径\n- 剪切时保留画面最有意义的部分（人脸、文字、动作场景）\n\n## 错误处理\n\n- 新闻查询失败：提示用户检查 API Key 配置\n- 素材不足：增加搜索关键词，或提示用户上传素材\n- 语音生成失败：检查 TTS 服务是否正常",
+  "enabled": true,
+  "mode": "video",
+  "level": "user",
+  "pipeline": {
+    "icon": "📰",
+    "category": "clip",
+    "required_tools": ["get_video_detail", "compress_video"],
+    "user_params": [
+      {
+        "key": "topic",
+        "label": "新闻主题",
+        "type": "text",
+        "default": "",
+        "required": true
+      },
+      {
+        "key": "script",
+        "label": "预设文案（留空则根据新闻自动生成）",
+        "type": "text",
+        "default": "",
+        "required": false
+      },
+      {
+        "key": "language",
+        "label": "语言",
+        "type": "select",
+        "default": "zh",
+        "required": false,
+        "options": [
+          "zh",
+          "en"
+        ]
+      },
+      {
+        "key": "voice_style",
+        "label": "播报风格",
+        "type": "select",
+        "default": "formal",
+        "required": false,
+        "options": [
+          "formal",
+          "casual"
+        ]
+      }
+    ],
+    "steps": [
+      {
+        "id": "step_0",
+        "tool": "fetch_news",
+        "params": {
+          "query": "{{topic}}",
+          "count": 5
+        },
+        "description": "查询相关新闻",
+        "estimated_time": 10
+      },
+      {
+        "id": "step_1",
+        "tool": "generate_tts",
+        "params": {
+          "text": "{{script}}"
+        },
+        "description": "文案生成语音",
+        "estimated_time": 30
+      },
+      {
+        "id": "step_2",
+        "tool": "list_videos",
+        "params": {},
+        "description": "检查项目已有素材",
+        "estimated_time": 1
+      },
+      {
+        "id": "step_3",
+        "tool": "search_material",
+        "params": {
+          "keywords": "{{topic}}"
+        },
+        "description": "搜索下载匹配的视频素材",
+        "risk": "needs_confirm",
+        "estimated_time": 60
+      },
+      {
+        "id": "step_4",
+        "tool": "cut_video",
+        "params": {},
+        "description": "按语音时长剪切素材片段",
+        "risk": "needs_confirm",
+        "estimated_time": 15
+      },
+      {
+        "id": "step_5",
+        "tool": "merge_videos",
+        "params": {},
+        "description": "合并视频片段",
+        "risk": "needs_confirm",
+        "estimated_time": 15
+      },
+      {
+        "id": "step_6",
+        "tool": "mix_audio_to_video",
+        "params": {},
+        "description": "视频合成语音",
+        "risk": "needs_confirm",
+        "estimated_time": 15
+      },
+      {
+        "id": "step_7",
+        "tool": "transcribe_video",
+        "params": {},
+        "description": "提取字幕",
+        "estimated_time": 30
+      },
+      {
+        "id": "step_8",
+        "tool": "add_subtitle",
+        "params": {},
+        "description": "烧录新闻风格字幕",
+        "risk": "needs_confirm",
+        "estimated_time": 20
+      }
+    ]
+  }
+}

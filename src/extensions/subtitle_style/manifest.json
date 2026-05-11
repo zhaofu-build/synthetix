@@ -4,6 +4,6 @@
   "description": "字幕样式增强扩展：提供预设字幕风格模板（综艺、新闻、电影等），优化字幕生成效果",
   "entry": "extensions.subtitle_style.main",
   "system_prompt": "字幕样式增强已启用。你可以使用 subtitle_style_preset 工具获取字幕预设风格参数，然后在调用 add_subtitle 时直接使用对应参数。支持的预设风格：variety（综艺）、news（新闻）、movie（电影）、social（社交媒体）、default（默认）。建议在 add_subtitle 时总是指定合适的字体大小、颜色和描边参数，确保字幕清晰可读。",
-  "enabled": true,
+  "enabled": false,
   "mode": "all"
 }

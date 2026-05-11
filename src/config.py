@@ -62,6 +62,10 @@ video_api_keys = os.getenv('VIDEO_API_KEYS', '')
 pixabay_api_key = os.getenv('PIXABAY_API_KEY', '')
 coverr_api_key = os.getenv('COVERR_API_KEY', '')
 
+# 新闻API配置
+TIAN_API_KEY = os.getenv('TIAN_API_KEY', '')
+NEWS_API_KEY = os.getenv('NEWS_API_KEY', '')
+
 # CORS配置 - 允许的来源，逗号分隔
 cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:9528,http://127.0.0.1:9528,http://localhost:9527,http://127.0.0.1:9527').split(',')
 
@@ -90,6 +94,8 @@ _CONFIG_KEY_MAP = {
     "video_api_keys": "video_api_keys",
     "pixabay_api_key": "pixabay_api_key",
     "coverr_api_key": "coverr_api_key",
+    "tian_api_key": "TIAN_API_KEY",
+    "news_api_key": "NEWS_API_KEY",
 }
 
 

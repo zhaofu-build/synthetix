@@ -28,6 +28,8 @@ class Extension:
     enabled: bool = True
     tools_registered: bool = False
     mode: str = "all"  # video / comic / all
+    level: str = "user"  # system / user（系统级不可编辑/禁用/删除）
+    pipeline: dict = None  # 流水线模板定义（Phase 2）
 
 
 _extensions: Dict[str, Extension] = {}
@@ -60,6 +62,8 @@ def load_extensions() -> List[Extension]:
                 system_prompt=data.get("system_prompt", ""),
                 enabled=data.get("enabled", True),
                 mode=data.get("mode", "all"),
+                level=data.get("level", "user"),
+                pipeline=data.get("pipeline"),
             )
             _extensions[ext.name] = ext
             logger.info(f"加载扩展: {ext.name} v{ext.version}")
@@ -88,15 +92,25 @@ def register_extension_tools():
             logger.warning(f"扩展 {ext.name} 工具注册失败: {e}")
 
 
-def get_extensions_prompt_section(current_mode: str = "video") -> str:
-    """生成扩展注入的提示词段落，按 mode 过滤"""
+def get_extensions_prompt_section(current_mode: str = "video", active_extensions: list = None) -> str:
+    """生成扩展注入的提示词段落。
+
+    - level="system" 的扩展始终注入（常驻）
+    - level="user" 的扩展仅在 active_extensions 列表中时注入（按需）
+    - 按 mode 过滤
+    """
     if not _extensions:
         load_extensions()
+    active_set = set(active_extensions or [])
     parts = []
     for ext in _extensions.values():
-        if ext.enabled and ext.system_prompt:
-            if ext.mode == "all" or ext.mode == current_mode:
-                parts.append(f"### 扩展: {ext.name}\n{ext.system_prompt}")
+        if not ext.enabled or not ext.system_prompt:
+            continue
+        if ext.mode != "all" and ext.mode != current_mode:
+            continue
+        # system 级常驻注入，user 级按需注入
+        if ext.level == "system" or ext.name in active_set:
+            parts.append(f"### 扩展: {ext.name}\n{ext.system_prompt}")
     return "\n\n".join(parts) if parts else ""
 
 
@@ -106,15 +120,38 @@ def list_extensions() -> List[Dict[str, Any]]:
         load_extensions()
     return [
         {"name": e.name, "version": e.version, "description": e.description,
-         "enabled": e.enabled, "system_prompt": e.system_prompt, "mode": e.mode}
+         "enabled": e.enabled, "system_prompt": e.system_prompt, "mode": e.mode,
+         "level": e.level}
         for e in _extensions.values()
     ]
+
+
+def get_extension_tools(extension_name: str) -> set:
+    """获取扩展所需的工具名称集合（从 pipeline.steps 和 required_tools 提取）"""
+    if not _extensions:
+        load_extensions()
+    ext = _extensions.get(extension_name)
+    if not ext or not ext.pipeline:
+        return set()
+    tools = set()
+    # 从 pipeline.steps 提取工具名
+    for step in ext.pipeline.get("steps", []):
+        tool_name = step.get("tool")
+        if tool_name:
+            tools.add(tool_name)
+    # 从 required_tools 提取（显式声明）
+    for name in ext.pipeline.get("required_tools", []):
+        tools.add(name)
+    return tools
 
 
 def toggle_extension(name: str, enabled: bool) -> bool:
     """启用/禁用扩展（持久化到 manifest.json）"""
     ext = _extensions.get(name)
     if not ext:
+        return False
+    if ext.level == "system":
+        logger.warning(f"系统级扩展 {name} 不可切换状态")
         return False
     ext.enabled = enabled
     # 写回 manifest.json
@@ -171,6 +208,9 @@ def update_extension(name: str, description: str = None, system_prompt: str = No
     ext = _extensions.get(name)
     if not ext:
         return False
+    if ext.level == "system":
+        logger.warning(f"系统级扩展 {name} 不可编辑")
+        return False
 
     if description is not None:
         ext.description = description
@@ -204,6 +244,9 @@ def delete_extension(name: str) -> bool:
     ext = _extensions.get(name)
     if not ext:
         return False
+    if ext.level == "system":
+        logger.warning(f"系统级扩展 {name} 不可删除")
+        return False
 
     ext_dir = EXTENSIONS_DIR / name
     if ext_dir.is_dir():
@@ -212,3 +255,21 @@ def delete_extension(name: str) -> bool:
     del _extensions[name]
     logger.info(f"删除扩展: {name}")
     return True
+
+
+def list_pipelines(current_mode: str = "video") -> List[Dict[str, Any]]:
+    """列出所有启用的流水线模板，按 mode 过滤"""
+    if not _extensions:
+        load_extensions()
+    pipelines = []
+    for ext in _extensions.values():
+        if ext.enabled and ext.pipeline:
+            if ext.mode == "all" or ext.mode == current_mode:
+                pipelines.append({
+                    "name": ext.name,
+                    "description": ext.description,
+                    "version": ext.version,
+                    "mode": ext.mode,
+                    **ext.pipeline,
+                })
+    return pipelines

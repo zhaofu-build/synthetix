@@ -72,7 +72,7 @@ src/
 │
 ├── scripts/                      # 工具脚本（migrate_imports, update_imports）
 │
-├── domain/entities/              # SQLAlchemy 实体
+├── domain/entities/              # SQLAlchemy 实体（12 个：VideoSource, AudioSource, VideoProject, ClipPlanItem, BGMItem, DialogSession, ComicProject, ComicSeries, ProjectTempFile, VideoShot, ConfigStore）
 ├── application/services/         # 业务服务
 ├── interfaces/api/               # FastAPI 路由
 ├── shared/                       # 常量、模型、工具函数
@@ -86,7 +86,7 @@ synthetix-tauri/                  # Tauri 2.0 桌面应用（Rust）
 ├── icons/                        # 应用图标
 └── binaries/                     # sidecar 放置目录（PyInstaller 输出）
 
-config/                           # 分层配置（default.json + settings.json）
+config/                           # 分层配置（default.json + DB config_store 表）
 ```
 
 ## 核心约定
@@ -158,6 +158,12 @@ FastAPI 静态路由必须在动态路由（`/{id}`）之前定义，否则 `"bg
 3. 扩展提示词（`extension_loader.py` 加载的扩展声明）
 4. MCP 外部工具描述（`mcp_client.py` 发现的远程工具）
 
+**工具描述两模式策略**（`_build_messages()` 中根据 `active_extensions` 选择）：
+- **@模板模式**：`get_tools_description_filtered(tool_names)` — 只注入扩展 pipeline 的 steps + `required_tools` 指定的工具（完整描述），其余省略
+- **普通对话模式**：`get_tools_description_condensed(mode)` — 16 个 `CORE_TOOLS` 给完整参数描述，其余只给名称+简述
+
+**动态工具补充**（TAOR 循环中）：普通对话模式下，当 LLM 调用了非核心工具时，自动追加 system 消息补充该工具的完整参数描述（`get_tool_full_description()`）。每个工具只补充一次，不修改 system prompt，保留 KV Cache。
+
 **三种处理模式**：
 - `process_message()` — 同步返回完整结果
 - `process_message_stream()` — SSE 流式，逐步 yield 事件（session/thinking/tool_start/tool_result/reply/done/error）
@@ -167,7 +173,7 @@ FastAPI 静态路由必须在动态路由（`/{id}`）之前定义，否则 `"bg
 - `build_system_prompt()` 使用字符串拼接（非 `.format()`），避免 `}` 冲突
 - `END_CALL = "<" + "/tool_call>"` 避免被当作 XML 或 format 占位符
 - `_strip_tool_call_hints()` 同时移除 `<think/thinking>` 深度思考块
-- 最大 5 轮循环，防止无限循环
+- 最大 10 轮循环，防止无限循环
 - `project_id` 自动注入工具参数
 - `last_video_list` 缓存视频列表供序数解析（"第一个" → index 0）
 - `select_model()` 根据消息复杂度选择快/慢模型（第 0 轮 + 短文本 + 无工具调用 → 快模型）
@@ -213,7 +219,7 @@ Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；
 **工具权限**：`read_only`（自动执行）→ `modify`（需确认）→ `destructive`（必须确认）。SSE 流式推送中 `tool_start` 事件包含 `permission` 字段。
 
 ### 已注册工具分类
-共 74+ 个工具，按类别：
+共 106+ 个工具（3 个 category: common 32, video 82, comic 10），按类别：
 
 - **基础视频操作**: cut_video, merge_videos, image_to_video, add_subtitle, change_speed, compress_video, split_video, convert_to_gif, convert_format
 - **音频处理**: add_audio, extract_audio, mix_audio_to_video, separate_vocal, normalize_audio, equalize_audio, fade_audio, add_echo, denoise_audio, pitch_shift, reverse_audio
@@ -241,6 +247,20 @@ Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；
 - 应用启动时自动加载（`lifespan()`），API 支持热重载
 - 技能（原 `src/skills/` 的 .md 文件）已迁移为扩展，统一由 `extension_loader.py` 管理
 
+**扩展分级**：
+- `level: "system"` — 常驻注入，不可编辑/禁用/删除（如 `auto_execute_rules`）
+- `level: "user"` — 按需注入，可通过 UI 编辑/禁用/删除
+
+**扩展模式**：`mode` 字段（`video` / `comic` / `all`）控制扩展在哪种编辑模式下激活。`get_extensions_prompt_section()` 按 mode 过滤。
+
+**流水线模板**：扩展可在 `manifest.json` 的 `pipeline` 字段定义流水线：
+- `user_params`：用户填写的参数（支持 text/number/select 类型，`{{param}}` 引用语法）
+- `steps`：工具执行步骤（`$stepN.field` 引用前序步骤结果）
+- `required_tools`：声明额外需要的工具（不在 steps 中但 system_prompt 引用的），`get_extension_tools()` 自动合并 steps + required_tools
+- `PipelineEngine` 解析模板 → `PlanExecutor` 执行（SSE 流式推送 `plan_step_start/result` 事件）
+- 前端 `PipelineGallery.vue` 提供模板浏览/参数填写/工具选择/执行 UI
+- 聊天输入框 `@pipeline_name` 触发直接执行（通过 `active_extensions` context）
+
 ### MCP 协议
 - `mcp_client.py` 管理外部 MCP Server 连接，通过 HTTP 发现和调用工具
 - 工具名格式：`server_name.tool_name`
@@ -250,6 +270,18 @@ Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；
 - `multi_agent.py` 提供 Planner → Executor → Reviewer 子 Agent 流水线
 - 子 Agent 复用 `tool_registry`，使用角色特定的系统提示词
 - `plan_clip` 和 `review_result` 工具可在主 Agent 的 TAOR 循环中触发子流程
+
+### 工具拦截器链
+全局拦截器（`src/agent/interceptors.py`）在每次工具调用前后执行，独立于单个工具的 `before_execute/after_execute` hook：
+- **Pre-interceptors**：`param_injection_interceptor`（时间戳自动转 HH:MM:SS）、`cache_interceptor`（只读查询缓存）
+- **Post-interceptors**：`material_registration_interceptor`（自动注册视频产出为素材）、`auto_index_interceptor`（触发 VideoIndexer 后台索引）、`execution_log_interceptor`（日志记录）
+- 通过 `register_default_interceptors(registry)` 在 `main.py` lifespan 中注册
+
+### 计划执行引擎
+除了 TAOR 循环，还有一套**结构化计划执行**模式：
+- `plan_generator.py`：单次 LLM 调用生成 JSON 计划（有序步骤，含 risk 标注）
+- `plan_executor.py`：顺序执行步骤，解析 `$stepN.field` 引用，SSE 推送进度。destructive 步骤需用户确认
+- `pipeline_engine.py`：将扩展的 pipeline 模板解析为计划步骤，处理 `{{param}}` 参数替换
 
 ## Core-Nexus-AI 集成
 
@@ -272,12 +304,12 @@ Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；
 
 core-nexus-ai 认证使用 `X-API-Key` header（格式 `cn-xxx`）。
 
-**配置来源优先级**：设置页 UI → `config/settings.json` → `.env` 文件
+**配置来源优先级**：设置页 UI → DB `config_store` 表 → `.env` 文件
 
 数据流：
 ```
 设置页 "AI 服务" tab → PATCH /api/tools/config {"core_nexus.api_key": "cn-xxx"}
-  → cfg_set() 持久化到 settings.json
+  → cfg_set() 持久化到 DB config_store
   → config.llm_key = api_key（注意：config.py 变量名是小写 llm_key）
   → reset_client() → CoreNexusClient._init_key_pool() 从 config.llm_key 读取
 ```
@@ -316,10 +348,19 @@ FAST_MODEL=              # 快速模型名（可选，不配则统一用主模�
 SLOW_MODEL=              # 主模型名（可选）
 FAST_MODEL_THRESHOLD=100 # 快模型使用的消息长度阈值
 CHROME_CDP_URL=          # CDP 浏览器地址（可选，默认 http://127.0.0.1:9222）
+TIAN_API_KEY=            # 天行数据新闻 API Key（可选）
+NEWS_API_KEY=            # NewsAPI.org 国际新闻 Key（可选）
+VIDEO_API_KEYS=          # Pexels 视频 API Key
+PIXABAY_API_KEY=         # Pixabay 图片/视频 API Key
 ```
 
 ### 分层配置
-`config/default.json` 提供默认值，`config/settings.json` 覆盖（注意：settings.json 含 API Key 等敏感信息，已加入 `.gitignore`，包括 `.bak` 等变体）。通过 `config_manager.py` 管理，支持 API 热重载。`config_manager.py` 使用线程锁保护读写，内置 9 条参数校验规则（类型 + 范围）。
+配置已从文件迁移到 **DB `config_store` 表**：
+- 代码内默认值（`config_manager.py` 的 `_DEFAULTS` dict）→ DB `config_store` 表覆盖 → 环境变量 fallback
+- `config_manager.py` 中 `_migrate_from_settings_json()` 执行一次性迁移：读 `settings.json` → 写 DB → 重命名为 `.json.bak`
+- `ConfigStore` 实体（`domain/entities/config_store.py`）存储 key-value，key 为点分路径（如 `core_nexus.api_key`）
+- `ConfigStoreRepository` 提供 `upsert()` 和 `get_all_as_dict()`
+- 支持通过 API 热重载，线程锁保护读写，内置 9 条参数校验规则（类型 + 范围）
 
 ## Docker 部署
 
@@ -341,7 +382,12 @@ docker-compose up --build
 - **ErrorBoundary**: `MainLayout.vue` 用 `ErrorBoundary.vue` 包裹 `router-view`
 - **工具页面**: TTS/ASR/VL 等工具页通过 `defineAsyncComponent` 懒加载，以 `el-dialog` 弹窗形式打开，不使用独立路由
 - **安全**: Pydantic `validate_params` 失败抛异常（不静默返回）；LLM 修正后的参数会重新校验；FFmpeg 字符串参数经 `sanitize_ffmpeg_string()` 清洗；`RateLimitMiddleware`（`src/shared/middleware/rate_limit.py`）按路由前缀限流（Agent 20/min、Core-Nexus 10/min、TTS 10/min、默认 60/min）
-- **健康检查**: `GET /health` 检查数据库、ffmpeg、core-nexus 连接、活跃会话数
+- **健康检查**: `GET /health` 检查数据库、ffmpeg、core-nexus 连接、活跃会话数、系统资源
+- **资源监控**: `resource_monitor.py` 在启动时检测 CPU/RAM/GPU/磁盘，自动降级 FFmpeg 参数（<4GB RAM: 1 并行+GPU 关闭+CRF 28；≥16GB: 4 并行）。`get_resource_profile()` 全局单例
+- **AI 调用指标**: `observability.py` 记录每次 AI 调用到 `~/.synthetix/metrics/ai_calls.jsonl`（10MB/文件，5 备份），`GET /api/metrics/ai?hours=24` 返回聚合统计
+- **结果缓存**: `result_cache.py` 基于文件 hash 的 JSON 缓存（`~/.synthetix/cache/`，默认 24h TTL），`@cached_result(prefix, ttl, key_args)` 装饰器用于 ASR/VL/ffprobe 结果
+- **异常体系**: `src/shared/exceptions/` — `BaseAppException` 基类 + 15 个子类（ValidationException、VideoProcessingException、ExternalServiceException 等），全局异常处理器注册到 FastAPI，统一返回 `{success: false, message, code, error}` JSON
+- **视频索引**: `VideoShot` 实体 + `VideoIndexer` 服务 — 场景检测、关键帧提取、逐镜头 VL 分析，由 `auto_index_interceptor` 在新素材注册时自动触发
 - **WebSocket**: 三个通道 `/ws`（Agent 对话）、`/ws/render`（渲染进度）、`/ws/system`（系统通知）
 - **国际化**: `vue-i18n@9`，locale 文件在 `synthetix-vue/src/locales/`，设置页可切换语言。核心 UI 组件已使用 `t('key')` 替代硬编码中文，新增 UI 文字时需同步添加到 `zh-CN.js` 和 `en-US.js`
 - **路径安全**: `src/shared/utils/path_security.py` 提供 `validate_path_in_allowed_dir()`，API 端点接受文件路径参数时必须调用该校验（限制在 `ROOT_DIR` 和 `static/` 内）
@@ -403,6 +449,10 @@ static/temp/{project_id}/           # 每个项目独立目录
 abs_path = os.path.join(str(config.ROOT_DIR_WIN), web_path.lstrip('/'))
 ```
 `add_audio`、`mix_audio_to_video`、`image_to_video` 等接受文件路径的工具已内置此解析逻辑。
+
+### get_db_context() 默认不提交
+
+`get_db_context(commit=False)` 的 `commit` 参数默认为 `False`——退出 context manager 时**回滚**所有写操作。忘记传 `commit=True` 会导致写入静默丢失。FastAPI DI 的 `get_db()` 则默认自动提交。
 
 ### 临时文件必须用 _save_temp_file 保存
 

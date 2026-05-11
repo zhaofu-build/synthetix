@@ -182,6 +182,12 @@ async def update_config(req: Dict[str, Any]):
     if "video_api_keys" in config_data:
         config.video_api_keys = config_data["video_api_keys"]
 
+    # 同步新闻 API Key 到运行时配置
+    if "tian_api_key" in config_data:
+        config.TIAN_API_KEY = config_data["tian_api_key"]
+    if "news_api_key" in config_data:
+        config.NEWS_API_KEY = config_data["news_api_key"]
+
     return success_response(data=True, message="保存配置成功")
 
 
