@@ -128,16 +128,15 @@ def delete_comic_project(project_id: int, db: Session = Depends(get_db)):
 # ==================== 脚本生成 ====================
 
 @router.post("/{project_id}/generate-script", summary="AI生成漫剧脚本")
-def generate_script(project_id: int, req: GenerateScriptRequest, db: Session = Depends(get_db)):
+async def generate_script(project_id: int, req: GenerateScriptRequest, db: Session = Depends(get_db)):
     project = db.query(ComicProject).filter(ComicProject.id == project_id).first()
     if not project:
         raise ResourceNotFoundException(resource_type="ComicProject", resource_id=project_id)
     try:
-        from src.application.services.llm_adapter import generate_response
+        from src.application.services.llm_adapter import generate_response_async
         from src.shared.utils.string_util import remove_think_tags
         import json, re
 
-        # 自动计算分镜数量
         num_panels = req.num_panels
         if num_panels is None and req.target_duration:
             num_panels = max(3, min(100, int(req.target_duration / 3)))
@@ -155,7 +154,19 @@ def generate_script(project_id: int, req: GenerateScriptRequest, db: Session = D
         if req.target_duration:
             duration_hint = f"\n目标总时长: {req.target_duration} 秒（所有分镜的 duration 之和应接近此值）"
 
-        prompt = f"""你是一个专业的漫剧编剧。请根据以下信息生成一个完整的漫剧脚本。
+        PANELS_PER_CALL = 5
+
+        async def llm_json_call(prompt):
+            result_text = await generate_response_async([{"role": "user", "content": prompt}], max_tokens=4096)
+            result_text = remove_think_tags(result_text).strip()
+            json_match = re.search(r'\{[\s\S]*\}', result_text)
+            if not json_match:
+                raise ValueError("AI 返回格式异常，无法解析脚本")
+            return json.loads(json_match.group())
+
+        if num_panels <= PANELS_PER_CALL:
+            # 小分镜数：单次调用
+            prompt = f"""你是一个专业的漫剧编剧。请根据以下信息生成一个完整的漫剧脚本。
 
 故事设定: {req.description}
 类型: {req.genre}
@@ -204,25 +215,127 @@ def generate_script(project_id: int, req: GenerateScriptRequest, db: Session = D
 
 要求:
 1. characters 数组必须列出所有出场角色，包含详细的外貌、性格和音色描述
-2. scene_library 必须列出故事中出现的所有不同场景（去重），每个场景的 description 只描述纯环境（建筑、光线、天气、氛围），严禁包含任何角色描写
+2. scene_library 必须列出故事中出现的所有不同场景（去重），每个场景的 description 只描述纯环境
 3. 每个 scenes 中的 scene_description 描述角色动作和表情（不含环境），background_description 描述纯场景环境
 4. 每个分镜的 scene_id 必须引用 scene_library 中的某个场景 name
 5. 每个分镜的 characters 数组列出该镜头中出现的角色名
 6. 对白要自然口语化
-7. 总分镜时长应合理分配，每个分镜的 duration 字段应根据内容节奏设置（2-8秒）
-8. 情绪曲线要有起伏
-9. 镜头语言要丰富
-10. 总分镜数量严格为 {num_panels} 个"""
+7. 总分镜时长应合理分配（2-8秒）
+8. 情绪曲线要有起伏，镜头语言要丰富
+9. 总分镜数量严格为 {num_panels} 个"""
 
-        result_text = generate_response([{"role": "user", "content": prompt}], max_tokens=8192)
-        result_text = remove_think_tags(result_text).strip()
+            script_data = await llm_json_call(prompt)
+        else:
+            # 大分镜数：先生成结构，再分批生成面板
+            # 第一批：生成结构 + 首批面板（含角色、场景库的完整定义）
+            prompt1 = f"""你是一个专业的漫剧编剧。请根据以下信息生成漫剧脚本的结构和前 {PANELS_PER_CALL} 个分镜。
 
-        json_match = re.search(r'\{[\s\S]*\}', result_text)
-        if not json_match:
-            return error_response(error="ParseError", message="AI 返回格式异常，无法解析脚本", code=500)
+故事设定: {req.description}
+类型: {req.genre}
+总分镜数量: {num_panels}（本次先生成前 {PANELS_PER_CALL} 个）
+已有角色:
+{characters_str}
+{duration_hint}
 
-        script_data = json.loads(json_match.group())
+请严格按照以下 JSON 格式输出（不要输出其他内容，不要用 ```json 标记）:
+{{
+  "title": "漫剧标题",
+  "synopsis": "一句话简介",
+  "genre": "{req.genre}",
+  "characters": [
+    {{
+      "name": "角色名",
+      "appearance": "详细外貌描述（发型、发色、瞳色、体型、服装等）",
+      "personality": "性格特征描述",
+      "voice_description": "音色描述（如：清亮少女音、低沉磁性男声等）"
+    }}
+  ],
+  "scene_library": [
+    {{
+      "name": "场景名称",
+      "description": "纯场景环境描述（只描述环境，不含角色）"
+    }}
+  ],
+  "scenes": [
+    {{
+      "sequence": 0,
+      "scene_description": "画面描述（角色动作、表情、构图）",
+      "background_description": "纯场景环境描述",
+      "scene_id": "场景名称（引用 scene_library）",
+      "characters": ["出镜角色名"],
+      "dialogues": [{{"character_id": "角色名", "text": "台词", "emotion": "开心/悲伤/愤怒/惊讶/平静"}}],
+      "narration": "旁白或null",
+      "emotion": "happy/sad/angry/neutral/tense/romantic",
+      "duration": 3.0,
+      "transition": "cut",
+      "camera": "特写/近景/中景/全景/远景"
+    }}
+  ],
+  "bgm_prompt": "BGM风格描述"
+}}
 
+要求:
+1. characters 必须列出所有出场角色（含外貌、性格、音色）
+2. scene_library 必须列出故事中所有场景（去重），description 只描述纯环境
+3. 本次严格生成 {PANELS_PER_CALL} 个分镜（sequence 0-{PANELS_PER_CALL - 1}），后续会继续生成
+4. 故事开头要吸引人，对白自然口语化
+5. 分镜时长 2-8 秒，情绪和镜头语言要丰富"""
+
+            script_data = await llm_json_call(prompt1)
+            all_panels = script_data.get("scenes", [])
+
+            chars_ctx = json.dumps(script_data.get("characters", []), ensure_ascii=False)
+            scenes_ctx = json.dumps(script_data.get("scene_library", []), ensure_ascii=False)
+
+            # 后续批次：基于已有角色和场景继续生成面板
+            remaining = num_panels - len(all_panels)
+            while remaining > 0:
+                batch = min(PANELS_PER_CALL, remaining)
+                start_seq = len(all_panels)
+                is_last = (remaining <= PANELS_PER_CALL)
+
+                prompt_n = f"""你是一个专业的漫剧编剧。请继续生成漫剧脚本的后续分镜。
+
+已知角色: {chars_ctx}
+已知场景库: {scenes_ctx}
+故事设定: {req.description}
+类型: {req.genre}
+
+请生成接下来 {batch} 个分镜（序号从 {start_seq} 开始），{'这是最后一批，需要给故事一个合理的收尾。' if is_last else ''}{duration_hint}
+
+严格按照以下 JSON 格式输出（不要输出其他内容）:
+{{
+  "scenes": [
+    {{
+      "sequence": {start_seq},
+      "scene_description": "画面描述（角色动作、表情、构图）",
+      "background_description": "纯场景环境描述",
+      "scene_id": "场景名称（引用已知场景库中的 name）",
+      "characters": ["出镜角色名（引用已知角色名）"],
+      "dialogues": [{{"character_id": "角色名", "text": "台词", "emotion": "开心/悲伤/愤怒/惊讶/平静"}}],
+      "narration": "旁白或null",
+      "emotion": "happy/sad/angry/neutral/tense/romantic",
+      "duration": 3.0,
+      "transition": "cut",
+      "camera": "特写/近景/中景/全景/远景"
+    }}
+  ]
+}}
+
+要求:
+1. 延续之前的故事情节，保持连贯
+2. scene_id 必须引用已知场景库，characters 必须引用已知角色
+3. 对白自然口语化，分镜时长 2-8 秒
+4. 严格生成 {batch} 个分镜"""
+
+                more_data = await llm_json_call(prompt_n)
+                more_panels = more_data.get("scenes", [])
+                all_panels.extend(more_panels)
+                remaining -= batch
+
+            script_data["scenes"] = all_panels
+
+        # 保存到数据库
         project.script_data = script_data
         if script_data.get("scenes"):
             project.panels = script_data["scenes"]
@@ -250,7 +363,6 @@ def generate_script(project_id: int, req: GenerateScriptRequest, db: Session = D
         for scene in scene_library:
             scene_name = scene.get("name", "")
             scene_desc = scene.get("description", "")
-            # Avoid duplicate scenes by name
             if scene_name and not any(
                 c.get("_type") == "scene" and c.get("name") == scene_name
                 for c in existing_chars
@@ -264,7 +376,6 @@ def generate_script(project_id: int, req: GenerateScriptRequest, db: Session = D
                 })
 
         project.characters = existing_chars
-
         project.current_step = 1
         db.commit()
         db.refresh(project)
@@ -272,6 +383,12 @@ def generate_script(project_id: int, req: GenerateScriptRequest, db: Session = D
         return success_response(data=project.to_dict(), message="脚本生成成功")
     except json.JSONDecodeError:
         return error_response(error="ParseError", message="AI 返回 JSON 解析失败", code=500)
+    except RuntimeError as e:
+        logger.error(f"脚本生成 LLM 调用失败: {e}")
+        return error_response(error="LLMError", message=f"AI 服务调用失败: {e}", code=500)
+    except Exception as e:
+        logger.error(f"脚本生成异常: {e}")
+        return error_response(error="ServerError", message=f"脚本生成失败: {e}", code=500)
 
 
 # ==================== 角色管理 ====================
