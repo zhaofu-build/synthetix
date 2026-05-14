@@ -1718,11 +1718,11 @@ async def tool_get_video_description(video_id: int, **kwargs) -> Dict[str, Any]:
 
 @registry.register(
     name="search_material",
-    description="搜索或下载视频素材（注意：使用前请先调用 list_videos 检查项目已有素材，优先使用已有素材，不够时再搜索下载）",
+    description="搜索并下载视频素材。支持一次传入多个关键词（用逗号分隔），每个关键词各搜索并下载最多2个素材，一次调用即可获取多组素材。使用前请先调用 list_videos 检查项目已有素材，优先使用已有素材，不够时再搜索下载",
     parameters={
-        "keywords": {"type": "string", "description": "搜索关键词"},
+        "keywords": {"type": "string", "description": "搜索关键词，多个关键词用逗号分隔（如：'海边,日落,沙滩'），每个关键词独立搜索"},
     },
-    examples=["下载一些海边素材", "搜索城市夜景"],
+    examples=["下载一些海边素材", "搜索城市夜景", "搜索: 人工智能,办公,电脑,科技"],
     param_model=SearchMaterialParams,
     permission="read_only"
 )
@@ -1763,9 +1763,7 @@ async def tool_search_material(
         downloaded = [r for r in results if r["status"] == "downloaded"]
         logger.info(f"[search_material] 完成: 下载 {len(downloaded)}/{len(results)} 个素材")
 
-        # 自动分析下载的视频（获取描述 + ASR 转录，供后续剪辑使用）
-        analyzed_ids = []
-        transcribed_ids = []
+        # 第一步：提取每个素材的时长信息（独立于后续分析，确保不丢失）
         for r in downloaded:
             vid = r.get("video_id")
             if not vid:
@@ -1774,10 +1772,27 @@ async def tool_search_material(
                 with get_db_context() as db:
                     repo = VideoRepository(db)
                     video = repo.get_by_id(vid)
+                    if video:
+                        r["duration"] = video.duration_hms or ""
+                        r["name"] = video.video_name or ""
+                        r["local_path"] = video.local_path or ""
+            except Exception as e:
+                logger.warning(f"[search_material] 读取素材 {vid} 信息失败: {e}")
+
+        # 第二步：为无描述的素材补充基础信息（异步，不影响时长返回）
+        analyzed_ids = []
+        for r in downloaded:
+            vid = r.get("video_id")
+            local_path = r.get("local_path", "")
+            if not vid or not local_path:
+                continue
+            try:
+                with get_db_context() as db:
+                    repo = VideoRepository(db)
+                    video = repo.get_by_id(vid)
                     if not video or video.description:
                         continue
-                    # 基础视频信息分析
-                    desc = await asyncio.to_thread(ffmpeg.get_video_info, video.local_path)
+                    desc = await asyncio.to_thread(ffmpeg.get_video_info, local_path)
                     if desc:
                         w, h = desc.get('width', 0), desc.get('height', 0)
                         dur = desc.get('duration_hms', '')
@@ -1787,42 +1802,22 @@ async def tool_search_material(
                             f"搜索关键词: {tags}"
                         )
                         analyzed_ids.append(vid)
+                        # 如果 DB 中时长为空，用 ffprobe 结果补充
+                        if not video.duration_hms and dur:
+                            video.duration_hms = dur
+                            r["duration"] = dur
                     db.commit()
             except Exception as e:
                 logger.warning(f"[search_material] 分析视频 {vid} 失败: {e}")
-                continue
-
-            # 有音频轨时自动 ASR 转录
-            try:
-                has_audio = ffmpeg._has_audio_stream(video.local_path if vid else "")
-            except Exception:
-                continue
-            if not has_audio:
-                continue
-            try:
-                from src.application.services import whisper_adapter
-                subtitle_text = await asyncio.to_thread(
-                    whisper_adapter.transcribe,
-                    video.local_path,
-                    "txt",
-                    subtitle_language="zh",
-                )
-                if subtitle_text and subtitle_text.strip():
-                    with get_db_context() as db:
-                        v = db.query(VideoSource).filter(VideoSource.id == vid).first()
-                        if v:
-                            existing = v.description or ""
-                            v.description = existing + f"\n语音内容: {subtitle_text.strip()}"
-                            db.commit()
-                            transcribed_ids.append(vid)
-            except Exception as e:
-                logger.warning(f"[search_material] ASR 转录视频 {vid} 失败: {e}")
 
         summary = f"搜索 '{keywords}' 完成，下载了 {len(downloaded)} 个素材"
         if analyzed_ids:
             summary += f"，已分析 {len(analyzed_ids)} 个"
-        if transcribed_ids:
-            summary += f"，已转录 {len(transcribed_ids)} 个"
+        if downloaded:
+            summary += "\n" + "\n".join(
+                f"- ID {r['video_id']}: {r.get('name', '')} ({r.get('duration') or '未知时长'})"
+                for r in downloaded if r.get("video_id")
+            )
 
         return {
             "success": True,
@@ -3778,11 +3773,11 @@ async def tool_mix_audio_to_video(
 
 @registry.register(
     name="get_video_detail",
-    description="获取视频详细信息（编码、分辨率、帧率、码率、时长等）",
+    description="获取视频技术详情（编码、分辨率、帧率、码率）。注意：素材时长已在 list_videos 和 search_material 返回中提供，无需为此调用本工具",
     parameters={
         "video_id": {"type": "integer", "description": "视频 ID"},
     },
-    examples=["查看视频详情", "这个视频是什么编码"],
+    examples=["查看视频编码格式", "这个视频是什么分辨率"],
     before_execute=validate_video_exists,
     permission="read_only"
 )

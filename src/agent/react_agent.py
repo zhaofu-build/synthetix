@@ -32,6 +32,7 @@ END_CALL = "<" + "/tool_call>"
 TOOL_TIMEOUTS = {
     "default": 120,
     "download_video": 300,
+    "search_material": 300,
     "stabilize_video": 600,
     "smart_clip": 300,
     "scene_detect": 300,
@@ -163,10 +164,14 @@ def build_system_prompt(tools_description: str, project_id, project_name: str) -
         "3. 回复用中文，简洁自然",
         '4. 如果用户问"第X个"视频/素材，先调用 list_videos 获取列表，再根据序号找到对应 ID 调用其他工具',
         "5. 剪辑任务时，必须先调用 list_videos 查看项目已有素材，优先使用已有素材。只有素材不足或没有合适的时，才调用 search_material 下载新素材",
-        "6. 尽可能在一轮中同时调用多个互不依赖的工具（例如同时分析多个视频、同时下载多个素材）",
-        "7. 避免重复调用已获取过的信息（如多次 list_views），已获取的数据直接使用",
+        "5.1 search_material 支持逗号分隔多关键词（如 'AI,办公,科技'），一次调用即可搜索多组素材。规划好所有需要的素材类型后，一次性传入所有关键词，避免多次调用浪费轮次",
+        "5.2 list_videos 和 search_material 的返回结果已包含素材ID、名称、时长，已足够用于 cut_video/merge_videos 等操作。禁止在 list_videos 或 search_material 之后逐个调用 get_video_detail，这是浪费轮次。get_video_detail 仅在用户明确要求查看某素材详情时使用",
+        "6. 尽可能在一轮中同时调用多个互不依赖的工具（例如同时剪切多个视频、同时下载多个素材）。有依赖关系的操作（如先剪切再合并）仍需分轮执行",
+        "7. 避免重复调用已获取过的信息，已获取的数据直接使用。能从上下文推断的信息（视频ID、素材ID），直接使用不要问用户",
         "8. 如果素材不匹配需求，直接更换素材或调整方案，不要反复分析同一个不合适的素材",
-        "9. 必须使用工具返回的真实数据，严禁编造、猜测或虚构内容。如果工具调用失败需要重试，必须使用之前工具返回的原始数据，不能凭想象重新生成",
+        "9. 必须使用工具返回的真实数据，严禁编造、猜测或虚构内容",
+        "10. 能自动完成的操作直接执行不要问用户：只有一个素材时直接用它；用户说'添加字幕'但没给内容时自动先 transcribe_video 再 add_subtitle；参数有合理默认值时直接使用",
+        "11. 工具返回失败时，立即停下来告诉用户失败原因，不要继续调用后续工具浪费算力",
         "",
         "## 当前上下文",
         "",
@@ -202,6 +207,8 @@ def build_comic_system_prompt(tools_description: str, project_id, project_name: 
         "1. 可以在同一条回复中调用多个工具，也可以不调用任何工具直接回复",
         "2. 工具调用后你会收到 <tool_result> 结果，然后继续回复",
         "3. 回复用中文，简洁自然",
+        "4. 能从上下文推断的信息直接使用，不要问用户。参数有合理默认值时直接使用",
+        "5. 工具返回失败时，立即停下来告诉用户失败原因，不要继续调用后续工具",
         "",
         "## 当前上下文",
         "",
@@ -216,7 +223,7 @@ def build_comic_system_prompt(tools_description: str, project_id, project_name: 
 class ReActAgent:
     """基于 TAOR 循环的对话代理"""
 
-    MAX_ITERATIONS = 10  # 最大循环次数，防止无限循环
+    MAX_ITERATIONS = 15  # 最大循环次数，防止无限循环
     DEEP_RESEARCH_STAGES = ["分析素材", "规划方案", "执行操作"]
     CHECKPOINT_DIR = os.path.join(os.path.expanduser("~"), ".synthetix", "checkpoints")
     ARTIFACTS_DIR = os.path.join(os.path.expanduser("~"), ".synthetix", "artifacts")
