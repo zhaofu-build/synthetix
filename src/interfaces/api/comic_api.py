@@ -774,12 +774,12 @@ async def generate_panel_video(project_id: int, request: GeneratePanelVideoReque
         duration = request.duration or panel.get("duration", 3.0)
 
         client = get_client()
-        i2v_model = cfg_get("core_nexus.image_to_video_model") or None
-        logger.info(f"[PANEL-VIDEO] project={project_id}, panel={request.panel_index}, model={i2v_model}, duration={duration}")
-        result = await client.image_to_video_async(
+        video_model = cfg_get("core_nexus.video_model") or None
+        logger.info(f"[PANEL-VIDEO] project={project_id}, panel={request.panel_index}, model={video_model}, duration={duration}")
+        result = await client.video_gen_async(
             image=image_data_url,
             prompt=prompt,
-            model=i2v_model,
+            model=video_model,
             duration=int(duration),
         )
 

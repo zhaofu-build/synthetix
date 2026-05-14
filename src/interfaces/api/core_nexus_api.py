@@ -1,7 +1,7 @@
 """
 Core-Nexus-AI 代理 API
 
-代理 LLM、TTS、ASR、VL 接口到前端
+代理 LLM、TTS、ASR、Multimodal 接口到前端
 """
 import os
 import logging
@@ -59,11 +59,31 @@ class ASRRequest(BaseModel):
 
 
 class VLRequest(BaseModel):
-    """VL 请求"""
-    prompt: str
+    """VL 请求（兼容旧前端）"""
+    prompt: Optional[str] = None
     image: Optional[str] = None
     images: Optional[List[str]] = None
     messages: Optional[List[Dict[str, Any]]] = None
+    generation: Optional[Dict[str, Any]] = None
+
+
+class MultimodalRequest(BaseModel):
+    """Multimodal 多模态请求"""
+    prompt: Optional[str] = None
+    image: Optional[str] = None
+    images: Optional[List[str]] = None
+    video: Optional[str] = None
+    videos: Optional[List[str]] = None
+    video_frames: Optional[List[str]] = None
+    audio: Optional[str] = None
+    audios: Optional[List[str]] = None
+    messages: Optional[List[Dict[str, Any]]] = None
+    modalities: Optional[List[str]] = None
+    voice: Optional[str] = None
+    audio_format: Optional[str] = None
+    enable_thinking: Optional[bool] = None
+    enable_search: Optional[bool] = None
+    model: Optional[str] = None
     generation: Optional[Dict[str, Any]] = None
 
 
@@ -71,7 +91,7 @@ class VLRequest(BaseModel):
 
 @router.get("/models", summary="获取可用模型列表")
 async def list_models(
-    task_type: Optional[str] = Query(default=None, description="任务类型: LLM/TTS/ASR/VL/TEXT_TO_MUSIC"),
+    task_type: Optional[str] = Query(default=None, description="任务类型: LLM/TTS/ASR/MULTIMODAL/VIDEO_GEN/TEXT_TO_MUSIC/TEXT_TO_IMAGE"),
     base_url: Optional[str] = Query(default=None, description="服务地址（可选，未传则用已保存配置）"),
 ):
     """代理 core-nexus-ai 的 /api/models 接口"""
@@ -320,33 +340,43 @@ async def asr_with_upload(
     return success_response(data=result)
 
 
-# ==================== VL 接口 ====================
+# ==================== Multimodal 接口（原 VL，已合并为统一多模态） ====================
 
-@router.post("/vl")
-async def vl_generate(request: VLRequest):
+@router.post("/multimodal")
+async def multimodal_generate(request: MultimodalRequest):
     """
-    VL 视觉语言理解
+    多模态推理
 
-    支持单图或多图输入
+    支持文本+图像+音频+视频组合输入
     """
     client = get_client()
 
-    result = await client.vl_generate_async(
+    result = await client.multimodal_generate_async(
         prompt=request.prompt,
         image=request.image,
         images=request.images,
+        video=request.video,
+        videos=request.videos,
+        video_frames=request.video_frames,
+        audio=request.audio,
+        audios=request.audios,
         messages=request.messages,
-        model=cfg_get("core_nexus.vl_model") or None,
+        modalities=request.modalities,
+        voice=request.voice,
+        audio_format=request.audio_format,
+        enable_thinking=request.enable_thinking,
+        enable_search=request.enable_search,
+        model=request.model or cfg_get("core_nexus.multimodal_model") or None,
         **(request.generation or {})
     )
 
     return success_response(data={"text": result})
 
 
-@router.post("/vl/stream")
-async def vl_generate_stream(request: VLRequest):
+@router.post("/multimodal/stream")
+async def multimodal_generate_stream(request: MultimodalRequest):
     """
-    VL 流式视觉语言理解
+    多模态流式推理
 
     返回 SSE 流
     """
@@ -354,18 +384,28 @@ async def vl_generate_stream(request: VLRequest):
 
     async def generate():
         try:
-            async for chunk in client.vl_generate_stream_async(
+            async for chunk in client.multimodal_generate_stream_async(
                 prompt=request.prompt,
                 image=request.image,
                 images=request.images,
+                video=request.video,
+                videos=request.videos,
+                video_frames=request.video_frames,
+                audio=request.audio,
+                audios=request.audios,
                 messages=request.messages,
-                model=cfg_get("core_nexus.vl_model") or None,
+                modalities=request.modalities,
+                voice=request.voice,
+                audio_format=request.audio_format,
+                enable_thinking=request.enable_thinking,
+                enable_search=request.enable_search,
+                model=request.model or cfg_get("core_nexus.multimodal_model") or None,
                 **(request.generation or {})
             ):
                 yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
-            logger.error(f"VL 流式生成失败: {e}", exc_info=True)
+            logger.error(f"Multimodal 流式生成失败: {e}", exc_info=True)
             yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
@@ -378,13 +418,13 @@ async def vl_generate_stream(request: VLRequest):
     )
 
 
-@router.post("/vl/upload")
-async def vl_with_upload(
+@router.post("/multimodal/upload")
+async def multimodal_with_upload(
     prompt: str = Form(...),
     image: Optional[UploadFile] = File(None),
 ):
     """
-    VL 视觉语言理解（上传图片）
+    多模态推理（上传图片）
 
     支持上传图片进行分析
     """
@@ -398,12 +438,50 @@ async def vl_with_upload(
             raise ValidationException("图片文件不能超过 10MB")
         image_data = base64.b64encode(image_bytes).decode('utf-8')
 
-    result = await client.vl_generate_async(
+    result = await client.multimodal_generate_async(
         prompt=prompt,
         image=image_data,
-        model=cfg_get("core_nexus.vl_model") or None,
+        model=cfg_get("core_nexus.multimodal_model") or None,
     )
 
+    return success_response(data={"text": result})
+
+
+# 兼容旧前端路由
+@router.post("/vl")
+async def vl_generate_compat(request: VLRequest):
+    """VL 兼容路由（转发到 multimodal）"""
+    client = get_client()
+    result = await client.multimodal_generate_async(
+        prompt=request.prompt,
+        image=request.image,
+        images=request.images,
+        messages=request.messages,
+        model=cfg_get("core_nexus.multimodal_model") or None,
+        **(request.generation or {})
+    )
+    return success_response(data={"text": result})
+
+
+@router.post("/vl/upload")
+async def vl_upload_compat(
+    prompt: str = Form(...),
+    image: Optional[UploadFile] = File(None),
+):
+    """VL 上传兼容路由"""
+    client = get_client()
+    image_data = None
+    if image:
+        image_bytes = await image.read()
+        if len(image_bytes) > 10 * 1024 * 1024:
+            raise ValidationException("图片文件不能超过 10MB")
+        image_data = base64.b64encode(image_bytes).decode('utf-8')
+
+    result = await client.multimodal_generate_async(
+        prompt=prompt,
+        image=image_data,
+        model=cfg_get("core_nexus.multimodal_model") or None,
+    )
     return success_response(data={"text": result})
 
 

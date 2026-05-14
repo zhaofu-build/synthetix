@@ -79,7 +79,7 @@ MODEL_CACHE_DIR = DirectoryConfig.MODEL_CACHE_DIR
 
 class ModelType(Enum):
     """模型类型枚举"""
-    VL = "vl"  # 视觉语言模型，如Qwen-VL系列
+    MULTIMODAL = "multimodal"  # 多模态模型（原 VL），支持文本+图像+音频+视频
 
 
 # ==================== 统一配置同步 ====================
@@ -110,15 +110,15 @@ def sync_from_config_manager():
             if val:
                 setattr(_self, var_name, val)
 
-        # 同步 fallback keys（core_nexus key 也设置到 TTS/ASR/VL）
+        # 同步 fallback keys（core_nexus key 也设置到 TTS/ASR/MULTIMODAL）
         cn_key = cfg_get('core_nexus.api_key', '')
         if cn_key:
             if not getattr(_self, 'TTS_KEY', ''):
                 _self.TTS_KEY = cn_key
             if not getattr(_self, 'ASR_KEY', ''):
                 _self.ASR_KEY = cn_key
-            if not getattr(_self, 'VL_KEY', ''):
-                _self.VL_KEY = cn_key
+            if not getattr(_self, 'MULTIMODAL_KEY', ''):
+                _self.MULTIMODAL_KEY = cn_key
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"配置同步失败: {e}")

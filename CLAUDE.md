@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Synthetix 是一个 AI 视频剪辑平台，采用 **Tauri 2.0 桌面应用**架构。前端 Vue 3 嵌入 Tauri 窗口，后端 FastAPI 作为本地 API 服务（端口 9527）+ sidecar 打包。UI 采用**统一编辑器**：左侧工作区（剪辑方案/音频）+ 中间 AI 对话栏 + 右侧（素材库 + 视频预览），左右可折叠。顶部菜单栏提供文件操作、项目名称编辑和工具弹窗。
 
-后端通过 **core-nexus-ai** 统一推理框架调用 LLM、TTS、ASR、VL 等 AI 服务。
+后端通过 **core-nexus-ai** 统一推理框架调用 LLM、TTS、ASR、多模态（Multimodal）等 AI 服务。
 
 ## 运行应用
 
@@ -293,8 +293,11 @@ Hook 机制：`before_execute` 接收 params dict，可校验/修改后返回；
 | LLM 流式 | `llm_generate_stream()` | `llm_generate_stream_async()` |
 | TTS 合成 | `tts_generate()` | `tts_generate_async()` |
 | ASR 识别 | `asr_transcribe()` | `asr_transcribe_async()` |
-| VL 理解 | `vl_generate()` | `vl_generate_async()` |
+| 多模态 (原 VL) | `multimodal_generate()` | `multimodal_generate_async()` |
 | 音乐生成 | `text_to_music()` | `text_to_music_async()` |
+| 视频生成 (统一) | `video_gen()` | `video_gen_async()` |
+
+> **接口变更说明**：原 VL 接口（`/vl`）已合并为多模态接口（`/multimodal`），原 `text_to_video` + `image_to_video` 已合并为统一视频生成接口（`/video-gen`）。旧方法名作为别名保留（`vl_generate = multimodal_generate`，`text_to_video = video_gen`）。
 
 - `llm_adapter.py` 的 `generate_response_async()` 直接调用 `llm_generate_async()`（真异步，非 `asyncio.to_thread`）
 - `select_model()` 根据消息长度 + 工具调用检测 + 迭代轮次选择快/慢模型
@@ -318,7 +321,7 @@ core-nexus-ai 认证使用 `X-API-Key` header（格式 `cn-xxx`）。
 - `config.py` 中 API Key 变量名是小写 `llm_key`（非 `LLM_KEY`）。`_init_key_pool` 优先读 `config.llm_key`，兼容 `config.LLM_KEY`。
 - `_init_key_pool` 支持逗号分隔多 key 轮换，单个 key 也正常工作。
 - `core_nexus_api.py` 中 `list_models` 和 `test_connection` 使用裸 httpx 调用（非 CoreNexusClient），需手动注入 `X-API-Key` header。
-- 设置页 core_nexus API Key 同步时，也设置 `TTS_KEY`、`ASR_KEY`、`VL_KEY`（作为 fallback，各自独立配置时优先用独立 key）。
+- 设置页 core_nexus API Key 同步时，也设置 `TTS_KEY`、`ASR_KEY`、`MULTIMODAL_KEY`（作为 fallback，各自独立配置时优先用独立 key）。
 
 ### KV Cache（Prompt Caching）
 
@@ -552,7 +555,7 @@ FFmpeg `drawtext` 滤镜在 Windows 上不能使用含盘符冒号的绝对路�
 
 ### API Key 冷启动同步
 
-`main.py` lifespan 中从 `settings.json` 读取 `core_nexus.api_key` 并同步到 `config.llm_key`（以及 `TTS_KEY`、`ASR_KEY`、`VL_KEY` fallback）。如果只通过设置页 UI 配置但不同步到运行时，重启后首次 LLM 调用会失败（key 为空）。
+`main.py` lifespan 中从 `settings.json` 读取 `core_nexus.api_key` 并同步到 `config.llm_key`（以及 `TTS_KEY`、`ASR_KEY`、`MULTIMODAL_KEY` fallback）。如果只通过设置页 UI 配置但不同步到运行时，重启后首次 LLM 调用会失败（key 为空）。
 
 `video_downloader_adapter.py` 提供统一搜索入口：
 - `search_videos(term, min_duration, source)` — `source` 为 `pexels`/`pixabay`/`all`

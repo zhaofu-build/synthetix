@@ -1,7 +1,7 @@
 """
-VL 视觉语言服务
+多模态视觉语言服务（原 VL）
 
-通过 core-nexus-ai API 进行图像/视频理解
+通过 core-nexus-ai /multimodal 接口进行图像/视频理解
 """
 import logging
 import os
@@ -34,7 +34,7 @@ def image_summary(tmp_path: str, prompt: Optional[str] = None) -> str:
 
     try:
         client = get_client()
-        vl_model = cfg_get("core_nexus.vl_model") or None
+        vl_model = cfg_get("core_nexus.multimodal_model") or None
 
         # 本地文件转 base64（远程 VL API 如 DashScope 无法访问本地路径）
         image_input = tmp_path
@@ -120,7 +120,7 @@ def video_summary(tmp_path: str, prompt: Optional[str] = None, duration: Optiona
 
     try:
         client = get_client()
-        vl_model = cfg_get("core_nexus.vl_model") or None
+        vl_model = cfg_get("core_nexus.multimodal_model") or None
 
         # 小文件：转 base64 发送（远程 VL API 如 DashScope 不支持本地路径）
         file_size = os.path.getsize(actual_path) if os.path.exists(actual_path) else 0
@@ -275,7 +275,7 @@ def generate_summary(messages: list) -> str:
 
     try:
         client = get_client()
-        vl_model = cfg_get("core_nexus.vl_model") or None
+        vl_model = cfg_get("core_nexus.multimodal_model") or None
 
         # 从消息中提取 prompt 和图片
         prompt = ""

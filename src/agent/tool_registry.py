@@ -2523,7 +2523,7 @@ async def tool_generate_video(
     try:
         client = get_client()
         video_model = cfg_get("core_nexus.video_model") or None
-        result = await client.text_to_video_async(
+        result = await client.video_gen_async(
             prompt=prompt,
             negative_prompt=negative_prompt,
             model=video_model,
@@ -2626,7 +2626,7 @@ async def tool_image_to_video_ai(
 
         client = get_client()
         video_model = cfg_get("core_nexus.video_model") or None
-        result = await client.image_to_video_async(
+        result = await client.video_gen_async(
             image=image_path,
             prompt=prompt,
             model=video_model,
@@ -6037,11 +6037,11 @@ async def tool_comic_generate_video(
             prompt = panel.get("scene_description", "")
             ref_image = panel.get("generated_image_path")
             if ref_image:
-                result = await client.image_to_video_async(
+                result = await client.video_gen_async(
                     image=ref_image, prompt=prompt, model=video_model,
                 )
             else:
-                result = await client.text_to_video_async(
+                result = await client.video_gen_async(
                     prompt=prompt, model=video_model,
                 )
             if not result.get("video"):

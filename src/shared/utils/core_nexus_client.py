@@ -126,7 +126,7 @@ class CoreNexusClient:
             "LLM": llm_key,
             "TTS": getattr(config, "TTS_KEY", "") or llm_key,
             "ASR": getattr(config, "ASR_KEY", "") or llm_key,
-            "VL": getattr(config, "VL_KEY", "") or llm_key,
+            "MULTIMODAL": getattr(config, "MULTIMODAL_KEY", "") or llm_key,
             "MUSIC": getattr(config, "MUSIC_KEY", "") or llm_key,
             "IMAGE": llm_key,
             "VIDEO": llm_key,
@@ -153,7 +153,7 @@ class CoreNexusClient:
         """配置备用服务商 URL
 
         Args:
-            service: 服务类型 (LLM/TTS/ASR/VL/MUSIC)
+            service: 服务类型 (LLM/TTS/ASR/MULTIMODAL/MUSIC)
             urls: 备用 URL 列表
         """
         self._fallback_urls[service.upper()] = [u.rstrip('/') for u in urls]
@@ -163,10 +163,10 @@ class CoreNexusClient:
         if '/llm' in endpoint: return 'LLM'
         if '/tts' in endpoint: return 'TTS'
         if '/asr' in endpoint: return 'ASR'
-        if '/vl' in endpoint: return 'VL'
+        if '/multimodal' in endpoint: return 'MULTIMODAL'
         if '/music' in endpoint or '/text-to-music' in endpoint: return 'MUSIC'
         if '/text-to-image' in endpoint or '/image-to-image' in endpoint: return 'IMAGE'
-        if '/text-to-video' in endpoint or '/image-to-video' in endpoint: return 'VIDEO'
+        if '/video-gen' in endpoint: return 'VIDEO'
         return 'UNKNOWN'
 
     def _is_cooled_down(self, url: str) -> bool:
@@ -725,22 +725,31 @@ class CoreNexusClient:
 
         return response.content
 
-    # ==================== VL 接口 ====================
+    # ==================== Multimodal 接口（原 VL，已合并为统一多模态） ====================
 
-    def vl_generate(
+    def _build_multimodal_payload(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
         image: Optional[str] = None,
         images: Optional[List[str]] = None,
         video: Optional[str] = None,
         videos: Optional[List[str]] = None,
+        video_frames: Optional[List[str]] = None,
+        audio: Optional[str] = None,
+        audios: Optional[List[str]] = None,
         messages: Optional[List[Dict]] = None,
         model: Optional[str] = None,
+        modalities: Optional[List[str]] = None,
+        voice: Optional[str] = None,
+        audio_format: Optional[str] = None,
+        enable_thinking: Optional[bool] = None,
+        enable_search: Optional[bool] = None,
         **generation_params
-    ) -> str:
-        """VL 视觉语言理解"""
-        payload = {"prompt": prompt}
-
+    ) -> dict:
+        """构建多模态请求 payload"""
+        payload = {}
+        if prompt:
+            payload["prompt"] = prompt
         if image:
             payload["image"] = self._process_image_input(image)
         if images:
@@ -749,113 +758,153 @@ class CoreNexusClient:
             payload["video"] = video
         if videos:
             payload["videos"] = videos
+        if video_frames:
+            payload["video_frames"] = video_frames
+        if audio:
+            payload["audio"] = audio
+        if audios:
+            payload["audios"] = audios
         if messages:
             payload["messages"] = messages
         if model:
             payload["model"] = model
+        if modalities:
+            payload["modalities"] = modalities
+        if voice:
+            payload["voice"] = voice
+        if audio_format:
+            payload["audio_format"] = audio_format
+        if enable_thinking is not None:
+            payload["enable_thinking"] = enable_thinking
+        if enable_search is not None:
+            payload["enable_search"] = enable_search
         if generation_params:
             payload["generation"] = generation_params
+        return payload
 
-        response = self._request('POST', '/vl', json_data=payload)
-        return response.get('output', {}).get('text', '')
-
-    async def vl_generate_async(
+    def multimodal_generate(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
         image: Optional[str] = None,
         images: Optional[List[str]] = None,
         video: Optional[str] = None,
         videos: Optional[List[str]] = None,
+        video_frames: Optional[List[str]] = None,
+        audio: Optional[str] = None,
+        audios: Optional[List[str]] = None,
         messages: Optional[List[Dict]] = None,
         model: Optional[str] = None,
+        modalities: Optional[List[str]] = None,
+        voice: Optional[str] = None,
+        audio_format: Optional[str] = None,
+        enable_thinking: Optional[bool] = None,
+        enable_search: Optional[bool] = None,
         **generation_params
     ) -> str:
-        """VL 异步视觉语言理解"""
-        payload = {"prompt": prompt}
-
-        if image:
-            payload["image"] = self._process_image_input(image)
-        if images:
-            payload["images"] = [self._process_image_input(img) for img in images]
-        if video:
-            payload["video"] = video
-        if videos:
-            payload["videos"] = videos
-        if messages:
-            payload["messages"] = messages
-        if model:
-            payload["model"] = model
-        if generation_params:
-            payload["generation"] = generation_params
-
-        response = await self._request_async('POST', '/vl', json_data=payload)
+        """多模态推理（POST /multimodal）"""
+        payload = self._build_multimodal_payload(
+            prompt=prompt, image=image, images=images, video=video, videos=videos,
+            video_frames=video_frames, audio=audio, audios=audios, messages=messages,
+            model=model, modalities=modalities, voice=voice, audio_format=audio_format,
+            enable_thinking=enable_thinking, enable_search=enable_search, **generation_params
+        )
+        response = self._request('POST', '/multimodal', json_data=payload)
         return response.get('output', {}).get('text', '')
 
-    def vl_generate_stream(
+    async def multimodal_generate_async(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
         image: Optional[str] = None,
         images: Optional[List[str]] = None,
         video: Optional[str] = None,
         videos: Optional[List[str]] = None,
+        video_frames: Optional[List[str]] = None,
+        audio: Optional[str] = None,
+        audios: Optional[List[str]] = None,
         messages: Optional[List[Dict]] = None,
         model: Optional[str] = None,
+        modalities: Optional[List[str]] = None,
+        voice: Optional[str] = None,
+        audio_format: Optional[str] = None,
+        enable_thinking: Optional[bool] = None,
+        enable_search: Optional[bool] = None,
+        **generation_params
+    ) -> str:
+        """异步多模态推理（POST /multimodal）"""
+        payload = self._build_multimodal_payload(
+            prompt=prompt, image=image, images=images, video=video, videos=videos,
+            video_frames=video_frames, audio=audio, audios=audios, messages=messages,
+            model=model, modalities=modalities, voice=voice, audio_format=audio_format,
+            enable_thinking=enable_thinking, enable_search=enable_search, **generation_params
+        )
+        response = await self._request_async('POST', '/multimodal', json_data=payload)
+        return response.get('output', {}).get('text', '')
+
+    def multimodal_generate_stream(
+        self,
+        prompt: Optional[str] = None,
+        image: Optional[str] = None,
+        images: Optional[List[str]] = None,
+        video: Optional[str] = None,
+        videos: Optional[List[str]] = None,
+        video_frames: Optional[List[str]] = None,
+        audio: Optional[str] = None,
+        audios: Optional[List[str]] = None,
+        messages: Optional[List[Dict]] = None,
+        model: Optional[str] = None,
+        modalities: Optional[List[str]] = None,
+        voice: Optional[str] = None,
+        audio_format: Optional[str] = None,
+        enable_thinking: Optional[bool] = None,
+        enable_search: Optional[bool] = None,
         **generation_params
     ) -> Generator[str, None, None]:
-        """VL 流式视觉语言理解"""
-        payload = {"prompt": prompt}
-
-        if image:
-            payload["image"] = self._process_image_input(image)
-        if images:
-            payload["images"] = [self._process_image_input(img) for img in images]
-        if video:
-            payload["video"] = video
-        if videos:
-            payload["videos"] = videos
-        if messages:
-            payload["messages"] = messages
-        if model:
-            payload["model"] = model
-        if generation_params:
-            payload["generation"] = generation_params
-
-        for chunk in self._request_stream('POST', '/vl/stream', json_data=payload):
+        """流式多模态推理（POST /multimodal/stream）"""
+        payload = self._build_multimodal_payload(
+            prompt=prompt, image=image, images=images, video=video, videos=videos,
+            video_frames=video_frames, audio=audio, audios=audios, messages=messages,
+            model=model, modalities=modalities, voice=voice, audio_format=audio_format,
+            enable_thinking=enable_thinking, enable_search=enable_search, **generation_params
+        )
+        for chunk in self._request_stream('POST', '/multimodal/stream', json_data=payload):
             if 'text' in chunk:
                 yield chunk['text']
 
-    async def vl_generate_stream_async(
+    async def multimodal_generate_stream_async(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
         image: Optional[str] = None,
         images: Optional[List[str]] = None,
         video: Optional[str] = None,
         videos: Optional[List[str]] = None,
+        video_frames: Optional[List[str]] = None,
+        audio: Optional[str] = None,
+        audios: Optional[List[str]] = None,
         messages: Optional[List[Dict]] = None,
         model: Optional[str] = None,
+        modalities: Optional[List[str]] = None,
+        voice: Optional[str] = None,
+        audio_format: Optional[str] = None,
+        enable_thinking: Optional[bool] = None,
+        enable_search: Optional[bool] = None,
         **generation_params
     ) -> AsyncGenerator[str, None]:
-        """VL 异步流式视觉语言理解"""
-        payload = {"prompt": prompt}
-
-        if image:
-            payload["image"] = self._process_image_input(image)
-        if images:
-            payload["images"] = [self._process_image_input(img) for img in images]
-        if video:
-            payload["video"] = video
-        if videos:
-            payload["videos"] = videos
-        if messages:
-            payload["messages"] = messages
-        if model:
-            payload["model"] = model
-        if generation_params:
-            payload["generation"] = generation_params
-
-        async for chunk in self._request_stream_async('POST', '/vl/stream', json_data=payload):
+        """异步流式多模态推理（POST /multimodal/stream）"""
+        payload = self._build_multimodal_payload(
+            prompt=prompt, image=image, images=images, video=video, videos=videos,
+            video_frames=video_frames, audio=audio, audios=audios, messages=messages,
+            model=model, modalities=modalities, voice=voice, audio_format=audio_format,
+            enable_thinking=enable_thinking, enable_search=enable_search, **generation_params
+        )
+        async for chunk in self._request_stream_async('POST', '/multimodal/stream', json_data=payload):
             if 'text' in chunk:
                 yield chunk['text']
+
+    # 旧方法名别名（向后兼容）
+    vl_generate = multimodal_generate
+    vl_generate_async = multimodal_generate_async
+    vl_generate_stream = multimodal_generate_stream
+    vl_generate_stream_async = multimodal_generate_stream_async
 
     # ==================== Music 接口 ====================
 
@@ -1087,17 +1136,25 @@ class CoreNexusClient:
             result["image_base64"] = image_data
         return result
 
-    # ==================== Video Generation 接口 ====================
+    # ==================== Video Generation 接口（统一视频生成） ====================
 
-    def text_to_video(
+    def video_gen(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
+        image: Optional[str] = None,
+        audio: Optional[str] = None,
         negative_prompt: Optional[str] = None,
         model: Optional[str] = None,
         **generation_params
     ) -> Dict[str, Any]:
-        """文本生成视频（POST /text-to-video）"""
-        payload = {"prompt": prompt}
+        """统一视频生成（POST /video-gen），支持文本/图片/音频输入"""
+        payload = {}
+        if prompt:
+            payload["prompt"] = prompt
+        if image:
+            payload["image"] = self._process_image_input(image)
+        if audio:
+            payload["audio"] = audio
         if negative_prompt:
             payload["negative_prompt"] = negative_prompt
         if model:
@@ -1105,18 +1162,26 @@ class CoreNexusClient:
         if generation_params:
             payload["generation"] = generation_params
 
-        response = self._request('POST', '/text-to-video', json_data=payload, timeout=600)
+        response = self._request('POST', '/video-gen', json_data=payload, timeout=600)
         return self._extract_video_output(response)
 
-    async def text_to_video_async(
+    async def video_gen_async(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
+        image: Optional[str] = None,
+        audio: Optional[str] = None,
         negative_prompt: Optional[str] = None,
         model: Optional[str] = None,
         **generation_params
     ) -> Dict[str, Any]:
-        """异步文本生成视频（POST /text-to-video）"""
-        payload = {"prompt": prompt}
+        """异步统一视频生成（POST /video-gen），支持文本/图片/音频输入"""
+        payload = {}
+        if prompt:
+            payload["prompt"] = prompt
+        if image:
+            payload["image"] = self._process_image_input(image)
+        if audio:
+            payload["audio"] = audio
         if negative_prompt:
             payload["negative_prompt"] = negative_prompt
         if model:
@@ -1124,8 +1189,12 @@ class CoreNexusClient:
         if generation_params:
             payload["generation"] = generation_params
 
-        response = await self._request_async('POST', '/text-to-video', json_data=payload, timeout=600)
+        response = await self._request_async('POST', '/video-gen', json_data=payload, timeout=600)
         return self._extract_video_output(response)
+
+    # 旧方法名别名（向后兼容）
+    text_to_video = video_gen
+    text_to_video_async = video_gen_async
 
     def image_to_video(
         self,
@@ -1134,17 +1203,8 @@ class CoreNexusClient:
         model: Optional[str] = None,
         **generation_params
     ) -> Dict[str, Any]:
-        """图像生成视频（POST /image-to-video）"""
-        payload = {"image": self._process_image_input(image)}
-        if prompt:
-            payload["prompt"] = prompt
-        if model:
-            payload["model"] = model
-        if generation_params:
-            payload["generation"] = generation_params
-
-        response = self._request('POST', '/image-to-video', json_data=payload, timeout=600)
-        return self._extract_video_output(response)
+        """图像生成视频（兼容旧接口，内部调用 video_gen）"""
+        return self.video_gen(prompt=prompt, image=image, model=model, **generation_params)
 
     async def image_to_video_async(
         self,
@@ -1153,17 +1213,8 @@ class CoreNexusClient:
         model: Optional[str] = None,
         **generation_params
     ) -> Dict[str, Any]:
-        """异步图像生成视频（POST /image-to-video）"""
-        payload = {"image": self._process_image_input(image)}
-        if prompt:
-            payload["prompt"] = prompt
-        if model:
-            payload["model"] = model
-        if generation_params:
-            payload["generation"] = generation_params
-
-        response = await self._request_async('POST', '/image-to-video', json_data=payload, timeout=600)
-        return self._extract_video_output(response)
+        """异步图像生成视频（兼容旧接口，内部调用 video_gen_async）"""
+        return await self.video_gen_async(prompt=prompt, image=image, model=model, **generation_params)
 
     @staticmethod
     def _extract_video_output(response: Dict) -> Dict[str, Any]:

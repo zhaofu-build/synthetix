@@ -171,8 +171,8 @@ async def update_config(req: Dict[str, Any]):
             config.TTS_KEY = api_key
         if not getattr(config, "ASR_KEY", ""):
             config.ASR_KEY = api_key
-        if not getattr(config, "VL_KEY", ""):
-            config.VL_KEY = api_key
+        if not getattr(config, "MULTIMODAL_KEY", ""):
+            config.MULTIMODAL_KEY = api_key
         from src.shared.utils.core_nexus_client import reset_client
         reset_client()
 

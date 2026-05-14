@@ -43,11 +43,10 @@ _DEFAULTS: Dict[str, Any] = {
         "llm_model": "",
         "tts_model": "",
         "asr_model": "",
-        "vl_model": "",
+        "multimodal_model": "",
         "music_model": "",
         "image_model": "",
         "video_model": "",
-        "image_to_video_model": "",
     },
     "agent": {
         "max_iterations": 5,
@@ -209,6 +208,39 @@ def _rename_settings_backup():
         logger.warning(f"重命名 settings.json 失败: {e}")
 
 
+# 旧配置键 → 新配置键 的迁移映射
+_KEY_MIGRATIONS = {
+    "core_nexus.vl_model": "core_nexus.multimodal_model",
+    "core_nexus.image_to_video_model": None,  # 合并到 video_model，删除
+}
+
+
+def _migrate_db_keys(db_overrides: Dict[str, Any]) -> Dict[str, Any]:
+    """迁移 DB 中的旧配置键到新键名"""
+    migrated = False
+    for old_key, new_key in _KEY_MIGRATIONS.items():
+        if old_key in db_overrides:
+            val = db_overrides.pop(old_key)
+            migrated = True
+            if new_key and val:
+                # 只在新键没有值时才迁移（保留用户新设置）
+                if new_key not in db_overrides or not db_overrides[new_key]:
+                    db_overrides[new_key] = val
+            # 写回 DB
+            try:
+                from src.infrastructure.db.session import get_db_context
+                from src.infrastructure.repositories.config_store_repository import ConfigStoreRepository
+                with get_db_context(commit=True) as db:
+                    repo = ConfigStoreRepository(db)
+                    repo.upsert(old_key, "")  # 清除旧键
+                    if new_key and val:
+                        repo.upsert(new_key, val)
+            except Exception as e:
+                logger.warning(f"DB 配置键迁移失败: {e}")
+    if migrated:
+        logger.info("DB 配置键迁移完成: vl_model → multimodal_model, image_to_video_model 已删除")
+
+
 def load_config() -> Dict[str, Any]:
     """加载并合并配置"""
     global _merged
@@ -219,6 +251,9 @@ def load_config() -> Dict[str, Any]:
 
         # 从 DB 读取用户覆盖
         db_overrides = _load_user_overrides()
+
+        # 迁移旧配置键
+        _migrate_db_keys(db_overrides)
 
         # 将 DB 扁平键值还原为嵌套字典
         if db_overrides:

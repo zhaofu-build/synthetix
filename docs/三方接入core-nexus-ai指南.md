@@ -117,20 +117,17 @@ ws://host:port/digital-human/stream?token=cn-你的key
 | `/llm` | POST | 文本生成 | ✅ `/llm/stream` (SSE) |
 | `/tts` | POST | 文本转语音 | ✅ `/tts/stream` (SSE) |
 | `/asr` | POST | 语音识别 | ✅ `/asr/stream` (WebSocket) |
-| `/vl` | POST | 视觉语言理解 | ✅ `/vl/stream` (SSE) |
-| `/ocr` | POST | 光学字符识别 | - |
 | `/text-to-image` | POST | 文本生成图像 | - |
 | `/image-to-image` | POST | 图像编辑 | - |
-| `/text-to-video` | POST | 文本生成视频 | - |
-| `/image-to-video` | POST | 图像生成视频 | - |
+| `/video-gen` | POST | 视频生成（文本/图片/音频输入） | - |
 | `/text-to-music` | POST | 文本生成音乐 | - |
 | `/music-to-music` | POST | 音乐编辑 | - |
 | `/agent` | POST | AI 智能体 | ✅ `/agent/stream` (SSE) |
 | `/other` | POST | 其他工具 | - |
 | `/digital-human` | POST | 数字人视频生成 | ✅ `/digital-human/async`（异步任务） |
 | `/digital-human` | WebSocket | 数字人实时流式生成 | ✅ `WS /digital-human/stream` |
-| `/multimodal` | POST | 全模态（文本+图像+音频+视频） | ✅ `/multimodal/stream` (SSE) |
-| `/multimodal/audio` | POST | 全模态音频输出（强制返回音频） | - |
+| `/multimodal` | POST | 多模态推理（文本+图像+音频+视频） | ✅ `/multimodal/stream` (SSE) |
+| `/multimodal/audio` | POST | 多模态音频输出（强制返回音频） | - |
 | `/api/models` | GET | 查询可用模型 | - |
 
 ### `/v1` 前缀兼容
@@ -603,6 +600,59 @@ POST /asr
 | DashScope | ✅ | - |
 | Qwen-ASR / DeepSeek ASR | - | - |
 
+#### 生成 SRT 字幕
+
+设置 `return_segments: true` 获取带时间戳的 segments，客户端自行转换为 SRT 格式。
+
+**SRT 格式规范：**
+
+```
+序号（从 1 开始）
+开始时间 --> 结束时间（格式 HH:MM:SS,mmm）
+字幕文本
+（空行分隔）
+```
+
+**Python 转换示例：**
+
+```python
+def to_srt(segments):
+    lines = []
+    for i, seg in enumerate(segments, 1):
+        start = format_srt_time(seg["start"])
+        end = format_srt_time(seg["end"])
+        lines.append(f"{i}\n{start} --> {end}\n{seg['text'].strip()}")
+    return "\n\n".join(lines)
+
+def format_srt_time(seconds):
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int((seconds % 1) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+# 调用
+resp = client.post("/asr", json={
+    "audio": "data:audio/wav;base64,UklGRi...",
+    "return_segments": True
+})
+segments = resp.json()["output"]["segments"]
+srt_text = to_srt(segments)
+print(srt_text)
+```
+
+**输出示例：**
+
+```
+1
+00:00:00,000 --> 00:00:01,800
+今天天气真不错，
+
+2
+00:00:02,000 --> 00:00:03,500
+我们出去玩吧。
+```
+
 ### 8.2 实时流式识别（WebSocket）
 
 ```
@@ -665,97 +715,7 @@ asyncio.run(asr_stream("audio.wav"))
 
 ---
 
-## 9. VL 视觉语言理解
-
-```
-POST /vl
-POST /vl/stream    （流式，SSE）
-```
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `prompt` | string | 与 messages 二选一 | 提问文本 |
-| `messages` | array | 与 prompt 二选一 | 完整对话（支持多模态 content） |
-| `image` | string | 至少一个媒体 | 单张图片（base64/Data URL/URL/路径） |
-| `images` | array | 至少一个媒体 | 多张图片 |
-| `video` | string | 至少一个媒体 | 视频（base64/Data URL/URL/路径） |
-| `videos` | array | 至少一个媒体 | 多个视频 |
-| `model` | string | 否 | 指定模型 |
-| `generation` | object | 否 | 生成参数 |
-| `provider_options` | object | 否 | 供应商特有参数，直接透传 |
-
-**图片输入格式（image / images 字段）：**
-
-| 格式 | 示例 | 说明 |
-|------|------|------|
-| Data URL | `data:image/jpeg;base64,/9j/4AAQ...` | 推荐，最明确 |
-| 纯 Base64 | `/9j/4AAQSkZJRgABAQAAAQ...` | 自动识别 |
-| HTTP URL | `https://example.com/photo.jpg` | 自动下载 |
-| 本地文件路径 | `D:/photos/test.jpg` | 服务端可访问的路径 |
-
-**视频输入格式（video / videos 字段）：**
-
-| 格式 | 示例 | 说明 |
-|------|------|------|
-| HTTP URL | `https://example.com/video.mp4` | 推荐 |
-| 本地文件路径 | `D:/videos/demo.mp4` | 服务端可访问的路径 |
-| Data URL | `data:video/mp4;base64,AAAA...` | 支持 |
-| 纯 Base64 | `AAAASGVsbG8...` | 自动识别 |
-
-**响应：**
-
-```json
-{
-  "request_id": "uuid",
-  "task_type": "VL",
-  "model": "Qwen/Qwen3-VL-2B-Instruct",
-  "output": {"text": "图片中是一只橙色的猫..."},
-  "usage": {"input_tokens": 500, "output_tokens": 100}
-}
-```
-
-**流式响应（SSE）：** 请求体与 `/vl` 相同。
-
-```
-data: {"text": "这张图片显示的是..."}
-
-data: {"text": "一只橙色的猫..."}
-
-data: [DONE]
-```
-
----
-
-## 10. OCR 光学字符识别
-
-```
-POST /ocr
-```
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `image` | string | **是** | 图片（base64/Data URL/HTTP URL） |
-| `prompt` | string | 否 | 识别提示词 |
-| `model` | string | 否 | 指定模型 |
-| `language` | string | 否 | 语言代码（zh/en/ja 等） |
-| `generation` | object | 否 | 生成参数 |
-| `provider_options` | object | 否 | 供应商特有参数，直接透传 |
-
-**响应：**
-
-```json
-{
-  "request_id": "uuid",
-  "task_type": "OCR",
-  "model": "default",
-  "output": {"text": "识别出的文字内容..."},
-  "usage": {}
-}
-```
-
----
-
-## 11. 文本生成图像
+## 9. 文本生成图像
 
 ```
 POST /text-to-image
@@ -802,7 +762,7 @@ POST /text-to-image
 
 ---
 
-## 12. 图像编辑
+## 10. 图像编辑
 
 ```
 POST /image-to-image
@@ -851,13 +811,13 @@ POST /image-to-image
 
 ---
 
-## 13. 文本生成音乐
+## 11. 文本生成音乐
 
 ```
 POST /text-to-music
 ```
 
-### 13.1 基础参数
+### 11.1 基础参数
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -871,7 +831,7 @@ POST /text-to-music
 
 **歌词结构标签：** 使用 `[verse]`（主歌）、`[chorus]`（副歌）、`[bridge]`（桥段）等标记段落结构。不传 `lyrics` 时生成纯音乐（无人声）。
 
-### 13.2 生成模式
+### 11.2 生成模式
 
 | mode | 名称 | 说明 | 需要输入音频 |
 |------|------|------|------------|
@@ -893,7 +853,7 @@ POST /text-to-music
 | `extend` | ✅ | - | - |
 | `cover` | - | ✅ | ✅ |
 
-### 13.3 generation 参数
+### 11.3 generation 参数
 
 | 参数 | 类型 | 默认值 | 范围 | 说明 |
 |------|------|--------|------|------|
@@ -905,7 +865,7 @@ POST /text-to-music
 | `cpu_offload` | bool | false | - | CPU 卸载，显存不足时开启 |
 | `torch_compile` | bool | false | - | 编译优化，首次较慢但后续加速 |
 
-### 13.4 模式特有参数
+### 11.4 模式特有参数
 
 | 参数 | 类型 | 适用模式 | 说明 |
 |------|------|---------|------|
@@ -916,7 +876,7 @@ POST /text-to-music
 | `extend_left` | float | extend | 左侧扩展时长（秒） |
 | `extend_right` | float | extend | 右侧扩展时长（秒） |
 
-### 13.5 完整调用示例
+### 11.5 完整调用示例
 
 **基础生成（带歌词）：**
 
@@ -1005,7 +965,7 @@ POST /text-to-music
 }
 ```
 
-### 13.6 响应格式
+### 11.6 响应格式
 
 ```json
 {
@@ -1021,7 +981,7 @@ POST /text-to-music
 
 `output.audio` 为 Data URL 格式，可直接用于 `<audio>` 标签播放。
 
-### 13.7 Python 完整示例
+### 11.7 Python 完整示例
 
 ```python
 import httpx
@@ -1066,7 +1026,7 @@ client.close()
 
 ---
 
-## 14. 音乐编辑
+## 12. 音乐编辑
 
 ```
 POST /music-to-music
@@ -1096,37 +1056,56 @@ POST /music-to-music
 
 ---
 
-## 15. 文本生成视频
+## 13. 视频生成
 
 ```
-POST /text-to-video
+POST /video-gen
 ```
+
+统一端点，支持文本、图片、音频输入生成视频。系统根据模型能力和输入内容自动匹配生成模式。
+
+**请求参数：**
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `prompt` | string | **是** | 视频描述 |
+| `prompt` | string | 至少一种 | 文本描述 |
+| `image` | string | 至少一种 | 图片输入（base64/Data URL/HTTP URL） |
+| `audio` | string | 至少一种 | 音频输入 |
 | `negative_prompt` | string | 否 | 反向提示词 |
-| `model` | string | 否 | 指定模型 |
+| `model` | string | 否 | 指定模型，不填用默认 |
 | `generation` | object | 否 | 生成参数（见下方） |
+
+> 至少提供 `prompt`、`image`、`audio` 其中之一。不同模型支持的输入组合不同，超出模型能力时会返回参数校验错误。
 
 **generation 常用参数：**
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `num_frames` | int | 帧数（本地模型常用） |
-| `fps` | int | 帧率，默认 16 |
-| `width` | int | 视频宽度 |
-| `height` | int | 视频高度 |
-| `seed` | int | 随机种子（-1 为随机） |
-| `resolution` | string | 分辨率（`720P` / `1080P`，HappyHorse 专用） |
-| `duration` | int | 时长（秒，3-15，HappyHorse 专用） |
+| 参数 | 类型 | 说明 | 适用模型 |
+|------|------|------|---------|
+| `num_frames` | int | 帧数 | 本地模型 |
+| `fps` | int | 帧率，默认 16 | 本地模型 |
+| `width` | int | 视频宽度 | 本地模型 |
+| `height` | int | 视频高度 | 本地模型 |
+| `seed` | int | 随机种子（-1 为随机） | 通用 |
+| `resolution` | string | 分辨率（`720P` / `1080P`） | HappyHorse |
+| `duration` | int | 时长（秒，3-15） | HappyHorse |
+| `watermark` | bool | 是否添加水印 | HappyHorse |
 
-**示例（本地模型）：**
+**示例（文本生成视频）：**
 
 ```json
 {
   "prompt": "一只小猫在草地上奔跑",
   "generation": {"num_frames": 81, "fps": 16}
+}
+```
+
+**示例（图片生成视频）：**
+
+```json
+{
+  "image": "data:image/jpeg;base64,/9j/...",
+  "prompt": "人物转头微笑",
+  "generation": {"num_frames": 81, "fps": 16, "seed": 42}
 }
 ```
 
@@ -1145,79 +1124,20 @@ POST /text-to-video
 ```json
 {
   "request_id": "uuid",
-  "task_type": "TEXT_TO_VIDEO",
+  "task_type": "VIDEO_GEN",
   "model": "happyhorse-1.0-t2v",
   "output": {"video": "data:video/mp4;base64,..."},
   "usage": {}
 }
 ```
 
-`output.video` 为 Data URL 格式，可直接用于 `<video>` 标签播放。
-
----
-
-## 16. 图像生成视频
-
-```
-POST /image-to-video
-```
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `image` | string | **是** | 原图（base64/Data URL/HTTP URL） |
-| `prompt` | string | 否 | 运动/场景描述（部分模型可选） |
-| `model` | string | 否 | 指定模型 |
-| `generation` | object | 否 | 生成参数（见下方） |
-
-**generation 常用参数：**
-
-| 参数 | 类型 | 说明 | 适用模型 |
-|------|------|------|---------|
-| `num_frames` | int | 帧数 | 本地模型 |
-| `fps` | int | 帧率 | 本地模型 |
-| `seed` | int | 随机种子 | 通用 |
-| `resolution` | string | 分辨率（`720P` / `1080P`） | HappyHorse |
-| `duration` | int | 时长（秒，3-15） | HappyHorse |
-| `watermark` | bool | 是否添加水印 | HappyHorse |
-
-**示例（本地模型）：**
-
-```json
-{
-  "image": "data:image/jpeg;base64,/9j/...",
-  "prompt": "人物转头微笑",
-  "generation": {"num_frames": 81, "fps": 16, "seed": 42}
-}
-```
-
-**示例（HappyHorse API 模型）：**
-
-```json
-{
-  "image": "data:image/jpeg;base64,/9j/...",
-  "prompt": "人物转头微笑",
-  "model": "happyhorse-1.0-i2v",
-  "generation": {"resolution": "1080P", "duration": 5, "seed": 42}
-}
-```
-
-**响应：**
-
-```json
-{
-  "request_id": "uuid",
-  "task_type": "IMAGE_TO_VIDEO",
-  "model": "happyhorse-1.0-i2v",
-  "output": {"video": "data:video/mp4;base64,..."},
-  "usage": {"duration": 5, "resolution": "1080P"}
-}
-```
+`output.video` 为 Data URL 格式，可直接用于 `<video>` 标签播放。本地模型带图片输入时可能返回异步任务 `{"job_id": "uuid"}`，通过 `GET /api/admin/jobs/{job_id}` 查询进度。
 
 > **注意：** 视频生成耗时较长（API 模型通常 1-5 分钟，本地模型更久），建议设置较大的请求超时。
 
 ---
 
-## 17. AI 智能体（Agent）
+## 14. AI 智能体（Agent）
 
 ```
 POST /agent
@@ -1315,7 +1235,7 @@ data: {"type": "agent_done"}
 
 ---
 
-## 18. 其他工具（Other）
+## 15. 其他工具（Other）
 
 ```
 POST /other
@@ -1330,7 +1250,7 @@ POST /other
 | `generation` | object | 否 | 生成参数 |
 | `provider_options` | object | 否 | 供应商特有参数 |
 
-### 18.1 人声分离（Demucs）
+### 15.1 人声分离（Demucs）
 
 ```json
 {
@@ -1360,7 +1280,7 @@ POST /other
 }
 ```
 
-### 18.2 高质量人声分离（UVR5）
+### 15.2 高质量人声分离（UVR5）
 
 ```json
 {
@@ -1390,9 +1310,9 @@ POST /other
 
 ---
 
-## 19. 数字人视频生成
+## 16. 数字人视频生成
 
-### 19.1 同步生成
+### 16.1 同步生成
 
 ```
 POST /digital-human
@@ -1425,7 +1345,7 @@ POST /digital-human
 }
 ```
 
-### 19.2 异步生成
+### 16.2 异步生成
 
 适用于长视频或批量生成场景。
 
@@ -1446,7 +1366,7 @@ POST /digital-human/async
 
 使用 `GET /api/admin/jobs/{job_id}` 查询任务状态。
 
-### 19.3 实时流式生成（WebSocket）
+### 16.3 实时流式生成（WebSocket）
 
 ```
 WS ws://host:port/digital-human/stream?token=cn-你的key
@@ -1483,11 +1403,11 @@ WS ws://host:port/digital-human/stream?token=cn-你的key
 
 ---
 
-## 20. 全模态（MULTIMODAL）
+## 17. 多模态（MULTIMODAL）
 
 支持文本、图像、音频、视频的组合输入，可返回文本或音频。
 
-### 20.1 同步推理
+### 17.1 同步推理
 
 ```
 POST /multimodal
@@ -1580,7 +1500,7 @@ POST /multimodal
 }
 ```
 
-### 20.2 流式推理（SSE）
+### 17.2 流式推理（SSE）
 
 ```
 POST /multimodal/stream
@@ -1596,7 +1516,7 @@ data: {"audio": "base64编码的音频片段", "audio_format": "wav"}
 data: [DONE]
 ```
 
-### 20.3 音频输出
+### 17.3 音频输出
 
 ```
 POST /multimodal/audio
@@ -1611,7 +1531,7 @@ POST /multimodal/audio
 
 ---
 
-## 21. 查询可用模型
+## 18. 查询可用模型
 
 ```
 GET /api/models
@@ -1634,7 +1554,12 @@ GET /api/models?task_type=LLM    （按类型过滤）
       "name": "deepseek-chat",
       "task_type": "LLM",
       "provider_name": "deepseek",
-      "capabilities": {"stream": true, "max_tokens": 8192},
+      "capabilities": {
+        "stream": true,
+        "max_tokens": 8192,
+        "input_tags": ["文"],
+        "output_tags": ["文"]
+      },
       "default_generation": {}
     }
   ]
@@ -1643,9 +1568,37 @@ GET /api/models?task_type=LLM    （按类型过滤）
 
 > **注意：** 响应格式为 `{"models": [...]}`，列表第一项 `name: "core-nexus-ai"` 是系统自动生成的虚拟默认条目，代表该 task_type 的默认模型。后续为实际的 API 模型。
 
+### 模型能力标签
+
+每个模型的 `capabilities` 中包含 `input_tags` 和 `output_tags` 两个字段，标识该模型支持的输入输出类型：
+
+**标签含义：**
+
+| 标签 | 含义 | 示例场景 |
+|------|------|---------|
+| `文` | 文本 | LLM 对话输入/输出、文生图提示词、TTS 文本输入 |
+| `图` | 图片 | 图像理解输入、图生图/图生视频输入、文生图输出 |
+| `音` | 音频 | 语音识别输入、语音克隆参考音频、TTS/音乐输出 |
+| `视频` | 视频 | 视频理解输入、视频生成输出 |
+
+**按任务类型的典型输入输出：**
+
+| 任务类型 | input_tags | output_tags | 说明 |
+|----------|-----------|-------------|------|
+| LLM | `["文"]` | `["文"]` | 文本对话 |
+| TTS | `["文"]` 或 `["文","音"]` | `["音"]` | 文本转语音，部分支持参考音频克隆 |
+| ASR | `["音"]` | `["文"]` | 语音转文本 |
+| TEXT_TO_IMAGE | `["文"]` | `["图"]` | 文本生成图像 |
+| IMAGE_TO_IMAGE | `["图","文"]` | `["图"]` | 图像+指令编辑 |
+| VIDEO_GEN | `["文"]` / `["图","文"]` | `["视频"]` | 视频生成（文本/图片/音频输入） |
+| TEXT_TO_MUSIC | `["文"]` | `["音"]` | 文本生成音乐 |
+| DIGITAL_HUMAN | `["文","图"]` 或 `["文","音","图"]` | `["视频"]` | 数字人视频 |
+| MULTIMODAL (视觉) | `["文","图"]` | `["文"]` | 图像理解 |
+| MULTIMODAL (全能) | `["文","图","音"]` | `["文","音"]` | 全模态对话+语音 |
+
 ---
 
-## 22. 完整调用示例
+## 19. 完整调用示例
 
 ### Python (httpx)
 
@@ -1698,13 +1651,26 @@ print(data["output"]["text"])
 for ref in data["output"].get("search_results", []):
     print(f"  [{ref['title']}]({ref['url']})")
 
-# 5. ASR 语音识别（带时间戳）
+# 5. ASR 语音识别（带时间戳，可转 SRT 字幕）
+def format_srt_time(seconds):
+    h, m, s = int(seconds // 3600), int((seconds % 3600) // 60), int(seconds % 60)
+    ms = int((seconds % 1) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+def to_srt(segments):
+    return "\n\n".join(
+        f"{i}\n{format_srt_time(seg['start'])} --> {format_srt_time(seg['end'])}\n{seg['text'].strip()}"
+        for i, seg in enumerate(segments, 1)
+    )
+
 resp = client.post("/asr", json={
     "audio": "data:audio/wav;base64,UklGRi...",
     "return_segments": True
 })
-for seg in resp.json()["output"]["segments"]:
-    print(f"[{seg['start']:.1f}-{seg['end']:.1f}] {seg['text']}")
+output = resp.json()["output"]
+srt_text = to_srt(output["segments"])
+with open("subtitle.srt", "w", encoding="utf-8") as f:
+    f.write(srt_text)
 
 # 6. TTS 语音合成（获取音频文件）
 resp = client.post("/tts", json={"text": "你好世界"})  # 不设 Accept，返回音频二进制
@@ -1744,42 +1710,41 @@ with client.stream("POST", "/tts/stream", json={
 with open("speech_stream.mp3", "wb") as f:
     f.write(b"".join(audio_chunks))
 
-# 8. VL 视觉理解
-resp = client.post("/vl", json={
+# 8. 多模态视觉理解（原 VL 已合并到多模态）
+resp = client.post("/multimodal", json={
     "prompt": "描述这张图片",
     "image": "data:image/jpeg;base64,/9j/..."
 })
 
-# 9. 文本生成视频
-resp = client.post("/text-to-video", json={
+# 9. 视频生成（文本输入）
+resp = client.post("/video-gen", json={
     "prompt": "一只小猫在草地上奔跑",
     "generation": {"num_frames": 81, "fps": 16}
 })
 video_data = resp.json()["output"]["video"]  # data:video/mp4;base64,...
 
-# 10. 图像生成视频
-resp = client.post("/image-to-video", json={
+# 9.1 视频生成（图片输入）
+resp = client.post("/video-gen", json={
     "image": "data:image/jpeg;base64,/9j/...",
     "prompt": "人物转头微笑",
-    "model": "happyhorse-1.0-i2v",
     "generation": {"resolution": "1080P", "duration": 5}
 })
 
-# 11. AI Agent 智能体
+# 10. AI Agent 智能体
 resp = client.post("/agent", json={
     "messages": [{"role": "user", "content": "现在几点了？"}],
     "max_iterations": 5
 })
 print(resp.json()["output"]["text"])
 
-# 12. 数字人视频生成（异步）
+# 11. 数字人视频生成（异步）
 resp = client.post("/digital-human/async", json={
     "text": "大家好，欢迎观看本期视频",
     "avatar_id": "avatar_001"
 })
 job_id = resp.json()["job_id"]
 
-# 13. 全模态语音对话
+# 12. 多模态语音对话
 resp = client.post("/multimodal", json={
     "prompt": "讲一个简短的故事",
     "modalities": ["text", "audio"],
@@ -1867,25 +1832,13 @@ async function ttsRealtime(text, voice = 'Serena') {
   new Audio(url).play();
 }
 
-// 文本生成视频
-async function textToVideo(prompt) {
-  const resp = await fetch(`${API_BASE}/text-to-video`, {
+// 视频生成（统一端点，支持文本/图片/音频输入）
+async function videoGen(prompt, image = null) {
+  const body = { prompt, generation: { num_frames: 81, fps: 16 } };
+  if (image) body.image = image;
+  const resp = await fetch(`${API_BASE}/video-gen`, {
     method: 'POST', headers,
-    body: JSON.stringify({ prompt, generation: { num_frames: 81, fps: 16 } }),
-  });
-  const data = await resp.json();
-  return data.output.video; // data:video/mp4;base64,...
-}
-
-// 图像生成视频
-async function imageToVideo(imageBase64, prompt = '') {
-  const resp = await fetch(`${API_BASE}/image-to-video`, {
-    method: 'POST', headers,
-    body: JSON.stringify({
-      image: `data:image/jpeg;base64,${imageBase64}`,
-      prompt,
-      generation: { resolution: '1080P', duration: 5 },
-    }),
+    body: JSON.stringify(body),
   });
   const data = await resp.json();
   return data.output.video; // data:video/mp4;base64,...
@@ -1921,7 +1874,7 @@ System.out.println(resp.body());
 
 ---
 
-## 23. 媒体输入格式说明
+## 20. 媒体输入格式说明
 
 所有接受媒体输入的接口（image、audio、video、ref_audio 等字段）统一支持以下 4 种格式：
 
@@ -1936,7 +1889,7 @@ System.out.println(resp.body());
 
 ---
 
-## 24. 接入检查清单
+## 21. 接入检查清单
 
 - [ ] 从管理员获取 API Key（`cn-xxxx...`，无角色区分，统一为推理权限）
 - [ ] 确认服务地址（默认 `http://host:9666`）
