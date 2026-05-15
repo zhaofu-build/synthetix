@@ -41,8 +41,15 @@
                          :placeholder="t('settings.defaultModel')">
                 <el-option v-for="item in systemStore.models[m.type]" :key="item.name"
                            :label="item.name" :value="item.name">
-                  <span>{{ item.name }}</span>
-                  <span class="option-provider">{{ item.provider_name }}</span>
+                  <div class="option-row">
+                    <span class="option-name">{{ item.name }}</span>
+                    <span class="option-tags" v-if="item.capabilities?.input_tags">
+                      <el-tag v-for="tag in item.capabilities.input_tags" :key="'i-'+tag" size="small" type="info" class="tag-input">{{ tag }}</el-tag>
+                      <span class="tag-arrow">→</span>
+                      <el-tag v-for="tag in item.capabilities.output_tags" :key="'o-'+tag" size="small" type="success" class="tag-output">{{ tag }}</el-tag>
+                    </span>
+                    <span class="option-provider">{{ item.provider_name }}</span>
+                  </div>
                 </el-option>
               </el-select>
             </div>
@@ -176,11 +183,10 @@ const modelFields = [
   { key: 'llm_model', type: 'LLM', label: computed(() => t('settings.llmModel')) },
   { key: 'tts_model', type: 'TTS', label: computed(() => t('settings.ttsModel')) },
   { key: 'asr_model', type: 'ASR', label: computed(() => t('settings.asrModel')) },
-  { key: 'vl_model', type: 'VL', label: computed(() => t('settings.vlModel')) },
+  { key: 'multimodal_model', type: 'MULTIMODAL', label: computed(() => t('settings.multimodalModel')) },
   { key: 'music_model', type: 'TEXT_TO_MUSIC', label: computed(() => t('settings.musicModel')) },
   { key: 'image_model', type: 'TEXT_TO_IMAGE', label: computed(() => t('settings.imageModel')) },
-  { key: 'video_model', type: 'TEXT_TO_VIDEO', label: computed(() => t('settings.videoModel')) },
-  { key: 'image_to_video_model', type: 'IMAGE_TO_VIDEO', label: computed(() => t('settings.imageToVideoModel')) },
+  { key: 'video_model', type: 'VIDEO_GEN', label: computed(() => t('settings.videoModel')) },
 ]
 
 const videoSources = [
@@ -226,7 +232,7 @@ const onBaseUrlChange = () => {
 }
 
 const loadAllModels = async () => {
-  const types = ['LLM', 'TTS', 'ASR', 'VL', 'TEXT_TO_MUSIC', 'TEXT_TO_IMAGE', 'TEXT_TO_VIDEO', 'IMAGE_TO_VIDEO']
+  const types = ['LLM', 'TTS', 'ASR', 'MULTIMODAL', 'TEXT_TO_MUSIC', 'TEXT_TO_IMAGE', 'VIDEO_GEN']
   await Promise.all(types.map(type => systemStore.fetchModels(type)))
 }
 
@@ -362,9 +368,37 @@ const switchTheme = (theme) => {
 }
 
 .option-provider {
-  float: right;
   color: var(--el-text-color-secondary);
   font-size: 12px;
+  margin-left: auto;
+}
+
+.option-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.option-name {
+  font-size: 13px;
+}
+
+.option-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tag-arrow {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  margin: 0 2px;
+}
+
+.tag-input :deep(.el-tag__content),
+.tag-output :deep(.el-tag__content) {
+  font-size: 11px;
 }
 
 .settings-footer {

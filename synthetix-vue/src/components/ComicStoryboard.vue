@@ -265,9 +265,15 @@
       </div>
     </div>
 
-    <!-- Image preview dialog -->
-    <el-dialog v-model="previewVisible" width="auto" class="preview-dialog" @close="previewVisible = false">
-      <img :src="previewUrl" class="preview-image" />
+    <!-- Image preview -->
+    <el-dialog
+      v-model="previewVisible"
+      width="auto"
+      align-center
+      class="comic-preview-dialog"
+      @close="previewVisible = false"
+    >
+      <img :src="previewUrl" style="max-width:80vw;max-height:80vh;object-fit:contain;display:block;margin:auto;" />
     </el-dialog>
 
     <!-- Output video dialog -->
@@ -845,13 +851,13 @@ onUnmounted(() => {
 
 .output-section { display: flex; align-items: center; gap: 6px; }
 .output-label { font-size: 12px; color: var(--el-text-color-secondary); }
+</style>
 
-/* Preview dialog */
-.preview-dialog :deep(.el-dialog__body) {
-  padding: 0; display: flex; justify-content: center;
-}
-.preview-image {
-  max-width: 80vw; max-height: 80vh;
-  object-fit: contain; border-radius: 4px;
+<style>
+.comic-preview-dialog .el-dialog__body {
+  padding: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
 </style>

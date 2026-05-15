@@ -6,18 +6,7 @@
       <span>加载中...</span>
     </div>
 
-    <!-- 未创建项目：直接创建并进入故事页 -->
-    <div v-else-if="!projectId" class="welcome-view">
-      <div class="welcome-content">
-        <h2>漫剧创作</h2>
-        <p>输入你的故事，AI 帮你生成分镜漫剧</p>
-        <el-button type="primary" size="large" @click="quickCreate" :loading="creating">
-          开始创作
-        </el-button>
-      </div>
-    </div>
-
-    <!-- 已有项目：3 页导航 -->
+    <!-- 3 页导航 -->
     <template v-else>
       <!-- 顶部栏：项目名 + 导航 -->
       <div class="top-bar">
@@ -104,7 +93,6 @@ const pages = [
 ]
 
 const loading = ref(false)
-const creating = ref(false)
 const projectId = ref(null)
 const currentPage = ref(0)
 const project = reactive({
@@ -132,6 +120,8 @@ onMounted(async () => {
   const pid = route.query.projectId
   if (pid) {
     await loadProject(pid)
+  } else {
+    await quickCreate()
   }
   loadBgmList()
 })
@@ -156,7 +146,6 @@ watch(currentPage, (val) => debounceSave('current_step', val))
 
 // ==================== Project ops ====================
 async function quickCreate() {
-  creating.value = true
   try {
     const timestamp = new Date().toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
     const res = await comicDramaApi.create({ name: `漫剧 ${timestamp}` })
@@ -165,8 +154,6 @@ async function quickCreate() {
     router.replace({ path: '/comic-drama', query: { projectId: res.id } })
   } catch (e) {
     ElMessage.error('创建失败')
-  } finally {
-    creating.value = false
   }
 }
 
@@ -280,7 +267,7 @@ async function loadBgmList() {
   flex-direction: column;
 }
 
-.loading-view, .welcome-view {
+.loading-view {
   flex: 1;
   display: flex;
   align-items: center;
@@ -289,12 +276,6 @@ async function loadBgmList() {
   gap: 12px;
   color: var(--el-text-color-secondary);
 }
-
-.welcome-content {
-  text-align: center;
-}
-.welcome-content h2 { margin: 0 0 8px; font-size: 22px; color: var(--el-text-color-primary); }
-.welcome-content p { margin: 0 0 24px; color: var(--el-text-color-secondary); }
 
 /* Top bar */
 .top-bar {

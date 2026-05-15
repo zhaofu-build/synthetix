@@ -199,15 +199,16 @@
       </div>
     </div>
 
-    <!-- Image preview dialog -->
+    <!-- Image preview -->
     <el-dialog
       v-model="previewVisible"
-      :show-close="true"
       width="auto"
-      class="preview-dialog"
+      align-center
+      :show-close="true"
+      class="comic-preview-dialog"
       @close="previewVisible = false"
     >
-      <img :src="previewUrl" class="preview-image" />
+      <img :src="previewUrl" style="max-width:80vw;max-height:80vh;object-fit:contain;display:block;margin:auto;" />
     </el-dialog>
   </div>
 </template>
@@ -813,17 +814,13 @@ onUnmounted(() => {
   opacity: 0.8;
 }
 
-/* Preview dialog */
-.preview-dialog :deep(.el-dialog__body) {
+</style>
+
+<style>
+.comic-preview-dialog .el-dialog__body {
   padding: 0;
   display: flex;
   justify-content: center;
+  align-items: center;
 }
-.preview-image {
-  max-width: 80vw;
-  max-height: 80vh;
-  object-fit: contain;
-  border-radius: 4px;
-}
-
 </style>
